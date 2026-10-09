@@ -1,4 +1,4 @@
-import { CONFIG, homeTerritoryBounds, type ShareMode } from "./config";
+import { CONFIG, type ShareMode } from "./config";
 import { buildArena, dist, rotateToward, tryMove, angleTo } from "./arena";
 import { updateTankAi } from "./ai";
 import {

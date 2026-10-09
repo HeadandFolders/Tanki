@@ -1,4 +1,4 @@
-import { CONFIG, type ShareMode } from "./config";
+import { CONFIG, homeTerritoryBounds, type ShareMode } from "./config";
 import { buildArena, dist, rotateToward, tryMove, angleTo } from "./arena";
 import { updateTankAi } from "./ai";
 import {
@@ -6,6 +6,7 @@ import {
   captureVisibleCells,
   createFogGrid,
   revealAround,
+  revealHomeTerritory,
   visionTanksForReveal,
   canSeeTank,
   anyTeammateSees,
@@ -52,8 +53,13 @@ export function createWorld(shareMode: ShareMode = CONFIG.shareModeDefault): Wor
     rngSeed: seed,
   };
 
-  pushEvent(world, "Match start. Find and debug the enemy code carrier.", "sys");
-  pushChat(world, "Net open. Orders on the wire.", "sys");
+  revealHomeTerritory(world);
+  pushEvent(
+    world,
+    "Match start. Home strip is mapped — push north and find the enemy code carrier.",
+    "sys",
+  );
+  pushChat(world, "Net open. Southern band is ours; the rest is blank.", "sys");
   return world;
 }
 

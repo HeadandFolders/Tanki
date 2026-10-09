@@ -1,4 +1,4 @@
-import { CONFIG } from "./config";
+import { CONFIG, homeTerritoryBounds } from "./config";
 import { dist } from "./arena";
 import { canSeeTank } from "./fog";
 import type { Tank, WorldState } from "./types";
@@ -13,19 +13,16 @@ export function renderWorld(
   const H = CONFIG.canvasHeight;
 
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = CONFIG.colors.floor;
-  ctx.fillRect(0, 0, W, H);
-
-  // Terrain always drawn; fog overlays
+  drawMapBase(ctx, W, H);
+  drawHomeTerritory(ctx, world);
   drawWalls(ctx, world);
+  drawMapOverlays(ctx, world);
 
-  // Wrecks (only if explored or in live vision / marker)
   for (const w of world.wrecks) {
     if (!shouldShowWorldPos(world, w.x, w.y)) continue;
     drawWreck(ctx, w.x, w.y, w.label, w.marked, w.debugged, w.debugResult);
   }
 
-  // Enemy tanks only if visible to vision contributors
   for (const t of world.tanks) {
     if (!t.alive) continue;
     if (t.team === "blue") {
@@ -35,7 +32,6 @@ export function renderWorld(
     }
   }
 
-  // Projectiles if explored-ish
   for (const p of world.projectiles) {
     if (!shouldShowWorldPos(world, p.x, p.y) && p.team === "red") continue;
     ctx.beginPath();
@@ -45,9 +41,10 @@ export function renderWorld(
   }
 
   drawFog(ctx, world);
+  drawFrontline(ctx, world);
   drawMarkers(ctx, world);
+  drawMapChrome(ctx, world);
 
-  // Aim line for controlled
   const me = world.tanks.find((t) => t.id === world.controlledId && t.alive);
   if (me) {
     ctx.strokeStyle = "rgba(200,220,255,0.35)";
@@ -77,13 +74,139 @@ export function renderWorld(
   }
 }
 
+function drawMapBase(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+): void {
+  ctx.fillStyle = CONFIG.colors.floor;
+  ctx.fillRect(0, 0, W, H);
+
+  // Checker-ish topo blocks for map texture
+  const step = CONFIG.fog.gridStep;
+  for (let y = 0; y < H; y += step) {
+    for (let x = 0; x < W; x += step) {
+      if (((x / step) + (y / step)) % 2 === 0) {
+        ctx.fillStyle = CONFIG.colors.floorAlt;
+        ctx.fillRect(x, y, step, step);
+      }
+    }
+  }
+
+  // Grid
+  ctx.strokeStyle = CONFIG.colors.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += step) {
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, H);
+  }
+  for (let y = 0; y <= H; y += step) {
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(W, y + 0.5);
+  }
+  ctx.stroke();
+}
+
+function drawHomeTerritory(
+  ctx: CanvasRenderingContext2D,
+  _world: WorldState,
+): void {
+  const home = homeTerritoryBounds("blue");
+  const W = CONFIG.canvasWidth;
+  ctx.fillStyle = CONFIG.colors.homeTint;
+  ctx.fillRect(0, home.y0, W, home.y1 - home.y0);
+}
+
+function drawFrontline(
+  ctx: CanvasRenderingContext2D,
+  world: WorldState,
+): void {
+  const home = homeTerritoryBounds("blue");
+  const W = CONFIG.canvasWidth;
+  // Only draw where the strip edge is known (home is always explored)
+  ctx.save();
+  ctx.strokeStyle = CONFIG.colors.frontline;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 6]);
+  ctx.beginPath();
+  ctx.moveTo(0, home.y0);
+  ctx.lineTo(W, home.y0);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = CONFIG.colors.accent;
+  ctx.font = "bold 11px monospace";
+  ctx.textAlign = "left";
+  if (world.fogExplored[Math.floor(home.y0 / CONFIG.fog.cellSize) * world.fogCols]) {
+    ctx.fillText("FRONT · FRIENDLY SOUTH", 10, home.y0 - 6);
+  }
+  ctx.restore();
+}
+
+function drawMapOverlays(
+  ctx: CanvasRenderingContext2D,
+  world: WorldState,
+): void {
+  // Soft labels for landmarks when explored
+  const labels = [
+    { x: CONFIG.canvasWidth * 0.5, y: CONFIG.canvasHeight * 0.45, text: "CHOKE" },
+    { x: CONFIG.canvasWidth * 0.25, y: CONFIG.canvasHeight * 0.28, text: "BUNKER" },
+    { x: CONFIG.canvasWidth * 0.75, y: CONFIG.canvasHeight * 0.7, text: "LANE" },
+  ];
+  ctx.font = "10px monospace";
+  ctx.textAlign = "center";
+  for (const l of labels) {
+    if (!shouldShowWorldPos(world, l.x, l.y)) continue;
+    ctx.fillStyle = "rgba(210, 220, 230, 0.45)";
+    ctx.fillText(l.text, l.x, l.y);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawMapChrome(
+  ctx: CanvasRenderingContext2D,
+  world: WorldState,
+): void {
+  const W = CONFIG.canvasWidth;
+  const H = CONFIG.canvasHeight;
+  const step = CONFIG.fog.gridStep;
+
+  ctx.fillStyle = "rgba(220, 230, 240, 0.55)";
+  ctx.font = "10px monospace";
+  ctx.textAlign = "center";
+  // Column letters along bottom of home (always visible there)
+  const letters = "ABCDEFGHIJKLMNOPQRST";
+  for (let i = 0; i * step < W; i++) {
+    const x = i * step + step / 2;
+    const y = H - 8;
+    if (shouldShowWorldPos(world, x, y)) {
+      ctx.fillText(letters[i % letters.length] ?? String(i), x, y);
+    }
+  }
+  ctx.textAlign = "right";
+  for (let i = 0; i * step < H; i++) {
+    const y = i * step + step / 2;
+    if (shouldShowWorldPos(world, 18, y)) {
+      ctx.fillText(String(i + 1), 18, y + 3);
+    }
+  }
+  ctx.textAlign = "left";
+
+  // Compass
+  ctx.fillStyle = CONFIG.colors.accent;
+  ctx.font = "bold 12px monospace";
+  ctx.fillText("N", W / 2 - 4, 16);
+  ctx.fillStyle = "rgba(200,210,220,0.5)";
+  ctx.font = "10px monospace";
+  ctx.fillText("S HOME", W / 2 - 18, H - 20);
+}
+
 function shouldShowWorldPos(world: WorldState, x: number, y: number): boolean {
   const cell = CONFIG.fog.cellSize;
   const c = Math.floor(x / cell);
   const r = Math.floor(y / cell);
   if (c < 0 || r < 0 || c >= world.fogCols || r >= world.fogRows) return false;
   if (world.fogExplored[r * world.fogCols + c]) return true;
-  // live vision even if not yet written
   return isUnderLiveVision(world, x, y);
 }
 
@@ -112,9 +235,12 @@ function isEnemyLiveVisible(world: WorldState, enemy: Tank): boolean {
 }
 
 function drawWalls(ctx: CanvasRenderingContext2D, world: WorldState): void {
-  ctx.fillStyle = CONFIG.colors.wall;
   for (const w of world.walls) {
+    ctx.fillStyle = CONFIG.colors.wall;
     ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.strokeStyle = CONFIG.colors.wallStroke;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(w.x + 0.5, w.y + 0.5, w.w - 1, w.h - 1);
   }
 }
 
@@ -158,7 +284,6 @@ function drawFog(ctx: CanvasRenderingContext2D, world: WorldState): void {
     }
   }
 
-  // soft vision tint
   for (const v of viewers) {
     const rad = CONFIG.roles[v.role].visionRadius;
     const g = ctx.createRadialGradient(v.x, v.y, 8, v.x, v.y, rad);
@@ -183,7 +308,6 @@ function drawTank(
   ctx.translate(t.x, t.y);
   ctx.rotate(t.angle);
 
-  // body
   ctx.fillStyle = color;
   ctx.strokeStyle = "#0a0e14";
   ctx.lineWidth = 2;
@@ -192,30 +316,25 @@ function drawTank(
   ctx.fill();
   ctx.stroke();
 
-  // barrel
   ctx.fillStyle = "#d7dee8";
   ctx.fillRect(0, -3, r + 10, 6);
 
   ctx.restore();
 
-  // number
   ctx.fillStyle = "#fff";
   ctx.font = "bold 11px monospace";
   ctx.textAlign = "center";
   ctx.fillText(String(t.number), t.x, t.y + 4);
 
-  // HP bar
   const pct = t.hp / t.maxHp;
   ctx.fillStyle = "#222";
   ctx.fillRect(t.x - 14, t.y - r - 10, 28, 4);
   ctx.fillStyle = pct > 0.35 ? "#6dca7a" : "#e35d5d";
   ctx.fillRect(t.x - 14, t.y - r - 10, 28 * pct, 4);
 
-  // role tick
   ctx.fillStyle = t.role === "scout" ? "#9ad7ff" : "#ffd39a";
   ctx.fillRect(t.x - 14, t.y - r - 14, t.role === "scout" ? 10 : 6, 2);
 
-  // own carrier icon only
   if (friendly && t.isCodeCarrier) {
     ctx.fillStyle = CONFIG.colors.codeIcon;
     ctx.beginPath();
@@ -226,7 +345,6 @@ function drawTank(
     ctx.fill();
   }
 
-  // controlled ring
   if (t.id === world.controlledId) {
     ctx.strokeStyle = "rgba(255,255,255,0.7)";
     ctx.lineWidth = 2;
@@ -235,12 +353,17 @@ function drawTank(
     ctx.stroke();
   }
 
-  // debug progress
   if (t.debugProgress > 0) {
     ctx.strokeStyle = CONFIG.colors.accent;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(t.x, t.y, r + 10, -Math.PI / 2, -Math.PI / 2 + t.debugProgress * Math.PI * 2);
+    ctx.arc(
+      t.x,
+      t.y,
+      r + 10,
+      -Math.PI / 2,
+      -Math.PI / 2 + t.debugProgress * Math.PI * 2,
+    );
     ctx.stroke();
   }
 
@@ -270,7 +393,11 @@ function drawWreck(
   if (debugged) {
     ctx.fillStyle = result === "code" ? CONFIG.colors.codeIcon : "#9aa";
     ctx.font = "10px sans-serif";
-    ctx.fillText(result === "code" ? "CODE" : "clean", x, y + CONFIG.tankRadius + 12);
+    ctx.fillText(
+      result === "code" ? "CODE" : "clean",
+      x,
+      y + CONFIG.tankRadius + 12,
+    );
   }
   ctx.textAlign = "left";
 }

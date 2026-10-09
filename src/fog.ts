@@ -1,4 +1,4 @@
-import { CONFIG } from "./config";
+import { CONFIG, homeTerritoryBounds } from "./config";
 import { segmentHitsWall } from "./arena";
 import type { Tank, Wall, WorldState } from "./types";
 
@@ -10,6 +10,19 @@ export function createFogGrid(): {
   const cols = Math.ceil(CONFIG.canvasWidth / CONFIG.fog.cellSize);
   const rows = Math.ceil(CONFIG.canvasHeight / CONFIG.fog.cellSize);
   return { explored: new Uint8Array(cols * rows), cols, rows };
+}
+
+/** Pre-reveal the player's home strip (bottom band). Enemy home stays fogged. */
+export function revealHomeTerritory(world: WorldState): void {
+  const { y0, y1 } = homeTerritoryBounds("blue");
+  const cell = CONFIG.fog.cellSize;
+  const minR = Math.max(0, Math.floor(y0 / cell));
+  const maxR = Math.min(world.fogRows - 1, Math.floor((y1 - 1) / cell));
+  for (let r = minR; r <= maxR; r++) {
+    for (let c = 0; c < world.fogCols; c++) {
+      world.fogExplored[r * world.fogCols + c] = 1;
+    }
+  }
 }
 
 export function revealAround(

@@ -1,4 +1,4 @@
-import { CONFIG, type Role } from "./config";
+import { CONFIG, homeTerritoryBounds, type Role } from "./config";
 import type { Tank, TeamId } from "./types";
 
 function mulberry32(seed: number): () => number {
@@ -14,9 +14,33 @@ function mulberry32(seed: number): () => number {
 export function createTeams(seed = Date.now()): Tank[] {
   const rng = mulberry32(seed >>> 0);
   const tanks: Tank[] = [];
+  const pad = CONFIG.arenaPadding + 36;
+  const W = CONFIG.canvasWidth;
 
-  tanks.push(...spawnTeam("blue", 140, 180, 200, 420, rng));
-  tanks.push(...spawnTeam("red", 760, 220, 820, 460, rng));
+  const blueHome = homeTerritoryBounds("blue");
+  const redHome = homeTerritoryBounds("red");
+
+  // Friendly company deploys across the southern home strip; enemy across northern.
+  tanks.push(
+    ...spawnTeam(
+      "blue",
+      pad,
+      blueHome.y0 + 28,
+      W - pad,
+      blueHome.y1 - 36,
+      rng,
+    ),
+  );
+  tanks.push(
+    ...spawnTeam(
+      "red",
+      pad,
+      redHome.y0 + 36,
+      W - pad,
+      redHome.y1 - 28,
+      rng,
+    ),
+  );
 
   pickCarrier(tanks, "blue", rng);
   pickCarrier(tanks, "red", rng);
@@ -39,7 +63,6 @@ function spawnTeam(
     "shooter",
     "shooter",
   ];
-  // shuffle roles lightly
   for (let i = roles.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [roles[i], roles[j]] = [roles[j], roles[i]];
@@ -51,9 +74,9 @@ function spawnTeam(
     const stats = CONFIG.roles[role];
     const col = i % 3;
     const row = Math.floor(i / 3);
-    const x = x0 + ((x1 - x0) * col) / 2 + (rng() - 0.5) * 10;
-    const y = y0 + ((y1 - y0) * row) / 1 + (rng() - 0.5) * 10;
-    const angle = team === "blue" ? 0 : Math.PI;
+    const x = x0 + ((x1 - x0) * (col + 0.5)) / 3 + (rng() - 0.5) * 12;
+    const y = y0 + ((y1 - y0) * (row + 0.5)) / 2 + (rng() - 0.5) * 10;
+    const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
     out.push({
       id: `${team}-${i + 1}`,
       team,

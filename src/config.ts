@@ -58,11 +58,20 @@ export const CONFIG = {
     pushbackChance: 0.18,
   },
 
+  /**
+   * Pre-revealed friendly home strip as a fraction of map height.
+   * Blue owns the bottom band; red owns the top (spawn only — player fog
+   * only starts with blue's home). Prefer ~0.2 over 0.5 so most of the
+   * map stays a hunt.
+   */
+  homeTerritoryFraction: 0.2,
+
   fog: {
     cellSize: 16,
     revealAlpha: 0,
-    exploredAlpha: 0.45,
-    hiddenAlpha: 0.92,
+    exploredAlpha: 0.28,
+    hiddenAlpha: 0.94,
+    gridStep: 48,
   },
 
   llm: {
@@ -74,15 +83,31 @@ export const CONFIG = {
   colors: {
     playerTeam: "#4f8cff",
     enemyTeam: "#e35d5d",
-    wall: "#3a4658",
-    floor: "#1a222e",
+    wall: "#4a5564",
+    wallStroke: "#2a323e",
+    floor: "#243040",
+    floorAlt: "#1e2836",
+    homeTint: "rgba(79, 140, 255, 0.12)",
+    frontline: "rgba(201, 162, 39, 0.75)",
+    grid: "rgba(180, 200, 220, 0.12)",
     wreck: "#6b5a3a",
     codeIcon: "#f0d060",
     marker: "#ffcc66",
-    vision: "rgba(120,170,255,0.08)",
+    vision: "rgba(120,170,255,0.10)",
     accent: "#c9a227",
   },
 } as const;
+
+/** Axis-aligned home band for a team (blue = south, red = north). */
+export function homeTerritoryBounds(team: "blue" | "red"): {
+  y0: number;
+  y1: number;
+} {
+  const H = CONFIG.canvasHeight;
+  const h = H * CONFIG.homeTerritoryFraction;
+  if (team === "blue") return { y0: H - h, y1: H };
+  return { y0: 0, y1: h };
+}
 
 export type ShareMode = "auto" | "report" | "none";
 export type Role = keyof typeof CONFIG.roles;

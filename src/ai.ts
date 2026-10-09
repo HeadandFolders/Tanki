@@ -1,4 +1,4 @@
-import { CONFIG } from "./config";
+import { CONFIG, homeTerritoryBounds } from "./config";
 import {
   angleTo,
   dist,
@@ -172,8 +172,9 @@ function friendlyBrain(
       if (nearestEnemy) wantShoot = canShootTarget(world, tank, nearestEnemy);
     }
   } else if (goal === "retreat") {
-    const homeX = 120;
-    const homeY = tank.number <= 3 ? 200 : 400;
+    const home = homeTerritoryBounds("blue");
+    const homeX = CONFIG.canvasWidth * (0.2 + (tank.number % 3) * 0.25);
+    const homeY = (home.y0 + home.y1) / 2;
     const s = steerTo(tank, homeX, homeY, speed * 1.05, dt, world);
     moveX = s.moveX;
     moveY = s.moveY;
@@ -313,11 +314,12 @@ function enemyBrain(
         aimAngle = s.aimAngle;
       }
     } else {
-      // patrol toward player side
+      // push toward player home / midfield
+      const home = homeTerritoryBounds("blue");
       const s = steerTo(
         tank,
-        280 + (tank.number % 3) * 40,
-        200 + tank.number * 30,
+        CONFIG.canvasWidth * (0.25 + (tank.number % 3) * 0.2),
+        home.y0 - 40 - tank.number * 8,
         speed * 0.7,
         dt,
         world,

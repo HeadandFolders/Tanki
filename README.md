@@ -1,8 +1,8 @@
 # Fog of War — Tank Hunt
 
-Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no game engine). Battle City–inspired pixel art; voice radio orders (Chrome/Edge mic).
+Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no game engine). Battle City–inspired pixel art; voice radio orders.
 
-You command a six-tank company through dark terrain, hunting the enemy **code carrier**. Win by debugging their carrier’s wreck. Lose if they debug yours, or if your company is wiped. Time out is a draw.
+**Default mode: Team Deathmatch.** Optional: Capture the Code (CTF).
 
 ## Run locally
 
@@ -11,55 +11,61 @@ npm install
 npm run dev
 ```
 
-Open the URL Vite prints (default [http://127.0.0.1:4731](http://127.0.0.1:4731)).
+Open [http://127.0.0.1:4731](http://127.0.0.1:4731).
 
 ```bash
-npm run build   # typecheck + production build
+npm run build
 ```
+
+## LLM API key (Radio → STT → LLM → bots)
+
+Paste your key in:
+
+**[`src/api-key.local.ts`](src/api-key.local.ts)**
+
+```ts
+export const LOCAL_API_KEY = "sk-...";
+```
+
+Or set `VITE_OPENAI_API_KEY` in a root `.env` (see `.env.example`), or type it in the side-panel field.
+
+Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, else keyword mock) → bot goals**. LLM runs **only on each order**, never every tick.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
-| Arrow keys | Move controlled tank |
+| Arrow keys | Move |
 | Mouse | Aim |
-| Space or Click | Shoot (all tanks) |
-| Click friendly / wreck | Switch tank / mark wreck |
-| Keys `1`–`6` | Switch to tank #N |
-| Orders box + Enter | Natural-language team orders |
-| Radio button | Voice orders (Chrome/Edge + mic; often unavailable on Try Live VM) |
-| Phrase buttons | One-click radio orders when mic fails |
-| Share select | `auto` / `report` / `none` vision sharing |
-| API key field | Optional LLM order parser (offline keyword mock if empty) |
+| Space / Click | Shoot |
+| `1`–`6` / click friendly | Switch tank |
+| Radio LIVE | Voice orders (Chrome/Edge + mic) |
+| Phrase buttons / text box | Same order path without mic |
+| Mode select | Team Deathmatch (default) / Capture the Code |
+| Share select | `auto` / `report` / `none` |
+
+## Modes
+
+- **Team Deathmatch (default)** — wipe the enemy company. Timeout = draw.
+- **Capture the Code** — debug the enemy code-carrier wreck to win (old CTF rules).
 
 ## Rules (short)
 
-- **5-minute** matches, **no respawns**.
-- Teams: 6 tanks each — **2 scouts** (slower, large vision, fast debug) + **4 gunners** (faster, small vision). **All tanks shoot.**
-- One random **code carrier** per team. You always see your own carrier icon; never the enemy’s.
-- Shooters may only engage enemies visible to **any** teammate.
-- Map starts with a **southern home strip (~20% height)** pre-revealed for your team; the rest is fog until scouted. Enemy spawns in a northern band (hidden until found). Share modes:
-  - **auto** — all friendly vision live on the map
-  - **report** (default) — only controlled tank lives; others dump discoveries after standing still ~3s (“report in”)
-  - **none** — only controlled reveals; others chat-only
-- Enemy contacts/wrecks leave **faded markers** (~10s).
-- Click wrecks to **mark** them; order `debug` / stand near marked wrecks to inspect. Chat: `#2: wreck E is clean` / `#2: found the code on wreck E!`
+- 5-minute matches, no respawns.
+- 2 scouts (slower, long vision) + 4 gunners (faster, short vision); all shoot.
+- Southern ~20% home strip starts revealed; fog elsewhere.
+- Tunables in `src/config.ts`.
 
-Tunables (speeds, radii, timers, match length, etc.) live in `src/config.ts`.
+## Roadmap / stretch
 
-## Playtest checklist (after ~10 minutes)
+1. **Now:** Radio LIVE → STT → LLM (optional) → local bot AI goals.
+2. **Next:** better goal-conditioned scripted / learned motor policies.
+3. **Stretch / end goal:** end-to-end RL for speech → tactics (research-scale; not required for fun playtests).
 
-Answer these after a match or two:
+## Playtest checklist
 
-1. **Stories** — Can you retell what happened (who died where, which wrecks you marked, how you found the code)?
-2. **Command style** — Did you keep typing NL orders, or mostly switch tanks (1–6) and drive yourself?
-3. **Wreck marks** — How often did you click-mark wrecks vs forgetting until chat reminded you?
-4. **Share mode** — Which mode did you scout with first (`report` / `auto` / `none`), and did you switch mid-match?
-5. **Scouts vs shooters** — Did scout vision feel worth protecting, or did you burn them as disposable eyes?
-6. **Frustration** — Any moment the fog / shoot-permission / report-in rules felt unfair vs interesting?
-
-## Architecture notes
-
-- `interpretOrder(orderText, tanks, worldState)` in `src/orders.ts` — LLM JSON-only when an API key is set; keyword mock otherwise. Invoked **only on order send**, never per tick.
-- Friendly AI goals: `moveTo`, `holdPosition`, `attackNearest`, `escort`, `retreat`, `reportIn`, `debug`.
-- Enemy bots: attack visible player tanks; otherwise debug player wrecks.
+1. Stories after a match?
+2. Ordering (voice/phrases) vs driving tanks yourself?
+3. TDM feel vs switching to CTF?
+4. Share mode preference?
+5. Where did bots feel dumb or stuck?

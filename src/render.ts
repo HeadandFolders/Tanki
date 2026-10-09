@@ -290,7 +290,7 @@ function drawTank(
   ctx.fillStyle = pct > 0.35 ? "#40c040" : "#e04040";
   ctx.fillRect(t.x - 12, t.y - 18, 24 * pct, 3);
 
-  if (friendly && t.isCodeCarrier) {
+  if (friendly && t.isCodeCarrier && world.gameMode === "ctf") {
     ctx.fillStyle = CONFIG.colors.codeIcon;
     ctx.fillRect(t.x - 3, t.y - 24, 6, 4);
   }

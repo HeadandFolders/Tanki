@@ -1,7 +1,7 @@
 /** All tunable gameplay values live here. */
 export const CONFIG = {
-  canvasWidth: 960,
-  canvasHeight: 640,
+  canvasWidth: 1280,
+  canvasHeight: 800,
   /** Battle City–style tile grid */
   tileSize: 16,
   matchDurationSec: 5 * 60,
@@ -55,6 +55,8 @@ export const CONFIG = {
   friendlyFire: false,
 
   shareModeDefault: "report" as ShareMode,
+  /** Team Deathmatch is the playtest default; CTF = Capture the Code. */
+  gameModeDefault: "tdm" as GameMode,
 
   ai: {
     thinkInterval: 0.25,
@@ -130,4 +132,5 @@ export function homeTerritoryBounds(team: "blue" | "red"): {
 }
 
 export type ShareMode = "auto" | "report" | "none";
+export type GameMode = "tdm" | "ctf";
 export type Role = keyof typeof CONFIG.roles;

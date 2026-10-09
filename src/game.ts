@@ -1,4 +1,4 @@
-import { CONFIG, type ShareMode } from "./config";
+import { CONFIG, type GameMode, type ShareMode } from "./config";
 import {
   buildArena,
   dist,
@@ -29,10 +29,13 @@ import type {
 
 let wreckSeq = 0;
 
-export function createWorld(shareMode: ShareMode = CONFIG.shareModeDefault): WorldState {
+export function createWorld(
+  shareMode: ShareMode = CONFIG.shareModeDefault,
+  gameMode: GameMode = CONFIG.gameModeDefault,
+): WorldState {
   const fog = createFogGrid();
   const seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
-  const tanks = createTeams(seed);
+  const tanks = createTeams(seed, gameMode === "ctf");
   const controlled =
     tanks.find((t) => t.team === "blue" && t.role === "shooter") ??
     tanks.find((t) => t.team === "blue")!;
@@ -43,6 +46,7 @@ export function createWorld(shareMode: ShareMode = CONFIG.shareModeDefault): Wor
     time: 0,
     matchLeft: CONFIG.matchDurationSec,
     shareMode,
+    gameMode,
     walls: buildArena(),
     tanks,
     projectiles: [],
@@ -60,12 +64,21 @@ export function createWorld(shareMode: ShareMode = CONFIG.shareModeDefault): Wor
   };
 
   revealHomeTerritory(world);
-  pushEvent(
-    world,
-    "Match start. Home strip is mapped — push north and find the enemy code carrier.",
-    "sys",
-  );
-  pushChat(world, "Net open. Southern band is ours; the rest is blank.", "sys");
+  if (gameMode === "tdm") {
+    pushEvent(
+      world,
+      "Team Deathmatch — wipe the enemy company. Home strip mapped; push north.",
+      "sys",
+    );
+    pushChat(world, "Net open. TDM rules. Radio LIVE for voice orders.", "sys");
+  } else {
+    pushEvent(
+      world,
+      "Capture the Code — debug the enemy code-carrier wreck to win.",
+      "sys",
+    );
+    pushChat(world, "Net open. Find and debug their carrier.", "sys");
+  }
   return world;
 }
 
@@ -138,10 +151,15 @@ export async function sendOrder(
 ): Promise<void> {
   if (world.outcome !== "playing") return;
   pushEvent(world, `Order: ${orderText}`, "sys");
-  const results = await interpretOrder(orderText, world.tanks, world, {
+  const bundle = await interpretOrder(orderText, world.tanks, world, {
     apiKey,
   });
-  for (const r of results) {
+  pushEvent(
+    world,
+    `Radio parse: ${bundle.source.toUpperCase()} (${bundle.ms}ms) → ${bundle.results.length} tank(s)`,
+    "sys",
+  );
+  for (const r of bundle.results) {
     const tank = world.tanks.find((t) => t.id === r.tankId);
     if (!tank || !tank.alive) continue;
     tank.goal = { kind: r.goal, params: r.params ?? {} };
@@ -531,7 +549,7 @@ function tickDebug(
   tank.debugProgress = 0;
   tank.debugTargetId = null;
 
-  if (wreck.wasCodeCarrier) {
+  if (wreck.wasCodeCarrier && world.gameMode === "ctf") {
     wreck.debugResult = "code";
     const line = `#${tank.number}: found the code on wreck ${wreck.label}!`;
     if (tank.team === "blue") {
@@ -543,6 +561,14 @@ function tickDebug(
       pushChat(world, `Enemy debugged wreck ${wreck.label} — they have our code!`, "warn");
       pushEvent(world, "Defeat — your code carrier was debugged.", "warn");
       world.outcome = "lose";
+    }
+  } else if (wreck.wasCodeCarrier) {
+    // TDM: carrier is flavor only
+    wreck.debugResult = "clean";
+    const line = `#${tank.number}: wreck ${wreck.label} checked (TDM — no code win)`;
+    if (tank.team === "blue") {
+      pushChat(world, line, "ally");
+      pushEvent(world, line, "ally");
     }
   } else {
     wreck.debugResult = "clean";
@@ -631,8 +657,15 @@ function checkOutcome(world: WorldState): void {
     world.outcome = "lose";
     pushEvent(world, "All friendly tanks lost.", "warn");
     pushChat(world, "Company wiped. Defeat.", "warn");
-  } else if (!redAlive) {
-    // Still need to debug code carrier wreck if carrier died
+    return;
+  }
+  if (!redAlive) {
+    if (world.gameMode === "tdm") {
+      world.outcome = "win";
+      pushEvent(world, "Enemy company wiped — Team Deathmatch victory.", "warn");
+      pushChat(world, "All hostiles down. We win.", "ally");
+      return;
+    }
     const carrierWreck = world.wrecks.find(
       (w) => w.team === "red" && w.wasCodeCarrier,
     );
@@ -644,8 +677,6 @@ function checkOutcome(world: WorldState): void {
         "Enemy team down — debug their code-carrier wreck to win.",
         "sys",
       );
-    } else if (!carrierWreck) {
-      // carrier still alive somehow? ignore
     }
   }
 }

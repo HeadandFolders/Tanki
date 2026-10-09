@@ -1,6 +1,7 @@
 import { CONFIG } from "./config";
 import type {
   GoalKind,
+  InterpretBundle,
   InterpretContext,
   OrderResult,
   Tank,
@@ -8,38 +9,53 @@ import type {
 } from "./types";
 
 /**
- * interpretOrder(orderText, tanks, worldState) -> order results.
- * Uses LLM JSON-only API when apiKey set; otherwise offline keyword mock.
- * Called ONLY on order send — never every tick.
+ * Radio path: transcript/text → (optional LLM) → goals for bots.
+ * Called ONLY on order send / voice final — never every tick.
  */
 export async function interpretOrder(
   orderText: string,
   tanks: Tank[],
   worldState: WorldState,
   ctx: InterpretContext = {},
-): Promise<OrderResult[]> {
+): Promise<InterpretBundle> {
   const text = orderText.trim();
-  if (!text) return [];
+  const t0 = performance.now();
+  if (!text) return { results: [], source: "mock", ms: 0 };
 
   if (ctx.apiKey) {
     try {
       const llm = await interpretWithLlm(text, tanks, worldState, ctx.apiKey);
-      if (llm.length) return llm;
+      if (llm.length) {
+        return {
+          results: llm,
+          source: "llm",
+          ms: Math.round(performance.now() - t0),
+        };
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "LLM error";
-      return [
-        {
-          tankId: worldState.controlledId,
-          goal: "holdPosition",
-          params: {},
-          chatLine: `Command net: LLM failed (${msg}). Falling back to keyword parse.`,
-        },
-        ...interpretOffline(text, tanks, worldState),
-      ];
+      const fallback = interpretOffline(text, tanks, worldState);
+      return {
+        results: [
+          {
+            tankId: worldState.controlledId,
+            goal: "patrol",
+            params: {},
+            chatLine: `Command net: LLM failed (${msg}). Falling back to keyword parse.`,
+          },
+          ...fallback,
+        ],
+        source: "mock",
+        ms: Math.round(performance.now() - t0),
+      };
     }
   }
 
-  return interpretOffline(text, tanks, worldState);
+  return {
+    results: interpretOffline(text, tanks, worldState),
+    source: "mock",
+    ms: Math.round(performance.now() - t0),
+  };
 }
 
 function friendlies(tanks: Tank[]): Tank[] {

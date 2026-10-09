@@ -1,4 +1,5 @@
-import { CONFIG, type ShareMode } from "./config";
+import { CONFIG, type GameMode, type ShareMode } from "./config";
+import { apiKeySource, resolveApiKey } from "./api-key";
 import {
   controlledTank,
   createWorld,
@@ -25,11 +26,28 @@ const orderForm = document.querySelector<HTMLFormElement>("#order-form")!;
 const orderInput = document.querySelector<HTMLInputElement>("#order-input")!;
 const apiKeyInput = document.querySelector<HTMLInputElement>("#api-key")!;
 const shareSelect = document.querySelector<HTMLSelectElement>("#share-mode")!;
+const modeSelect = document.querySelector<HTMLSelectElement>("#game-mode")!;
 const restartBtn = document.querySelector<HTMLButtonElement>("#restart")!;
 const voiceBtn = document.querySelector<HTMLButtonElement>("#voice-btn")!;
 const voiceStatusEl = document.querySelector("#voice-status")!;
 
-let world: WorldState = createWorld(shareSelect.value as ShareMode);
+function currentModes(): { share: ShareMode; mode: GameMode } {
+  return {
+    share: shareSelect.value as ShareMode,
+    mode: modeSelect.value as GameMode,
+  };
+}
+
+let world: WorldState = createWorld(
+  currentModes().share,
+  currentModes().mode,
+);
+
+// Prefill UI from file/env (password field stays empty for security; status shows source)
+const bootKey = resolveApiKey("");
+if (bootKey) {
+  apiKeyInput.placeholder = `key loaded from ${apiKeySource("")}`;
+}
 
 const keys = new Set<string>();
 let mouseX = CONFIG.canvasWidth / 2;
@@ -59,7 +77,6 @@ canvas.addEventListener("mousedown", (ev) => {
   mouseY = p.y;
 
   if (ev.button === 0) {
-    // Click friendly to switch
     const friendly = world.tanks.find(
       (t) =>
         t.team === "blue" &&
@@ -71,7 +88,6 @@ canvas.addEventListener("mousedown", (ev) => {
       refreshRoster();
       return;
     }
-    // Click wreck to mark
     if (markWreckAt(world, p.x, p.y)) {
       flushLogs();
       return;
@@ -120,24 +136,45 @@ shareSelect.addEventListener("change", () => {
   world.shareMode = shareSelect.value as ShareMode;
 });
 
-restartBtn.addEventListener("click", () => {
-  world = createWorld(shareSelect.value as ShareMode);
+function restartMatch(): void {
+  const { share, mode } = currentModes();
+  world = createWorld(share, mode);
   chatCursor = 0;
   eventCursor = 0;
   chatEl.innerHTML = "";
   eventsEl.innerHTML = "";
   refreshRoster();
   flushLogs();
-});
+}
 
-async function dispatchOrder(text: string, via: "typed" | "voice"): Promise<void> {
+restartBtn.addEventListener("click", restartMatch);
+modeSelect.addEventListener("change", restartMatch);
+
+async function dispatchOrder(
+  text: string,
+  via: "typed" | "voice" | "phrase",
+): Promise<void> {
   const cleaned = text.trim();
   if (!cleaned || world.outcome !== "playing") return;
+
+  const key = resolveApiKey(apiKeyInput.value);
+  const src = apiKeySource(apiKeyInput.value);
+
   if (via === "voice") {
     orderInput.value = cleaned;
-    pushEvent(world, `Voice: “${cleaned}”`, "sys");
+    pushEvent(world, `STT: “${cleaned}”`, "sys");
+  } else if (via === "phrase") {
+    pushEvent(world, `Phrase: “${cleaned}”`, "sys");
   }
-  const key = apiKeyInput.value.trim() || undefined;
+
+  pushEvent(
+    world,
+    key
+      ? `Radio pipeline: ${via} → LLM (${src}) → bots`
+      : `Radio pipeline: ${via} → keyword mock → bots (no API key)`,
+    "sys",
+  );
+
   await sendOrder(world, cleaned, key);
   if (via === "voice") orderInput.value = "";
   flushLogs();
@@ -154,6 +191,7 @@ orderForm.addEventListener("submit", async (ev) => {
 
 const radio = createVoiceRadio({
   onFinalOrder: (text) => {
+    // STT final → LLM/mock → bot goals
     void dispatchOrder(text, "voice");
   },
   onStatus: (status, detail) => {
@@ -163,22 +201,26 @@ const radio = createVoiceRadio({
     if (status === "unsupported") {
       voiceBtn.textContent = "Radio: n/a";
       voiceStatusEl.textContent =
-        detail ?? "Voice needs Chrome/Edge — use phrase buttons";
+        detail ?? "Voice needs Chrome/Edge — use phrases / type";
       return;
     }
     if (status === "listening") {
       voiceBtn.textContent = "Radio: LIVE";
-      voiceStatusEl.textContent = detail ?? "Listening — speak an order…";
+      const key = resolveApiKey(apiKeyInput.value);
+      voiceStatusEl.textContent =
+        detail ??
+        (key
+          ? "Listening… STT → LLM → bots"
+          : "Listening… STT → mock (set key in src/api-key.local.ts)");
       return;
     }
     if (status === "error") {
       voiceBtn.textContent = "Radio: retry";
-      voiceStatusEl.textContent = detail ?? "Mic error — use phrase buttons";
+      voiceStatusEl.textContent = detail ?? "Mic error — use phrases";
       return;
     }
     voiceBtn.textContent = "Radio: off";
-    voiceStatusEl.textContent =
-      "Click Radio for mic orders, or tap a phrase button";
+    voiceStatusEl.textContent = "Radio LIVE → STT → LLM/mock → bots";
   },
 });
 
@@ -190,7 +232,7 @@ document.querySelectorAll<HTMLButtonElement>("#phrases [data-order]").forEach(
   (btn) => {
     btn.addEventListener("click", () => {
       const order = btn.getAttribute("data-order");
-      if (order) void dispatchOrder(order, "voice");
+      if (order) void dispatchOrder(order, "phrase");
     });
   },
 );
@@ -201,7 +243,8 @@ function refreshRoster(): void {
     .sort((a, b) => a.number - b.number);
   rosterEl.innerHTML = blues
     .map((t) => {
-      const carrier = t.isCodeCarrier ? " ★" : "";
+      const carrier =
+        world.gameMode === "ctf" && t.isCodeCarrier ? " ★" : "";
       const goal = t.alive ? t.goal.kind : "wreck";
       const roleClass = t.role === "scout" ? "scout" : "shooter";
       const roleLabel = t.role === "scout" ? "S scout" : "G gunner";
@@ -254,10 +297,11 @@ function frame(ts: number): void {
 
   timerEl.textContent = formatTime(world.matchLeft);
   const me = controlledTank(world);
+  const modeLabel = world.gameMode === "tdm" ? "TDM" : "CTF";
   matchStateEl.textContent =
     world.outcome === "playing"
       ? me
-        ? `Control #${me.number} · ${world.shareMode}`
+        ? `${modeLabel} · #${me.number} · ${world.shareMode}`
         : "No tanks"
       : world.outcome.toUpperCase();
 

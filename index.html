@@ -14,6 +14,13 @@
           <span id="timer">5:00</span>
           <span id="match-state">Hunting…</span>
           <label>
+            Mode
+            <select id="game-mode">
+              <option value="tdm" selected>Team Deathmatch</option>
+              <option value="ctf">Capture the Code</option>
+            </select>
+          </label>
+          <label>
             Share
             <select id="share-mode">
               <option value="report" selected>report</option>
@@ -26,7 +33,9 @@
       </header>
 
       <main class="layout">
-        <canvas id="game" width="960" height="640" tabindex="0"></canvas>
+        <div class="canvas-wrap">
+          <canvas id="game" width="1280" height="800" tabindex="0"></canvas>
+        </div>
 
         <aside class="panel">
           <section>
@@ -35,14 +44,15 @@
           </section>
 
           <section>
-            <h2>Orders</h2>
-            <p class="hint">Arrows move · mouse aim · Space/click shoot · 1–6 / click friendly to switch</p>
-            <p class="hint roles-legend"><span class="scout">S = scout</span> (slower, long vision, fast debug) · <span class="shooter">G = gunner</span> (faster, short vision) · all tanks shoot</p>
+            <h2>Orders / Radio</h2>
+            <p class="hint">Arrows move · mouse aim · Space/click shoot · 1–6 switch</p>
+            <p class="hint roles-legend"><span class="scout">S = scout</span> (slower, long vision) · <span class="shooter">G = gunner</span> (faster, short vision)</p>
+            <p class="hint">Radio LIVE → STT → LLM (if API key) → bots move</p>
             <form id="order-form">
               <input
                 id="order-input"
                 type="text"
-                placeholder='e.g. "all attack" or "scout move north"'
+                placeholder='e.g. "all attack" or "spread out"'
                 autocomplete="off"
               />
               <button type="submit">Send</button>
@@ -51,7 +61,7 @@
               <button id="voice-btn" type="button" title="Toggle live radio (voice orders)">
                 Radio: off
               </button>
-              <span id="voice-status" class="hint">Mic orders (Chrome). If Radio errors, use phrases below.</span>
+              <span id="voice-status" class="hint">Mic → parse → bots</span>
             </div>
             <div id="phrases" class="phrases" aria-label="Quick radio phrases">
               <button type="button" data-order="all attack">all attack</button>
@@ -59,11 +69,11 @@
               <button type="button" data-order="all keep moving">keep moving</button>
               <button type="button" data-order="scouts move north">scouts north</button>
               <button type="button" data-order="all retreat">retreat</button>
-              <button type="button" data-order="all debug">debug</button>
             </div>
             <label class="api-row">
-              LLM API key (optional)
-              <input id="api-key" type="password" placeholder="offline mock if empty" />
+              LLM API key (optional override)
+              <input id="api-key" type="password" placeholder="loads from api-key.local.ts if set" />
+              <span class="path">File: src/api-key.local.ts</span>
             </label>
           </section>
 

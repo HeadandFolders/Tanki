@@ -12,7 +12,10 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-export function createTeams(seed = Date.now()): Tank[] {
+export function createTeams(
+  seed = Date.now(),
+  withCarriers = false,
+): Tank[] {
   const rng = mulberry32(seed >>> 0);
   const walls = buildArena();
   const tanks: Tank[] = [];
@@ -45,8 +48,10 @@ export function createTeams(seed = Date.now()): Tank[] {
     ),
   );
 
-  pickCarrier(tanks, "blue", rng);
-  pickCarrier(tanks, "red", rng);
+  if (withCarriers) {
+    pickCarrier(tanks, "blue", rng);
+    pickCarrier(tanks, "red", rng);
+  }
   return tanks;
 }
 

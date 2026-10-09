@@ -1,4 +1,4 @@
-import type { Role, ShareMode } from "./config";
+import type { GameMode, Role, ShareMode } from "./config";
 
 export type TeamId = "blue" | "red";
 
@@ -114,6 +114,7 @@ export interface WorldState {
   time: number;
   matchLeft: number;
   shareMode: ShareMode;
+  gameMode: GameMode;
   walls: Wall[];
   tanks: Tank[];
   projectiles: Projectile[];
@@ -132,4 +133,10 @@ export interface WorldState {
 
 export interface InterpretContext {
   apiKey?: string;
+}
+
+export interface InterpretBundle {
+  results: OrderResult[];
+  source: "llm" | "mock";
+  ms: number;
 }

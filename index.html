@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fog of War — Tank Hunt</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <h1>Fog of War</h1>
+        <div class="status">
+          <span id="timer">5:00</span>
+          <span id="match-state">Hunting…</span>
+          <label>
+            Share
+            <select id="share-mode">
+              <option value="report" selected>report</option>
+              <option value="auto">auto</option>
+              <option value="none">none</option>
+            </select>
+          </label>
+          <button id="restart" type="button">Restart</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <canvas id="game" width="960" height="640" tabindex="0"></canvas>
+
+        <aside class="panel">
+          <section>
+            <h2>Team</h2>
+            <ul id="roster"></ul>
+          </section>
+
+          <section>
+            <h2>Orders</h2>
+            <p class="hint">WASD move · mouse aim · click shoot · 1–6 / click friendly to switch</p>
+            <form id="order-form">
+              <input
+                id="order-input"
+                type="text"
+                placeholder='e.g. "scout 3 hold north choke" or "all attack"'
+                autocomplete="off"
+              />
+              <button type="submit">Send</button>
+            </form>
+            <label class="api-row">
+              LLM API key (optional)
+              <input id="api-key" type="password" placeholder="offline mock if empty" />
+            </label>
+          </section>
+
+          <section>
+            <h2>Team chat</h2>
+            <div id="chat" class="log"></div>
+          </section>
+
+          <section>
+            <h2>Event log</h2>
+            <div id="events" class="log"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

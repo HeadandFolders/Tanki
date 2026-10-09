@@ -23,7 +23,7 @@ npm run build   # typecheck + production build
 | --- | --- |
 | Arrow keys | Move controlled tank |
 | Mouse | Aim |
-| Space or Click | Shoot (gunners only; scouts have no guns) |
+| Space or Click | Shoot (all tanks) |
 | Click friendly / wreck | Switch tank / mark wreck |
 | Keys `1`–`6` | Switch to tank #N |
 | Orders box + Enter | Natural-language team orders |
@@ -35,7 +35,7 @@ npm run build   # typecheck + production build
 ## Rules (short)
 
 - **5-minute** matches, **no respawns**.
-- Teams: 6 tanks each — **2 scouts** (slow, fragile, large vision, fast debug) + **4 shooters** (fast, sturdy, small vision, real damage).
+- Teams: 6 tanks each — **2 scouts** (slower, large vision, fast debug) + **4 gunners** (faster, small vision). **All tanks shoot.**
 - One random **code carrier** per team. You always see your own carrier icon; never the enemy’s.
 - Shooters may only engage enemies visible to **any** teammate.
 - Map starts with a **southern home strip (~20% height)** pre-revealed for your team; the rest is fog until scouted. Enemy spawns in a northern band (hidden until found). Share modes:

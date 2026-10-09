@@ -10,6 +10,8 @@ export type GoalKind =
   | "retreat"
   | "reportIn"
   | "debug"
+  | "patrol"
+  | "spreadOut"
   | "idle";
 
 export interface Goal {

@@ -16,7 +16,6 @@ import {
   revealHomeTerritory,
   visionTanksForReveal,
   canSeeTank,
-  anyTeammateSees,
 } from "./fog";
 import { interpretOrder } from "./orders";
 import { createTeams } from "./spawn";
@@ -261,20 +260,7 @@ function updatePlayer(
 
   const wantShoot =
     input.shooting || input.keys.has(" ") || input.keys.has("spacebar");
-  if (wantShoot) {
-    if (tank.role === "scout") {
-      // Soft tip once in a while so Space not feeling "broken" on a scout
-      if (Math.random() < 0.02) {
-        pushEvent(
-          world,
-          `Scout #${tank.number} has no guns — switch to a G gunner (keys 1–6).`,
-          "sys",
-        );
-      }
-    } else {
-      tryShoot(world, tank, tank.angle, true);
-    }
-  }
+  if (wantShoot) tryShoot(world, tank, tank.angle, true);
 
   // Player can debug / report by standing near marked wreck or with report goal
   // Also allow player to contribute to debug when near marked wreck standing still
@@ -300,18 +286,18 @@ function tryShoot(
   isPlayer: boolean,
 ): void {
   if (tank.cooldown > 0 || !tank.alive) return;
-  // Scouts are sensors/debuggers — no combat fire (shooters carry the guns).
-  if (tank.role === "scout" || !CONFIG.roles[tank.role].canShoot) return;
+  if (!CONFIG.roles[tank.role].canShoot) return;
   const stats = CONFIG.roles[tank.role];
 
-  // AI shooters: only open fire if some teammate can see a target.
-  // Player gunners may always shoot (Battle City feel / suppress into fog).
-  if (!isPlayer && tank.role === "shooter") {
-    const enemies = world.tanks.filter((e) => e.team !== tank.team && e.alive);
-    const anyVisible = enemies.some((e) =>
-      anyTeammateSees(world, tank.team, e),
+  // AI: only open fire if this tank can see someone (player may always shoot).
+  if (!isPlayer) {
+    const sees = world.tanks.some(
+      (e) =>
+        e.team !== tank.team &&
+        e.alive &&
+        dist(tank.x, tank.y, e.x, e.y) < CONFIG.roles[tank.role].visionRadius + 40,
     );
-    if (!anyVisible) return;
+    if (!sees) return;
   }
 
   tank.cooldown = stats.fireCooldown;

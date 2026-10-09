@@ -96,18 +96,16 @@ function spawnTeam(
     );
     const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
 
-    // Scouts start probing toward the front line; shooters hold the band.
+    // Friendlies start mobile (patrol); enemy hunts south.
     const goal =
       team === "blue"
-        ? role === "scout"
-          ? {
-              kind: "moveTo" as const,
-              params: { x: preferX, y: frontY },
-            }
-          : {
-              kind: "holdPosition" as const,
-              params: { x: pos.x, y: pos.y },
-            }
+        ? {
+            kind: "patrol" as const,
+            params: {
+              x: preferX,
+              y: frontY - (role === "scout" ? 40 : 10),
+            },
+          }
         : { kind: "attackNearest" as const };
 
     out.push({

@@ -123,17 +123,30 @@ export function interpretOffline(
     ];
   }
 
-  let kind: GoalKind = "holdPosition";
+  let kind: GoalKind = "patrol";
   let params: OrderResult["params"] = {};
-  let verb = "holding";
+  let verb = "keeping mobile";
+  let perTankParams = false;
 
-  if (/\b(retreat|fall\s*back|get\s*out)\b/.test(lower)) {
+  if (/\b(spread(\s*out)?|fan\s*out|disperse|space\s*out)\b/.test(lower)) {
+    kind = "spreadOut";
+    verb = "spreading out";
+    perTankParams = true;
+  } else if (
+    /\b(keep\s*moving|stay\s*mobile|patrol|roam|keep\s*rolling|don't\s*stop|dont\s*stop)\b/.test(
+      lower,
+    )
+  ) {
+    kind = "patrol";
+    verb = "patrolling / keeping mobile";
+    perTankParams = true;
+  } else if (/\b(retreat|fall\s*back|get\s*out)\b/.test(lower)) {
     kind = "retreat";
     verb = "retreating";
   } else if (/\b(report(\s*in)?|radio\s*in)\b/.test(lower)) {
     kind = "reportIn";
     verb = "reporting in";
-  } else if (/\b(debug|inspect|scan)\b/.test(lower)) {
+  } else if (/\b(debug|inspect)\b/.test(lower)) {
     kind = "debug";
     verb = "debugging marked wrecks";
     const wreckMatch = lower.match(/\bwreck\s*([a-z])\b/);
@@ -152,18 +165,19 @@ export function interpretOffline(
     params = { targetTankId: escortTarget.id };
   } else if (/\b(attack|engage|hunt|push)\b/.test(lower)) {
     kind = "attackNearest";
-    verb = "attacking nearest visible";
+    verb = "hunting / attacking";
+    perTankParams = true;
   } else if (/\b(hold|stay|wait|defend)\b/.test(lower)) {
     kind = "holdPosition";
-    verb = "holding";
+    verb = "holding (soft — will still fight)";
     const spot = landmark(orderText, worldState);
     if (spot) {
       params = { x: spot.x, y: spot.y };
       verb = `holding ${spot.name}`;
     } else {
-      params = { x: targets[0].x, y: targets[0].y };
+      perTankParams = true;
     }
-  } else if (/\b(move|go|advance|scout|recon)\b/.test(lower)) {
+  } else if (/\b(move|go|advance|recon)\b/.test(lower)) {
     kind = "moveTo";
     verb = "moving";
     const spot = landmark(orderText, worldState);
@@ -171,42 +185,50 @@ export function interpretOffline(
       params = { x: spot.x, y: spot.y };
       verb = `moving to ${spot.name}`;
     } else {
-      params = {
-        x: CONFIG.canvasWidth * 0.5,
-        y: CONFIG.canvasHeight * 0.5,
-      };
-      verb = "moving to center";
+      kind = "patrol";
+      verb = "advancing on patrol";
+      perTankParams = true;
     }
   } else {
-    // loose default
     const spot = landmark(orderText, worldState);
     if (spot) {
       kind = "moveTo";
       params = { x: spot.x, y: spot.y };
       verb = `moving to ${spot.name}`;
     } else {
-      kind = "holdPosition";
-      params = { x: targets[0].x, y: targets[0].y };
-      verb = "holding (unclear order)";
+      // Unclear → keep them mobile rather than freezing
+      kind = "patrol";
+      verb = "patrolling (unclear order — staying mobile)";
+      perTankParams = true;
     }
   }
 
+  const homeY = CONFIG.canvasHeight * (1 - CONFIG.homeTerritoryFraction) - 60;
   const results: OrderResult[] = [];
   for (const t of targets) {
+    let p = { ...params };
+    if (perTankParams) {
+      if (kind === "spreadOut" || kind === "holdPosition") {
+        const lane = (t.number - 0.5) / 6;
+        p = {
+          x: CONFIG.canvasWidth * (0.12 + lane * 0.76),
+          y: homeY - (t.number % 2) * 50,
+        };
+      } else if (kind === "patrol" || kind === "attackNearest") {
+        p = {
+          x: CONFIG.canvasWidth * (0.2 + (t.number % 5) * 0.15),
+          y: homeY - 40 - (t.number % 3) * 50,
+        };
+      }
+    }
     let chatLine = `#${t.number}: ack, ${verb}.`;
     if (Math.random() < CONFIG.ai.pushbackChance && kind === "attackNearest") {
-      chatLine = `#${t.number}: that's hot — pushing anyway.`;
-    } else if (
-      Math.random() < CONFIG.ai.pushbackChance &&
-      t.role === "scout" &&
-      kind === "attackNearest"
-    ) {
-      chatLine = `#${t.number}: I'm a scout, not a hammer… still moving up.`;
+      chatLine = `#${t.number}: copy — pushing up.`;
     }
     results.push({
       tankId: t.id,
       goal: kind,
-      params: { ...params },
+      params: p,
       chatLine,
     });
   }
@@ -234,8 +256,8 @@ async function interpretWithLlm(
     debugged: w.debugged,
   }));
 
-  const system = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
-Goals only from that list. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.`;
+  const system = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
+Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.`;
 
   const user = JSON.stringify({
     orderText,
@@ -284,6 +306,8 @@ Goals only from that list. tankId must be living blue tanks. You may loosely rei
       "retreat",
       "reportIn",
       "debug",
+      "patrol",
+      "spreadOut",
       "idle",
     ]);
     return orders

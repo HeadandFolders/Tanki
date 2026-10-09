@@ -36,8 +36,8 @@
 
           <section>
             <h2>Orders</h2>
-            <p class="hint">Arrows move · mouse aim · Space/click shoot (gunners only) · 1–6 / click friendly to switch</p>
-            <p class="hint roles-legend"><span class="scout">S diamond = scout</span> (slow, long vision, fast debug, no guns) · <span class="shooter">G box = gunner</span> (fast, short vision, real damage)</p>
+            <p class="hint">Arrows move · mouse aim · Space/click shoot · 1–6 / click friendly to switch</p>
+            <p class="hint roles-legend"><span class="scout">S = scout</span> (slower, long vision, fast debug) · <span class="shooter">G = gunner</span> (faster, short vision) · all tanks shoot</p>
             <form id="order-form">
               <input
                 id="order-input"
@@ -55,10 +55,10 @@
             </div>
             <div id="phrases" class="phrases" aria-label="Quick radio phrases">
               <button type="button" data-order="all attack">all attack</button>
+              <button type="button" data-order="all spread out">spread out</button>
+              <button type="button" data-order="all keep moving">keep moving</button>
               <button type="button" data-order="scouts move north">scouts north</button>
-              <button type="button" data-order="all hold">all hold</button>
               <button type="button" data-order="all retreat">retreat</button>
-              <button type="button" data-order="all report in">report in</button>
               <button type="button" data-order="all debug">debug</button>
             </div>
             <label class="api-row">

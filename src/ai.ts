@@ -6,7 +6,7 @@ import {
   tryMove,
   unstickFromWalls,
 } from "./arena";
-import { anyTeammateSees, canSeeTank } from "./fog";
+import { canSeeTank } from "./fog";
 import type { Tank, WorldState, Wreck } from "./types";
 
 export function updateTankAi(
@@ -19,7 +19,6 @@ export function updateTankAi(
     return { moveX: 0, moveY: 0, wantShoot: false, aimAngle: tank.angle };
   }
 
-  // Recover if wedged in geometry
   const freed = unstickFromWalls(
     tank.x,
     tank.y,
@@ -33,9 +32,7 @@ export function updateTankAi(
     return { moveX: 0, moveY: 0, wantShoot: false, aimAngle: tank.angle };
   }
 
-  if (tank.team === "red") {
-    return enemyBrain(world, tank, dt);
-  }
+  if (tank.team === "red") return enemyBrain(world, tank, dt);
   return friendlyBrain(world, tank, dt);
 }
 
@@ -62,7 +59,6 @@ function nearest<T extends { x: number; y: number }>(
   return best;
 }
 
-/** Move toward a point even while the hull is still turning. */
 function steerTo(
   tank: Tank,
   tx: number,
@@ -72,27 +68,33 @@ function steerTo(
   world: WorldState,
 ): { moveX: number; moveY: number; aimAngle: number } {
   const ang = angleTo(tank.x, tank.y, tx, ty);
-  tank.angle = rotateToward(tank.angle, ang, CONFIG.tankTurnRate * 1.6 * dt);
+  tank.angle = rotateToward(tank.angle, ang, CONFIG.tankTurnRate * 1.8 * dt);
   const d = dist(tank.x, tank.y, tx, ty);
-  if (d < 10) return { moveX: 0, moveY: 0, aimAngle: tank.angle };
+  if (d < 12) return { moveX: 0, moveY: 0, aimAngle: tank.angle };
 
-  // Travel along desired bearing (not stuck waiting for full turn)
   let vx = Math.cos(ang) * speed;
   let vy = Math.sin(ang) * speed;
 
+  // Strong separation so bots don't stack / jitter in a pile
   for (const o of world.tanks) {
     if (o.id === tank.id || !o.alive) continue;
     const dd = dist(tank.x, tank.y, o.x, o.y);
-    if (dd < CONFIG.tankRadius * 3.2 && dd > 0.1) {
-      vx += ((tank.x - o.x) / dd) * CONFIG.separationForce;
-      vy += ((tank.y - o.y) / dd) * CONFIG.separationForce;
+    if (dd < CONFIG.tankRadius * 4.5 && dd > 0.1) {
+      const force = CONFIG.ai.separation * (1 - dd / (CONFIG.tankRadius * 4.5));
+      vx += ((tank.x - o.x) / dd) * force;
+      vy += ((tank.y - o.y) / dd) * force;
     }
   }
 
   return { moveX: vx * dt, moveY: vy * dt, aimAngle: ang };
 }
 
-function applyMove(tank: Tank, moveX: number, moveY: number, world: WorldState): void {
+function applyMove(
+  tank: Tank,
+  moveX: number,
+  moveY: number,
+  world: WorldState,
+): void {
   if (!moveX && !moveY) return;
   const pos = tryMove(
     tank.x,
@@ -102,8 +104,107 @@ function applyMove(tank: Tank, moveX: number, moveY: number, world: WorldState):
     CONFIG.tankRadius,
     world.walls,
   );
+  // If blocked straight on, try a sidestep so AI doesn't freeze on walls
+  if (pos.x === tank.x && pos.y === tank.y) {
+    const side = tank.number % 2 === 0 ? 1 : -1;
+    const alt = tryMove(
+      tank.x,
+      tank.y,
+      -moveY * side * 0.8,
+      moveX * side * 0.8,
+      CONFIG.tankRadius,
+      world.walls,
+    );
+    tank.x = alt.x;
+    tank.y = alt.y;
+    return;
+  }
   tank.x = pos.x;
   tank.y = pos.y;
+}
+
+function clampMap(x: number, y: number): { x: number; y: number } {
+  const pad = CONFIG.tileSize * 3;
+  return {
+    x: Math.min(CONFIG.canvasWidth - pad, Math.max(pad, x)),
+    y: Math.min(CONFIG.canvasHeight - pad, Math.max(pad, y)),
+  };
+}
+
+function newPatrolPoint(tank: Tank, world: WorldState): { x: number; y: number } {
+  const home = homeTerritoryBounds("blue");
+  const marker = world.markers.find((m) => m.kind === "enemy");
+  const baseX = marker?.x ?? CONFIG.canvasWidth * (0.2 + (tank.number % 5) * 0.15);
+  const baseY =
+    marker?.y ??
+    home.y0 - 40 - (tank.number % 4) * 35 - Math.random() * 80;
+  const jitter = CONFIG.ai.patrolRadius;
+  return clampMap(
+    baseX + (Math.random() - 0.5) * jitter,
+    baseY + (Math.random() - 0.5) * jitter * 0.7,
+  );
+}
+
+function spreadSlot(tank: Tank): { x: number; y: number } {
+  const home = homeTerritoryBounds("blue");
+  const lane = (tank.number - 0.5) / 6;
+  return clampMap(
+    CONFIG.canvasWidth * (0.12 + lane * 0.76),
+    home.y0 - 50 - (tank.number % 2) * 70,
+  );
+}
+
+/**
+ * Combat overlay: close to fight range, kite if too close, always shoot when
+ * an enemy is visible. Returns null if no combat action.
+ */
+function combatManeuver(
+  world: WorldState,
+  tank: Tank,
+  enemy: Tank,
+  speed: number,
+  dt: number,
+): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
+  const fightRange = CONFIG.roles[tank.role].fightRange;
+  const d = dist(tank.x, tank.y, enemy.x, enemy.y);
+  const aimAngle = angleTo(tank.x, tank.y, enemy.x, enemy.y);
+  tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * 2 * dt);
+
+  let moveX = 0;
+  let moveY = 0;
+  if (d < CONFIG.ai.kiteRange) {
+    // Back off while shooting
+    const away = angleTo(enemy.x, enemy.y, tank.x, tank.y);
+    const s = steerTo(
+      tank,
+      tank.x + Math.cos(away) * 80,
+      tank.y + Math.sin(away) * 80,
+      speed * 1.05,
+      dt,
+      world,
+    );
+    moveX = s.moveX;
+    moveY = s.moveY;
+  } else if (d > fightRange) {
+    const s = steerTo(tank, enemy.x, enemy.y, speed, dt, world);
+    moveX = s.moveX;
+    moveY = s.moveY;
+  } else {
+    // Strafe in band
+    const side = tank.number % 2 === 0 ? 1 : -1;
+    const s = steerTo(
+      tank,
+      tank.x + Math.cos(aimAngle + side * 1.2) * 40,
+      tank.y + Math.sin(aimAngle + side * 1.2) * 40,
+      speed * 0.55,
+      dt,
+      world,
+    );
+    moveX = s.moveX;
+    moveY = s.moveY;
+  }
+
+  return { moveX, moveY, wantShoot: true, aimAngle };
 }
 
 function friendlyBrain(
@@ -115,9 +216,11 @@ function friendlyBrain(
   const enemies = visibleEnemies(world, tank);
   const nearestEnemy = nearest(enemies, tank.x, tank.y);
 
+  // Low HP → break off and fall back (unless already retreating)
   if (
     tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction &&
-    tank.goal.kind !== "retreat"
+    tank.goal.kind !== "retreat" &&
+    tank.goal.kind !== "reportIn"
   ) {
     tank.goal = { kind: "retreat" };
   }
@@ -128,22 +231,55 @@ function friendlyBrain(
   let moveY = 0;
   const goal = tank.goal.kind;
 
-  if (goal === "attackNearest" || (nearestEnemy && goal === "idle")) {
+  // Universal combat interrupt (don't stand still under fire)
+  const allowCombat =
+    goal !== "reportIn" &&
+    goal !== "retreat" &&
+    !(goal === "debug" && tank.standStillTimer > 0.3);
+  if (nearestEnemy && allowCombat) {
+    const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
+    // Keep working the original goal unless threat is close
+    const threatClose =
+      dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y) <
+      CONFIG.ai.attackAggro;
+    if (threatClose || goal === "attackNearest" || goal === "idle") {
+      applyMove(tank, fight.moveX, fight.moveY, world);
+      return {
+        moveX: fight.moveX,
+        moveY: fight.moveY,
+        wantShoot: fight.wantShoot,
+        aimAngle: fight.aimAngle,
+      };
+    }
+    // Distant contact: keep moving on orders but shoot if facing
+    wantShoot = true;
+    aimAngle = fight.aimAngle;
+  }
+
+  if (goal === "attackNearest") {
     if (nearestEnemy) {
-      aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
-      tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * dt);
-      if (dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y) > 90) {
-        const s = steerTo(tank, nearestEnemy.x, nearestEnemy.y, speed, dt, world);
-        moveX = s.moveX;
-        moveY = s.moveY;
-      }
-      wantShoot = canShootTarget(world, tank, nearestEnemy);
+      const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
+      moveX = fight.moveX;
+      moveY = fight.moveY;
+      wantShoot = fight.wantShoot;
+      aimAngle = fight.aimAngle;
     } else {
-      const marker = world.markers.find((m) => m.kind === "enemy");
-      const home = homeTerritoryBounds("blue");
-      const tx = marker?.x ?? CONFIG.canvasWidth * (0.35 + (tank.number % 3) * 0.15);
-      const ty = marker?.y ?? home.y0 - 80;
-      const s = steerTo(tank, tx, ty, speed * 0.9, dt, world);
+      // Hunt: keep advancing / patrol toward fog of war
+      ensureWaypoint(tank, world);
+      const tx = tank.goal.params?.x ?? tank.x;
+      const ty = tank.goal.params?.y ?? tank.y;
+      if (dist(tank.x, tank.y, tx, ty) < 28) {
+        const p = newPatrolPoint(tank, world);
+        tank.goal = { kind: "attackNearest", params: p };
+      }
+      const s = steerTo(
+        tank,
+        tank.goal.params!.x!,
+        tank.goal.params!.y!,
+        speed * 0.95,
+        dt,
+        world,
+      );
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;
@@ -151,31 +287,72 @@ function friendlyBrain(
   } else if (goal === "holdPosition") {
     const hx = tank.goal.params?.x ?? tank.x;
     const hy = tank.goal.params?.y ?? tank.y;
+    // Soft hold: orbit / return, never hard-freeze
     if (dist(tank.x, tank.y, hx, hy) > CONFIG.ai.holdRadius) {
       const s = steerTo(tank, hx, hy, speed, dt, world);
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;
-    }
-    if (nearestEnemy) {
-      aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
-      tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * dt);
-      wantShoot = canShootTarget(world, tank, nearestEnemy);
+    } else {
+      const orbit = world.time * 0.7 + tank.number;
+      const s = steerTo(
+        tank,
+        hx + Math.cos(orbit) * 22,
+        hy + Math.sin(orbit) * 22,
+        speed * 0.35,
+        dt,
+        world,
+      );
+      moveX = s.moveX;
+      moveY = s.moveY;
     }
   } else if (goal === "moveTo") {
     const tx = tank.goal.params?.x ?? tank.x;
     const ty = tank.goal.params?.y ?? tank.y;
     if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
-      tank.goal = { kind: "holdPosition", params: { x: tx, y: ty } };
+      // Arrived → keep moving (patrol), don't freeze
+      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
     } else {
       const s = steerTo(tank, tx, ty, speed, dt, world);
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;
     }
-    if (nearestEnemy) {
-      aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
-      wantShoot = canShootTarget(world, tank, nearestEnemy);
+  } else if (goal === "patrol" || goal === "idle") {
+    if (goal === "idle") tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+    ensureWaypoint(tank, world);
+    const tx = tank.goal.params?.x ?? tank.x;
+    const ty = tank.goal.params?.y ?? tank.y;
+    if (dist(tank.x, tank.y, tx, ty) < 24) {
+      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+    }
+    const s = steerTo(
+      tank,
+      tank.goal.params!.x!,
+      tank.goal.params!.y!,
+      speed * 0.9,
+      dt,
+      world,
+    );
+    moveX = s.moveX;
+    moveY = s.moveY;
+    aimAngle = s.aimAngle;
+  } else if (goal === "spreadOut") {
+    const slot = spreadSlot(tank);
+    const tx = tank.goal.params?.x ?? slot.x;
+    const ty = tank.goal.params?.y ?? slot.y;
+    if (!tank.goal.params?.x) tank.goal.params = { x: tx, y: ty };
+    if (dist(tank.x, tank.y, tx, ty) < 30) {
+      // Hold spacing with tiny wander
+      tank.goal = {
+        kind: "patrol",
+        params: clampMap(tx + (Math.random() - 0.5) * 60, ty + (Math.random() - 0.5) * 40),
+      };
+    } else {
+      const s = steerTo(tank, tx, ty, speed, dt, world);
+      moveX = s.moveX;
+      moveY = s.moveY;
+      aimAngle = s.aimAngle;
     }
   } else if (goal === "escort") {
     const tid = tank.goal.params?.targetTankId;
@@ -190,25 +367,42 @@ function friendlyBrain(
       aimAngle = nearestEnemy
         ? angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y)
         : s.aimAngle;
-      if (nearestEnemy) wantShoot = canShootTarget(world, tank, nearestEnemy);
+      if (nearestEnemy) wantShoot = true;
+    } else {
+      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
     }
   } else if (goal === "retreat") {
     const home = homeTerritoryBounds("blue");
-    const homeX = CONFIG.canvasWidth * (0.2 + (tank.number % 3) * 0.25);
+    const homeX = CONFIG.canvasWidth * (0.15 + (tank.number % 5) * 0.15);
     const homeY = (home.y0 + home.y1) / 2;
-    const s = steerTo(tank, homeX, homeY, speed * 1.05, dt, world);
+    const s = steerTo(tank, homeX, homeY, speed * 1.1, dt, world);
     moveX = s.moveX;
     moveY = s.moveY;
-    aimAngle = s.aimAngle;
-    if (dist(tank.x, tank.y, homeX, homeY) < 40) {
-      tank.goal = { kind: "holdPosition", params: { x: homeX, y: homeY } };
+    aimAngle = nearestEnemy
+      ? angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y)
+      : s.aimAngle;
+    if (nearestEnemy) wantShoot = true;
+    if (dist(tank.x, tank.y, homeX, homeY) < 45) {
+      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
     }
   } else if (goal === "reportIn") {
-    moveX = 0;
-    moveY = 0;
-    if (nearestEnemy) {
-      aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
-      wantShoot = canShootTarget(world, tank, nearestEnemy);
+    // Stand for radio — but break to kite if enemy is on top of us
+    if (
+      nearestEnemy &&
+      dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y) < CONFIG.ai.kiteRange + 20
+    ) {
+      const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
+      moveX = fight.moveX;
+      moveY = fight.moveY;
+      wantShoot = true;
+      aimAngle = fight.aimAngle;
+    } else {
+      moveX = 0;
+      moveY = 0;
+      if (nearestEnemy) {
+        aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
+        wantShoot = true;
+      }
     }
   } else if (goal === "debug") {
     const wreck = pickDebugWreck(world, tank);
@@ -220,28 +414,20 @@ function friendlyBrain(
         moveY = s.moveY;
         aimAngle = s.aimAngle;
       }
-    } else if (nearestEnemy) {
-      aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
-      wantShoot = canShootTarget(world, tank, nearestEnemy);
-      if (dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y) > 100) {
-        const s = steerTo(
-          tank,
-          nearestEnemy.x,
-          nearestEnemy.y,
-          speed,
-          dt,
-          world,
-        );
-        moveX = s.moveX;
-        moveY = s.moveY;
-      }
     } else {
-      tank.goal = { kind: "holdPosition", params: { x: tank.x, y: tank.y } };
+      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
     }
   }
 
   applyMove(tank, moveX, moveY, world);
   return { moveX, moveY, wantShoot, aimAngle };
+}
+
+function ensureWaypoint(tank: Tank, world: WorldState): void {
+  if (tank.goal.params?.x == null || tank.goal.params?.y == null) {
+    const p = newPatrolPoint(tank, world);
+    tank.goal.params = { ...tank.goal.params, ...p };
+  }
 }
 
 function pickDebugWreck(world: WorldState, tank: Tank): Wreck | null {
@@ -257,15 +443,6 @@ function pickDebugWreck(world: WorldState, tank: Tank): Wreck | null {
   );
   if (visibleThreat) return null;
   return nearest(marked, tank.x, tank.y);
-}
-
-function canShootTarget(
-  world: WorldState,
-  shooter: Tank,
-  target: Tank,
-): boolean {
-  if (!CONFIG.roles[shooter.role].canShoot) return false;
-  return anyTeammateSees(world, shooter.team, target);
 }
 
 function enemyBrain(
@@ -284,23 +461,33 @@ function enemyBrain(
   let wantShoot = false;
   let aimAngle = tank.angle;
 
-  if (nearestPlayer) {
-    tank.goal = { kind: "attackNearest" };
+  if (tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction && nearestPlayer) {
+    // Kite south→north toward their home
+    const redHome = homeTerritoryBounds("red");
+    const s = steerTo(
+      tank,
+      CONFIG.canvasWidth * (0.2 + (tank.number % 3) * 0.25),
+      (redHome.y0 + redHome.y1) / 2,
+      speed * 1.05,
+      dt,
+      world,
+    );
+    moveX = s.moveX;
+    moveY = s.moveY;
     aimAngle = angleTo(tank.x, tank.y, nearestPlayer.x, nearestPlayer.y);
-    tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * dt);
-    if (dist(tank.x, tank.y, nearestPlayer.x, nearestPlayer.y) > 85) {
-      const s = steerTo(tank, nearestPlayer.x, nearestPlayer.y, speed, dt, world);
-      moveX = s.moveX;
-      moveY = s.moveY;
-    }
-    wantShoot = canShootTarget(world, tank, nearestPlayer);
+    wantShoot = true;
+  } else if (nearestPlayer) {
+    const fight = combatManeuver(world, tank, nearestPlayer, speed, dt);
+    moveX = fight.moveX;
+    moveY = fight.moveY;
+    wantShoot = fight.wantShoot;
+    aimAngle = fight.aimAngle;
   } else {
     const playerWrecks = world.wrecks.filter(
       (w) => w.team === "blue" && !w.debugged,
     );
     const wreck = nearest(playerWrecks, tank.x, tank.y);
-    if (wreck) {
-      tank.goal = { kind: "debug", params: { wreckId: wreck.id } };
+    if (wreck && dist(tank.x, tank.y, wreck.x, wreck.y) < 280) {
       tank.debugTargetId = wreck.id;
       if (dist(tank.x, tank.y, wreck.x, wreck.y) > CONFIG.debugRange * 0.7) {
         const s = steerTo(tank, wreck.x, wreck.y, speed, dt, world);
@@ -309,14 +496,14 @@ function enemyBrain(
         aimAngle = s.aimAngle;
       }
     } else {
-      // Advance into the map toward the friendly frontline
       const home = homeTerritoryBounds("blue");
-      const lane = 0.2 + (tank.number % 3) * 0.25;
+      const lane = 0.18 + (tank.number % 5) * 0.16;
+      const targetY = home.y0 - 20 - (world.time * 8 + tank.number * 40) % 120;
       const s = steerTo(
         tank,
-        CONFIG.canvasWidth * lane,
-        home.y0 - 30,
-        speed * 0.85,
+        CONFIG.canvasWidth * lane + Math.sin(world.time * 0.4 + tank.number) * 30,
+        targetY,
+        speed * 0.9,
         dt,
         world,
       );

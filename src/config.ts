@@ -19,14 +19,15 @@ export const CONFIG = {
     scout: {
       count: 2,
       speed: 95,
-      maxHp: 55,
+      maxHp: 70,
       visionRadius: 165,
       debugRate: 0.55,
-      canShoot: false,
-      damage: 0,
-      fireCooldown: 0.55,
-      projectileSpeed: 320,
-      projectileLife: 0.7,
+      canShoot: true,
+      damage: 16,
+      fireCooldown: 0.42,
+      projectileSpeed: 360,
+      projectileLife: 0.85,
+      fightRange: 130,
     },
     shooter: {
       count: 4,
@@ -39,6 +40,7 @@ export const CONFIG = {
       fireCooldown: 0.38,
       projectileSpeed: 420,
       projectileLife: 0.9,
+      fightRange: 95,
     },
   },
 
@@ -56,12 +58,15 @@ export const CONFIG = {
 
   ai: {
     thinkInterval: 0.25,
-    holdRadius: 28,
-    attackAggro: 220,
+    holdRadius: 36,
+    attackAggro: 260,
     escortDistance: 70,
-    retreatHpFraction: 0.28,
+    retreatHpFraction: 0.32,
     pathStep: 36,
-    pushbackChance: 0.18,
+    pushbackChance: 0.12,
+    separation: 140,
+    patrolRadius: 160,
+    kiteRange: 55,
   },
 
   /**

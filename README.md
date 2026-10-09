@@ -1,6 +1,6 @@
 # Fog of War — Tank Hunt
 
-Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no game engine).
+Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no game engine). Battle City–inspired pixel art; voice radio orders (Chrome/Edge mic).
 
 You command a six-tank company through dark terrain, hunting the enemy **code carrier**. Win by debugging their carrier’s wreck. Lose if they debug yours, or if your company is wiped. Time out is a draw.
 

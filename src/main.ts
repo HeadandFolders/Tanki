@@ -4,12 +4,14 @@ import {
   createWorld,
   formatTime,
   markWreckAt,
+  pushEvent,
   sendOrder,
   stepWorld,
   switchToNumber,
   switchToTank,
 } from "./game";
 import { renderWorld } from "./render";
+import { createVoiceRadio } from "./voice";
 import type { WorldState } from "./types";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
@@ -24,6 +26,8 @@ const orderInput = document.querySelector<HTMLInputElement>("#order-input")!;
 const apiKeyInput = document.querySelector<HTMLInputElement>("#api-key")!;
 const shareSelect = document.querySelector<HTMLSelectElement>("#share-mode")!;
 const restartBtn = document.querySelector<HTMLButtonElement>("#restart")!;
+const voiceBtn = document.querySelector<HTMLButtonElement>("#voice-btn")!;
+const voiceStatusEl = document.querySelector("#voice-status")!;
 
 let world: WorldState = createWorld(shareSelect.value as ShareMode);
 
@@ -118,15 +122,59 @@ restartBtn.addEventListener("click", () => {
   flushLogs();
 });
 
+async function dispatchOrder(text: string, via: "typed" | "voice"): Promise<void> {
+  const cleaned = text.trim();
+  if (!cleaned || world.outcome !== "playing") return;
+  if (via === "voice") {
+    orderInput.value = cleaned;
+    pushEvent(world, `Voice: “${cleaned}”`, "sys");
+  }
+  const key = apiKeyInput.value.trim() || undefined;
+  await sendOrder(world, cleaned, key);
+  if (via === "voice") orderInput.value = "";
+  flushLogs();
+  refreshRoster();
+}
+
 orderForm.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const text = orderInput.value.trim();
   if (!text) return;
   orderInput.value = "";
-  const key = apiKeyInput.value.trim() || undefined;
-  await sendOrder(world, text, key);
-  flushLogs();
-  refreshRoster();
+  await dispatchOrder(text, "typed");
+});
+
+const radio = createVoiceRadio({
+  onFinalOrder: (text) => {
+    void dispatchOrder(text, "voice");
+  },
+  onStatus: (status, detail) => {
+    voiceBtn.classList.toggle("live", status === "listening");
+    if (status === "unsupported") {
+      voiceBtn.textContent = "Radio: n/a";
+      voiceBtn.disabled = true;
+      voiceStatusEl.textContent =
+        detail ?? "Voice needs Chrome/Edge + mic permission";
+      return;
+    }
+    if (status === "listening") {
+      voiceBtn.textContent = "Radio: LIVE";
+      voiceStatusEl.textContent = detail ?? "Listening — speak an order…";
+      return;
+    }
+    if (status === "error") {
+      voiceBtn.textContent = "Radio: err";
+      voiceStatusEl.textContent = detail ?? "Mic error";
+      return;
+    }
+    voiceBtn.textContent = "Radio: off";
+    voiceStatusEl.textContent = "Click Radio to give spoken orders to bots";
+  },
+});
+
+voiceBtn.addEventListener("click", () => {
+  canvas.focus();
+  radio.toggle();
 });
 
 function refreshRoster(): void {

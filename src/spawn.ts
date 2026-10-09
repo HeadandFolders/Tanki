@@ -16,7 +16,7 @@ export function createTeams(seed = Date.now()): Tank[] {
   const rng = mulberry32(seed >>> 0);
   const walls = buildArena();
   const tanks: Tank[] = [];
-  const pad = CONFIG.arenaPadding + CONFIG.wallThickness + CONFIG.tankRadius + 8;
+  const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
   const W = CONFIG.canvasWidth;
 
   const blueHome = homeTerritoryBounds("blue");

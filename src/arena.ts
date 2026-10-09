@@ -1,40 +1,95 @@
 import { CONFIG } from "./config";
-import type { Wall } from "./types";
+import type { Wall, WallKind } from "./types";
 
-/** Small arena with choke points and cover walls. */
+const T = () => CONFIG.tileSize;
+
+function rect(
+  tx: number,
+  ty: number,
+  tw: number,
+  th: number,
+  kind: WallKind,
+): Wall {
+  const s = T();
+  return { x: tx * s, y: ty * s, w: tw * s, h: th * s, kind };
+}
+
+/**
+ * Battle City–style tile arena: stone border, brick chokes, steel hardpoints,
+ * eagle nest at southern home.
+ */
 export function buildArena(): Wall[] {
-  const W = CONFIG.canvasWidth;
-  const H = CONFIG.canvasHeight;
-  const p = CONFIG.arenaPadding;
-  const t = CONFIG.wallThickness;
+  const s = T();
+  const cols = Math.floor(CONFIG.canvasWidth / s);
+  const rows = Math.floor(CONFIG.canvasHeight / s);
+  const walls: Wall[] = [];
 
-  const walls: Wall[] = [
-    // Outer bounds (inner faces)
-    { x: p, y: p, w: W - p * 2, h: t },
-    { x: p, y: H - p - t, w: W - p * 2, h: t },
-    { x: p, y: p, w: t, h: H - p * 2 },
-    { x: W - p - t, y: p, w: t, h: H - p * 2 },
+  // Outer stone border (2 tiles thick)
+  walls.push(rect(0, 0, cols, 2, "border"));
+  walls.push(rect(0, rows - 2, cols, 2, "border"));
+  walls.push(rect(0, 2, 2, rows - 4, "border"));
+  walls.push(rect(cols - 2, 2, 2, rows - 4, "border"));
 
-    // Central choke corridor
-    { x: W * 0.42, y: H * 0.28, w: t, h: H * 0.18 },
-    { x: W * 0.56, y: H * 0.54, w: t, h: H * 0.18 },
-
-    // Side bunkers / cover
-    { x: W * 0.22, y: H * 0.22, w: 90, h: t },
-    { x: W * 0.22, y: H * 0.22, w: t, h: 70 },
-    { x: W * 0.68, y: H * 0.68, w: 90, h: t },
-    { x: W * 0.68 + 90 - t, y: H * 0.68 - 55, w: t, h: 55 + t },
-
-    // North/south islands
-    { x: W * 0.48, y: H * 0.14, w: 70, h: t },
-    { x: W * 0.38, y: H * 0.82, w: 110, h: t },
-
-    // Flank walls creating lanes
-    { x: W * 0.14, y: H * 0.48, w: 80, h: t },
-    { x: W * 0.78, y: H * 0.42, w: 80, h: t },
+  // Brick maze / chokes (tile coords)
+  const bricks: [number, number, number, number][] = [
+    // central corridor bricks
+    [18, 10, 2, 6],
+    [28, 16, 2, 6],
+    [22, 14, 4, 2],
+    // left bunker
+    [6, 8, 6, 2],
+    [6, 8, 2, 5],
+    // right bunker
+    [36, 22, 6, 2],
+    [40, 18, 2, 6],
+    // north islands
+    [20, 5, 6, 2],
+    [12, 6, 2, 3],
+    // south approaches (above home)
+    [16, 28, 8, 2],
+    [30, 28, 6, 2],
+    // flank lanes
+    [4, 16, 5, 2],
+    [39, 14, 5, 2],
+    [10, 20, 2, 4],
+    [36, 10, 2, 4],
+    // mid scatter
+    [24, 20, 4, 2],
+    [14, 12, 3, 2],
+    [32, 8, 3, 2],
   ];
+  for (const [x, y, w, h] of bricks) {
+    walls.push(rect(x, y, w, h, "brick"));
+  }
+
+  // Steel hardpoints
+  const steel: [number, number, number, number][] = [
+    [22, 8, 2, 2],
+    [26, 22, 2, 2],
+    [8, 24, 2, 2],
+    [38, 12, 2, 2],
+    [20, 18, 2, 2],
+  ];
+  for (const [x, y, w, h] of steel) {
+    walls.push(rect(x, y, w, h, "steel"));
+  }
+
+  // Eagle nest brick U at bottom center (home)
+  const ex = Math.floor(cols / 2) - 3;
+  const ey = rows - 7;
+  walls.push(rect(ex, ey, 2, 4, "brick"));
+  walls.push(rect(ex + 4, ey, 2, 4, "brick"));
+  walls.push(rect(ex, ey + 3, 6, 1, "brick"));
 
   return walls;
+}
+
+/** World position of the eagle emblem (visual + landmark). */
+export function eaglePosition(): { x: number; y: number } {
+  return {
+    x: CONFIG.canvasWidth / 2,
+    y: CONFIG.canvasHeight - CONFIG.tileSize * 4.5,
+  };
 }
 
 export function circleHitsWall(
@@ -76,7 +131,6 @@ function segIntersectsRect(
   rw: number,
   rh: number,
 ): boolean {
-  // Liang-Barsky-ish quick reject via crossings
   if (pointInRect(x0, y0, rx, ry, rw, rh) || pointInRect(x1, y1, rx, ry, rw, rh))
     return true;
   const edges: [number, number, number, number][] = [
@@ -135,7 +189,6 @@ export function tryMove(
   return { x, y };
 }
 
-/** Nudge a stuck body out of solid geometry (spawn / overlap recovery). */
 export function unstickFromWalls(
   x: number,
   y: number,
@@ -164,7 +217,6 @@ export function unstickFromWalls(
   return { x, y };
 }
 
-/** Find a clear point near a preferred spawn, staying inside a band. */
 export function findClearPoint(
   preferX: number,
   preferY: number,
@@ -187,19 +239,11 @@ export function findClearPoint(
     );
     if (!circleHitsWall(x, y, r, walls)) return { x, y };
   }
-  const mid = unstickFromWalls(
-    (xMin + xMax) / 2,
-    (yMin + yMax) / 2,
-    r,
-    walls,
-  );
-  return mid;
+  return unstickFromWalls((xMin + xMax) / 2, (yMin + yMax) / 2, r, walls);
 }
 
 export function dist(ax: number, ay: number, bx: number, by: number): number {
-  const dx = ax - bx;
-  const dy = ay - by;
-  return Math.hypot(dx, dy);
+  return Math.hypot(ax - bx, ay - by);
 }
 
 export function angleTo(ax: number, ay: number, bx: number, by: number): number {
@@ -220,4 +264,19 @@ export function rotateToward(
   const diff = normalizeAngle(target - current);
   if (Math.abs(diff) <= maxDelta) return target;
   return current + Math.sign(diff) * maxDelta;
+}
+
+/** Snap angle to NES-style 4-way facing for sprites. */
+export function cardinalAngle(angle: number): number {
+  const dirs = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+  let best = dirs[0]!;
+  let bestDiff = Infinity;
+  for (const d of dirs) {
+    const diff = Math.abs(normalizeAngle(angle - d));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = d;
+    }
+  }
+  return best;
 }

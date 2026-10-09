@@ -84,6 +84,9 @@ function landmark(
     choke: { x: W * 0.5, y: H * 0.45, name: "choke" },
     "north choke": { x: W * 0.48, y: H * 0.32, name: "north choke" },
     bunker: { x: W * 0.25, y: H * 0.28, name: "bunker" },
+    eagle: { x: W * 0.5, y: H - 72, name: "eagle" },
+    base: { x: W * 0.5, y: H - 72, name: "base" },
+    home: { x: W * 0.5, y: H * 0.88, name: "home" },
   };
   for (const key of Object.keys(spots).sort((a, b) => b.length - a.length)) {
     if (lower.includes(key)) return spots[key];

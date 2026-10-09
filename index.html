@@ -42,11 +42,17 @@
               <input
                 id="order-input"
                 type="text"
-                placeholder='e.g. "scout 3 hold north choke" or "all attack"'
+                placeholder='e.g. "all attack" or "scout move north"'
                 autocomplete="off"
               />
               <button type="submit">Send</button>
             </form>
+            <div class="voice-row">
+              <button id="voice-btn" type="button" title="Toggle live radio (voice orders)">
+                Radio: off
+              </button>
+              <span id="voice-status" class="hint">Say orders aloud — same as typing + Enter</span>
+            </div>
             <label class="api-row">
               LLM API key (optional)
               <input id="api-key" type="password" placeholder="offline mock if empty" />

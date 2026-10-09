@@ -98,11 +98,14 @@ export interface ChatLine {
   kind: "ally" | "sys" | "warn";
 }
 
+export type WallKind = "brick" | "steel" | "border";
+
 export interface Wall {
   x: number;
   y: number;
   w: number;
   h: number;
+  kind: WallKind;
 }
 
 export interface WorldState {

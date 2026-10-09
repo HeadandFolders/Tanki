@@ -38,12 +38,57 @@ export function voiceSupported(): boolean {
   return getSpeechRecognitionCtor() !== null;
 }
 
+export function explainVoiceError(code: string): string {
+  switch (code) {
+    case "not-allowed":
+    case "service-not-allowed":
+      return "Mic blocked — allow microphone for this site, or use phrase buttons / typing";
+    case "audio-capture":
+    case "no-mic":
+      return "No microphone on this machine (Try Live VM often has none) — use phrase buttons";
+    case "network":
+      return "Speech service network error — try again, or use phrase buttons / typing";
+    case "not-supported":
+      return "Voice needs Chrome or Edge";
+    case "aborted":
+    case "no-speech":
+      return "No speech heard — click Radio and speak again";
+    default:
+      return `Voice error: ${code} — use phrase buttons or type an order`;
+  }
+}
+
+async function preflightMic(): Promise<{ ok: true } | { ok: false; code: string }> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return { ok: false, code: "not-supported" };
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    for (const track of stream.getTracks()) track.stop();
+    return { ok: true };
+  } catch (err) {
+    const name = err instanceof DOMException ? err.name : "";
+    if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+      return { ok: false, code: "not-allowed" };
+    }
+    if (
+      name === "NotFoundError" ||
+      name === "DevicesNotFoundError" ||
+      name === "OverconstrainedError"
+    ) {
+      return { ok: false, code: "no-mic" };
+    }
+    if (name === "NotReadableError") return { ok: false, code: "audio-capture" };
+    return { ok: false, code: name || "audio-capture" };
+  }
+}
+
 export interface VoiceRadio {
   status: VoiceStatus;
   lastHeard: string;
-  start: () => void;
+  start: () => Promise<void>;
   stop: () => void;
-  toggle: () => void;
+  toggle: () => Promise<void>;
   destroy: () => void;
 }
 
@@ -54,13 +99,13 @@ export function createVoiceRadio(opts: {
 }): VoiceRadio {
   const Ctor = getSpeechRecognitionCtor();
   if (!Ctor) {
-    opts.onStatus("unsupported", "Speech recognition not available in this browser");
+    opts.onStatus("unsupported", explainVoiceError("not-supported"));
     return {
       status: "unsupported",
       lastHeard: "",
-      start() {},
+      async start() {},
       stop() {},
-      toggle() {},
+      async toggle() {},
       destroy() {},
     };
   }
@@ -70,6 +115,7 @@ export function createVoiceRadio(opts: {
   let status: VoiceStatus = "idle";
   let lastHeard = "";
   let restartTimer: number | null = null;
+  let starting = false;
 
   const setStatus = (s: VoiceStatus, detail?: string) => {
     status = s;
@@ -82,7 +128,6 @@ export function createVoiceRadio(opts: {
     r.lang = opts.lang ?? "en-US";
 
     r.onresult = (ev) => {
-      let interim = "";
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const piece = ev.results[i]![0]!.transcript.trim();
         if (!piece) continue;
@@ -90,42 +135,52 @@ export function createVoiceRadio(opts: {
           lastHeard = piece;
           opts.onFinalOrder(piece);
         } else {
-          interim = piece;
-          lastHeard = interim;
-          opts.onStatus("listening", `… ${interim}`);
+          lastHeard = piece;
+          opts.onStatus("listening", `… ${piece}`);
         }
       }
     };
 
     r.onerror = (ev) => {
-      if (ev.error === "aborted" || ev.error === "no-speech") {
-        // benign — keep trying if still armed
+      if (ev.error === "aborted") return;
+      if (ev.error === "no-speech") {
+        // keep listening; Chrome often fires this between phrases
+        opts.onStatus("listening", "Listening — speak an order…");
         return;
       }
-      setStatus("error", ev.error);
       wantListen = false;
+      setStatus("error", explainVoiceError(ev.error));
     };
 
     r.onend = () => {
       if (wantListen) {
-        // Chrome stops after pauses; auto-restart while radio is live
         if (restartTimer != null) window.clearTimeout(restartTimer);
         restartTimer = window.setTimeout(() => {
-          if (!wantListen) return;
+          if (!wantListen || !rec) return;
           try {
-            r.start();
-            setStatus("listening");
+            rec.start();
+            setStatus("listening", "Listening — speak an order…");
           } catch {
             /* already started */
           }
-        }, 200);
-      } else if (status !== "error" && status !== "unsupported") {
+        }, 250);
+      } else if (status === "listening") {
         setStatus("idle");
       }
     };
   };
 
-  const start = () => {
+  const start = async () => {
+    if (starting || wantListen) return;
+    starting = true;
+    setStatus("listening", "Checking microphone…");
+    const mic = await preflightMic();
+    if (!mic.ok) {
+      starting = false;
+      setStatus("error", explainVoiceError(mic.code));
+      return;
+    }
+
     wantListen = true;
     if (!rec) {
       rec = new Ctor();
@@ -133,23 +188,28 @@ export function createVoiceRadio(opts: {
     }
     try {
       rec.start();
-      setStatus("listening");
+      setStatus("listening", "Listening — speak an order…");
     } catch {
-      // InvalidStateError if already started
-      setStatus("listening");
+      setStatus("listening", "Listening — speak an order…");
     }
+    starting = false;
   };
 
   const stop = () => {
     wantListen = false;
+    starting = false;
     if (restartTimer != null) {
       window.clearTimeout(restartTimer);
       restartTimer = null;
     }
     try {
-      rec?.stop();
+      rec?.abort();
     } catch {
-      /* ignore */
+      try {
+        rec?.stop();
+      } catch {
+        /* ignore */
+      }
     }
     setStatus("idle");
   };
@@ -163,9 +223,9 @@ export function createVoiceRadio(opts: {
     },
     start,
     stop,
-    toggle() {
-      if (wantListen) stop();
-      else start();
+    async toggle() {
+      if (wantListen || status === "listening") stop();
+      else await start();
     },
     destroy() {
       stop();

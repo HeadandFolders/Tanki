@@ -150,11 +150,12 @@ const radio = createVoiceRadio({
   },
   onStatus: (status, detail) => {
     voiceBtn.classList.toggle("live", status === "listening");
+    voiceBtn.classList.toggle("err", status === "error");
+    voiceBtn.disabled = status === "unsupported";
     if (status === "unsupported") {
       voiceBtn.textContent = "Radio: n/a";
-      voiceBtn.disabled = true;
       voiceStatusEl.textContent =
-        detail ?? "Voice needs Chrome/Edge + mic permission";
+        detail ?? "Voice needs Chrome/Edge — use phrase buttons";
       return;
     }
     if (status === "listening") {
@@ -163,19 +164,28 @@ const radio = createVoiceRadio({
       return;
     }
     if (status === "error") {
-      voiceBtn.textContent = "Radio: err";
-      voiceStatusEl.textContent = detail ?? "Mic error";
+      voiceBtn.textContent = "Radio: retry";
+      voiceStatusEl.textContent = detail ?? "Mic error — use phrase buttons";
       return;
     }
     voiceBtn.textContent = "Radio: off";
-    voiceStatusEl.textContent = "Click Radio to give spoken orders to bots";
+    voiceStatusEl.textContent =
+      "Click Radio for mic orders, or tap a phrase button";
   },
 });
 
 voiceBtn.addEventListener("click", () => {
-  canvas.focus();
-  radio.toggle();
+  void radio.toggle();
 });
+
+document.querySelectorAll<HTMLButtonElement>("#phrases [data-order]").forEach(
+  (btn) => {
+    btn.addEventListener("click", () => {
+      const order = btn.getAttribute("data-order");
+      if (order) void dispatchOrder(order, "voice");
+    });
+  },
+);
 
 function refreshRoster(): void {
   const blues = world.tanks

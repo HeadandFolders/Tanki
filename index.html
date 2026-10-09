@@ -51,7 +51,15 @@
               <button id="voice-btn" type="button" title="Toggle live radio (voice orders)">
                 Radio: off
               </button>
-              <span id="voice-status" class="hint">Say orders aloud — same as typing + Enter</span>
+              <span id="voice-status" class="hint">Mic orders (Chrome). If Radio errors, use phrases below.</span>
+            </div>
+            <div id="phrases" class="phrases" aria-label="Quick radio phrases">
+              <button type="button" data-order="all attack">all attack</button>
+              <button type="button" data-order="scouts move north">scouts north</button>
+              <button type="button" data-order="all hold">all hold</button>
+              <button type="button" data-order="all retreat">retreat</button>
+              <button type="button" data-order="all report in">report in</button>
+              <button type="button" data-order="all debug">debug</button>
             </div>
             <label class="api-row">
               LLM API key (optional)

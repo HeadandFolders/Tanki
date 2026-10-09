@@ -174,6 +174,24 @@ body {
   margin: 0;
 }
 
+#voice-btn.err {
+  border-color: #e35d5d;
+  color: #ffb0b0;
+}
+
+.phrases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.phrases button {
+  font-size: 0.72rem;
+  padding: 6px 8px;
+  background: #1a1a20;
+}
+
 #order-form {
   display: grid;
   grid-template-columns: 1fr auto;

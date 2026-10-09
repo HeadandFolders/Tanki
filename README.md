@@ -26,6 +26,8 @@ npm run build   # typecheck + production build
 | Click | Shoot (or switch if clicking a friendly, or mark a wreck) |
 | Keys `1`–`6` | Switch to tank #N |
 | Orders box + Enter | Natural-language team orders |
+| Radio button | Voice orders (Chrome/Edge + mic; often unavailable on Try Live VM) |
+| Phrase buttons | One-click radio orders when mic fails |
 | Share select | `auto` / `report` / `none` vision sharing |
 | API key field | Optional LLM order parser (offline keyword mock if empty) |
 

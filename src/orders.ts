@@ -251,6 +251,58 @@ export function interpretOffline(
   return results;
 }
 
+function detectLlmProvider(apiKey: string): "gemini" | "openai" {
+  if (CONFIG.llm.provider === "gemini" || CONFIG.llm.provider === "openai") {
+    return CONFIG.llm.provider;
+  }
+  // Gemini keys typically start with AIza…
+  if (apiKey.startsWith("AIza")) return "gemini";
+  return "openai";
+}
+
+const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
+Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.`;
+
+function sanitizeOrders(orders: OrderResult[], tanks: Tank[]): OrderResult[] {
+  const living = new Set(friendlies(tanks).map((t) => t.id));
+  const goals = new Set<GoalKind>([
+    "moveTo",
+    "holdPosition",
+    "attackNearest",
+    "escort",
+    "retreat",
+    "reportIn",
+    "debug",
+    "patrol",
+    "spreadOut",
+    "idle",
+  ]);
+  return orders
+    .filter((o) => living.has(o.tankId) && goals.has(o.goal))
+    .map((o) => ({
+      tankId: o.tankId,
+      goal: o.goal,
+      params: o.params ?? {},
+      chatLine: o.chatLine || `#?: ack.`,
+    }));
+}
+
+function extractJsonObject(text: string): { orders?: OrderResult[] } {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed) as { orders?: OrderResult[] };
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1)) as {
+        orders?: OrderResult[];
+      };
+    }
+    throw new Error("LLM returned non-JSON");
+  }
+}
+
 async function interpretWithLlm(
   orderText: string,
   tanks: Tank[],
@@ -272,70 +324,91 @@ async function interpretWithLlm(
     debugged: w.debugged,
   }));
 
-  const system = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
-Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.`;
-
   const user = JSON.stringify({
     orderText,
     controlledId: worldState.controlledId,
     tanks: alive,
     wrecks,
     shareMode: worldState.shareMode,
+    gameMode: worldState.gameMode,
     matchLeft: Math.round(worldState.matchLeft),
   });
 
+  const provider = detectLlmProvider(apiKey);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.llm.timeoutMs);
   try {
-    const res = await fetch(CONFIG.llm.endpoint, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: CONFIG.llm.model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+    let content = "{}";
+    if (provider === "gemini") {
+      content = await callGemini(apiKey, ORDER_SYSTEM, user, controller.signal);
+    } else {
+      content = await callOpenAi(apiKey, ORDER_SYSTEM, user, controller.signal);
     }
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content ?? "{}";
-    const parsed = JSON.parse(content) as { orders?: OrderResult[] };
-    const orders = parsed.orders ?? [];
-    const living = new Set(friendlies(tanks).map((t) => t.id));
-    const goals = new Set<GoalKind>([
-      "moveTo",
-      "holdPosition",
-      "attackNearest",
-      "escort",
-      "retreat",
-      "reportIn",
-      "debug",
-      "patrol",
-      "spreadOut",
-      "idle",
-    ]);
-    return orders
-      .filter((o) => living.has(o.tankId) && goals.has(o.goal))
-      .map((o) => ({
-        tankId: o.tankId,
-        goal: o.goal,
-        params: o.params ?? {},
-        chatLine: o.chatLine || `#?: ack.`,
-      }));
+    const parsed = extractJsonObject(content);
+    return sanitizeOrders(parsed.orders ?? [], tanks);
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function callOpenAi(
+  apiKey: string,
+  system: string,
+  user: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const res = await fetch(CONFIG.llm.openaiEndpoint, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: CONFIG.llm.openaiModel,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  return data.choices?.[0]?.message?.content ?? "{}";
+}
+
+async function callGemini(
+  apiKey: string,
+  system: string,
+  user: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const model = CONFIG.llm.geminiModel;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Gemini HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`);
+  }
+  const data = (await res.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  };
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 }
 

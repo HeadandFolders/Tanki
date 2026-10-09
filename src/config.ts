@@ -86,8 +86,11 @@ export const CONFIG = {
   },
 
   llm: {
-    endpoint: "https://api.openai.com/v1/chat/completions",
-    model: "gpt-4o-mini",
+    /** "auto" picks Gemini for AIza… keys, OpenAI for sk-… */
+    provider: "auto" as "auto" | "gemini" | "openai",
+    openaiEndpoint: "https://api.openai.com/v1/chat/completions",
+    openaiModel: "gpt-4o-mini",
+    geminiModel: "gemini-2.0-flash",
     timeoutMs: 12000,
   },
 

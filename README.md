@@ -24,10 +24,11 @@ Paste your key in:
 **[`src/api-key.local.ts`](src/api-key.local.ts)**
 
 ```ts
-export const LOCAL_API_KEY = "sk-...";
+export const LOCAL_API_KEY = "AIza..."; // Gemini — or sk-... for OpenAI
 ```
 
-Or set `VITE_OPENAI_API_KEY` in a root `.env` (see `.env.example`), or type it in the side-panel field.
+Gemini (`AIza…`) and OpenAI (`sk-…`) both work; provider is auto-detected.  
+Or set `VITE_OPENAI_API_KEY` in `.env` / the side-panel field (same auto-detect).
 
 Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, else keyword mock) → bot goals**. LLM runs **only on each order**, never every tick.
 

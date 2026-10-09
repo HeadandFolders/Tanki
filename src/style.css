@@ -134,6 +134,20 @@ body {
   color: var(--muted);
 }
 
+#roster .role.scout,
+.roles-legend .scout {
+  color: #9ad7ff;
+}
+
+#roster .role.shooter,
+.roles-legend .shooter {
+  color: #ffd39a;
+}
+
+.roles-legend {
+  margin-top: 6px;
+}
+
 #order-form {
   display: grid;
   grid-template-columns: 1fr auto;

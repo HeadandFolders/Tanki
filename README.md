@@ -21,7 +21,7 @@ npm run build   # typecheck + production build
 
 | Input | Action |
 | --- | --- |
-| WASD | Move controlled tank |
+| Arrow keys | Move controlled tank |
 | Mouse | Aim |
 | Click | Shoot (or switch if clicking a friendly, or mark a wreck) |
 | Keys `1`–`6` | Switch to tank #N |

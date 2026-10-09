@@ -1,4 +1,5 @@
 import { CONFIG, homeTerritoryBounds, type Role } from "./config";
+import { buildArena, findClearPoint } from "./arena";
 import type { Tank, TeamId } from "./types";
 
 function mulberry32(seed: number): () => number {
@@ -13,32 +14,34 @@ function mulberry32(seed: number): () => number {
 
 export function createTeams(seed = Date.now()): Tank[] {
   const rng = mulberry32(seed >>> 0);
+  const walls = buildArena();
   const tanks: Tank[] = [];
-  const pad = CONFIG.arenaPadding + 36;
+  const pad = CONFIG.arenaPadding + CONFIG.wallThickness + CONFIG.tankRadius + 8;
   const W = CONFIG.canvasWidth;
 
   const blueHome = homeTerritoryBounds("blue");
   const redHome = homeTerritoryBounds("red");
 
-  // Friendly company deploys across the southern home strip; enemy across northern.
   tanks.push(
     ...spawnTeam(
       "blue",
       pad,
-      blueHome.y0 + 28,
+      Math.max(blueHome.y0 + 20, pad),
       W - pad,
-      blueHome.y1 - 36,
+      Math.min(blueHome.y1 - 20, CONFIG.canvasHeight - pad),
       rng,
+      walls,
     ),
   );
   tanks.push(
     ...spawnTeam(
       "red",
       pad,
-      redHome.y0 + 36,
+      Math.max(redHome.y0 + 20, pad),
       W - pad,
-      redHome.y1 - 28,
+      Math.min(redHome.y1 - 20, CONFIG.canvasHeight - pad),
       rng,
+      walls,
     ),
   );
 
@@ -54,6 +57,7 @@ function spawnTeam(
   x1: number,
   y1: number,
   rng: () => number,
+  walls: ReturnType<typeof buildArena>,
 ): Tank[] {
   const roles: Role[] = [
     "scout",
@@ -68,36 +72,62 @@ function spawnTeam(
     [roles[i], roles[j]] = [roles[j], roles[i]];
   }
 
+  const frontY =
+    team === "blue" ? y0 + (y1 - y0) * 0.35 : y1 - (y1 - y0) * 0.35;
+
   const out: Tank[] = [];
   for (let i = 0; i < 6; i++) {
     const role = roles[i];
     const stats = CONFIG.roles[role];
     const col = i % 3;
     const row = Math.floor(i / 3);
-    const x = x0 + ((x1 - x0) * (col + 0.5)) / 3 + (rng() - 0.5) * 12;
-    const y = y0 + ((y1 - y0) * (row + 0.5)) / 2 + (rng() - 0.5) * 10;
+    const preferX = x0 + ((x1 - x0) * (col + 0.5)) / 3;
+    const preferY = y0 + ((y1 - y0) * (row + 0.35)) / 2;
+    const pos = findClearPoint(
+      preferX,
+      preferY,
+      CONFIG.tankRadius,
+      walls,
+      y0,
+      y1,
+      x0,
+      x1,
+      rng,
+    );
     const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
+
+    // Scouts start probing toward the front line; shooters hold the band.
+    const goal =
+      team === "blue"
+        ? role === "scout"
+          ? {
+              kind: "moveTo" as const,
+              params: { x: preferX, y: frontY },
+            }
+          : {
+              kind: "holdPosition" as const,
+              params: { x: pos.x, y: pos.y },
+            }
+        : { kind: "attackNearest" as const };
+
     out.push({
       id: `${team}-${i + 1}`,
       team,
       number: i + 1,
       role,
-      x,
-      y,
+      x: pos.x,
+      y: pos.y,
       angle,
       hp: stats.maxHp,
       maxHp: stats.maxHp,
       alive: true,
       cooldown: 0,
-      goal:
-        team === "blue"
-          ? { kind: "holdPosition", params: { x, y } }
-          : { kind: "attackNearest" },
+      goal,
       standStillTimer: 0,
       reportProgress: 0,
       debugProgress: 0,
       debugTargetId: null,
-      lastKnownPos: { x, y },
+      lastKnownPos: { x: pos.x, y: pos.y },
       isCodeCarrier: false,
       lastShotAt: -999,
     });

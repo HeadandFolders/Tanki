@@ -18,7 +18,8 @@ export const CONFIG = {
       maxHp: 55,
       visionRadius: 165,
       debugRate: 0.55, // progress / second while standing
-      damage: 4,
+      canShoot: false,
+      damage: 0,
       fireCooldown: 0.55,
       projectileSpeed: 320,
       projectileLife: 0.7,
@@ -29,6 +30,7 @@ export const CONFIG = {
       maxHp: 110,
       visionRadius: 95,
       debugRate: 0.18,
+      canShoot: true,
       damage: 22,
       fireCooldown: 0.38,
       projectileSpeed: 420,

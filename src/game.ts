@@ -1,5 +1,12 @@
 import { CONFIG, type ShareMode } from "./config";
-import { buildArena, dist, rotateToward, tryMove, angleTo } from "./arena";
+import {
+  buildArena,
+  dist,
+  rotateToward,
+  tryMove,
+  angleTo,
+  unstickFromWalls,
+} from "./arena";
 import { updateTankAi } from "./ai";
 import {
   applyDiscoveryCells,
@@ -189,7 +196,9 @@ export function stepWorld(world: WorldState, dt: number, input: InputState): voi
       updatePlayer(world, tank, dt, input);
     } else {
       const ai = updateTankAi(world, tank, dt, false);
-      if (ai.wantShoot) tryShoot(world, tank, ai.aimAngle);
+      if (ai.wantShoot && CONFIG.roles[tank.role].canShoot) {
+        tryShoot(world, tank, ai.aimAngle);
+      }
     }
 
     const moved = dist(tank.x, tank.y, tank.lastKnownPos.x, tank.lastKnownPos.y);
@@ -222,13 +231,22 @@ function updatePlayer(
   dt: number,
   input: InputState,
 ): void {
+  const freed = unstickFromWalls(
+    tank.x,
+    tank.y,
+    CONFIG.tankRadius,
+    world.walls,
+  );
+  tank.x = freed.x;
+  tank.y = freed.y;
+
   const speed = CONFIG.roles[tank.role].speed;
   let mx = 0;
   let my = 0;
-  if (input.keys.has("w") || input.keys.has("arrowup")) my -= 1;
-  if (input.keys.has("s") || input.keys.has("arrowdown")) my += 1;
-  if (input.keys.has("a") || input.keys.has("arrowleft")) mx -= 1;
-  if (input.keys.has("d") || input.keys.has("arrowright")) mx += 1;
+  if (input.keys.has("arrowup")) my -= 1;
+  if (input.keys.has("arrowdown")) my += 1;
+  if (input.keys.has("arrowleft")) mx -= 1;
+  if (input.keys.has("arrowright")) mx += 1;
   if (mx || my) {
     const len = Math.hypot(mx, my);
     mx = (mx / len) * speed * dt;
@@ -262,9 +280,11 @@ function updatePlayer(
 
 function tryShoot(world: WorldState, tank: Tank, aimAngle: number): void {
   if (tank.cooldown > 0 || !tank.alive) return;
+  // Scouts are sensors/debuggers — no combat fire (shooters carry the guns).
+  if (tank.role === "scout") return;
   const stats = CONFIG.roles[tank.role];
 
-  // Find best target along aim for permission check (shooters)
+  // Shooters may only engage enemies visible to any teammate
   if (tank.role === "shooter") {
     const enemies = world.tanks.filter((e) => e.team !== tank.team && e.alive);
     let permitted = false;

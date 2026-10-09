@@ -304,20 +304,54 @@ function drawTank(
 ): void {
   const color = friendly ? CONFIG.colors.playerTeam : CONFIG.colors.enemyTeam;
   const r = CONFIG.tankRadius;
+  const isScout = t.role === "scout";
+
+  // Soft vision hint for friendlies (larger ring = scout)
+  if (friendly) {
+    const rad = CONFIG.roles[t.role].visionRadius;
+    ctx.strokeStyle = isScout
+      ? "rgba(154, 215, 255, 0.22)"
+      : "rgba(255, 211, 154, 0.14)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, Math.min(rad, 70), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   ctx.save();
   ctx.translate(t.x, t.y);
   ctx.rotate(t.angle);
 
   ctx.fillStyle = color;
-  ctx.strokeStyle = "#0a0e14";
+  ctx.strokeStyle = isScout ? "#9ad7ff" : "#ffd39a";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.roundRect(-r, -r * 0.75, r * 2, r * 1.5, 3);
+  if (isScout) {
+    // Diamond hull = scout
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r * 0.9, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r * 0.9, 0);
+    ctx.closePath();
+  } else {
+    // Box hull = shooter
+    ctx.roundRect(-r, -r * 0.75, r * 2, r * 1.5, 3);
+  }
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = "#d7dee8";
-  ctx.fillRect(0, -3, r + 10, 6);
+  if (!isScout) {
+    ctx.fillStyle = "#d7dee8";
+    ctx.fillRect(0, -3, r + 10, 6);
+  } else {
+    // Sensor mast
+    ctx.strokeStyle = "#d7dee8";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(r + 6, 0);
+    ctx.stroke();
+  }
 
   ctx.restore();
 
@@ -326,14 +360,16 @@ function drawTank(
   ctx.textAlign = "center";
   ctx.fillText(String(t.number), t.x, t.y + 4);
 
+  // Role letter badge
+  ctx.fillStyle = isScout ? "#9ad7ff" : "#ffd39a";
+  ctx.font = "bold 9px monospace";
+  ctx.fillText(isScout ? "S" : "G", t.x + r + 6, t.y - 2);
+
   const pct = t.hp / t.maxHp;
   ctx.fillStyle = "#222";
   ctx.fillRect(t.x - 14, t.y - r - 10, 28, 4);
   ctx.fillStyle = pct > 0.35 ? "#6dca7a" : "#e35d5d";
   ctx.fillRect(t.x - 14, t.y - r - 10, 28 * pct, 4);
-
-  ctx.fillStyle = t.role === "scout" ? "#9ad7ff" : "#ffd39a";
-  ctx.fillRect(t.x - 14, t.y - r - 14, t.role === "scout" ? 10 : 6, 2);
 
   if (friendly && t.isCodeCarrier) {
     ctx.fillStyle = CONFIG.colors.codeIcon;

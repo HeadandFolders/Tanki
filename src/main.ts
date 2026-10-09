@@ -84,7 +84,16 @@ window.addEventListener("keydown", (ev) => {
   const tag = (ev.target as HTMLElement)?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-  keys.add(ev.key.toLowerCase());
+  const k = ev.key.toLowerCase();
+  if (
+    k === "arrowup" ||
+    k === "arrowdown" ||
+    k === "arrowleft" ||
+    k === "arrowright"
+  ) {
+    ev.preventDefault();
+  }
+  keys.add(k);
   if (ev.key >= "1" && ev.key <= "6") {
     switchToNumber(world, Number(ev.key));
     refreshRoster();
@@ -128,10 +137,12 @@ function refreshRoster(): void {
     .map((t) => {
       const carrier = t.isCodeCarrier ? " ★" : "";
       const goal = t.alive ? t.goal.kind : "wreck";
+      const roleClass = t.role === "scout" ? "scout" : "shooter";
+      const roleLabel = t.role === "scout" ? "S scout" : "G gunner";
       return `<li class="${t.id === world.controlledId ? "active" : ""} ${
         t.alive ? "" : "dead"
       }" data-id="${t.id}">
-        <span>#${t.number}${carrier} <span class="role">${t.role}</span></span>
+        <span>#${t.number}${carrier} <span class="role ${roleClass}">${roleLabel}</span></span>
         <span>${t.alive ? `${Math.ceil(t.hp)}hp · ${goal}` : "down"}</span>
       </li>`;
     })

@@ -127,12 +127,73 @@ export function tryMove(
   r: number,
   walls: Wall[],
 ): { x: number; y: number } {
-  let nx = x + dx;
-  let ny = y + dy;
+  const nx = x + dx;
+  const ny = y + dy;
   if (!circleHitsWall(nx, ny, r, walls)) return { x: nx, y: ny };
   if (!circleHitsWall(x + dx, y, r, walls)) return { x: x + dx, y };
   if (!circleHitsWall(x, y + dy, r, walls)) return { x, y: y + dy };
   return { x, y };
+}
+
+/** Nudge a stuck body out of solid geometry (spawn / overlap recovery). */
+export function unstickFromWalls(
+  x: number,
+  y: number,
+  r: number,
+  walls: Wall[],
+): { x: number; y: number } {
+  if (!circleHitsWall(x, y, r, walls)) return { x, y };
+  const steps = [8, 16, 28, 44, 64];
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [-1, 1],
+    [1, -1],
+    [-1, -1],
+  ];
+  for (const distStep of steps) {
+    for (const [dx, dy] of dirs) {
+      const nx = x + dx * distStep;
+      const ny = y + dy * distStep;
+      if (!circleHitsWall(nx, ny, r, walls)) return { x: nx, y: ny };
+    }
+  }
+  return { x, y };
+}
+
+/** Find a clear point near a preferred spawn, staying inside a band. */
+export function findClearPoint(
+  preferX: number,
+  preferY: number,
+  r: number,
+  walls: Wall[],
+  yMin: number,
+  yMax: number,
+  xMin: number,
+  xMax: number,
+  rng: () => number,
+): { x: number; y: number } {
+  for (let i = 0; i < 40; i++) {
+    const x = Math.min(
+      xMax,
+      Math.max(xMin, preferX + (rng() - 0.5) * (20 + i * 6)),
+    );
+    const y = Math.min(
+      yMax,
+      Math.max(yMin, preferY + (rng() - 0.5) * (16 + i * 5)),
+    );
+    if (!circleHitsWall(x, y, r, walls)) return { x, y };
+  }
+  const mid = unstickFromWalls(
+    (xMin + xMax) / 2,
+    (yMin + yMax) / 2,
+    r,
+    walls,
+  );
+  return mid;
 }
 
 export function dist(ax: number, ay: number, bx: number, by: number): number {

@@ -88,16 +88,20 @@ window.addEventListener("keydown", (ev) => {
   const tag = (ev.target as HTMLElement)?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-  const k = ev.key.toLowerCase();
+  const k = ev.key === " " ? " " : ev.key.toLowerCase();
   if (
     k === "arrowup" ||
     k === "arrowdown" ||
     k === "arrowleft" ||
-    k === "arrowright"
+    k === "arrowright" ||
+    k === " "
   ) {
     ev.preventDefault();
   }
   keys.add(k);
+  if (k === " " || k === "spacebar") {
+    shooting = true;
+  }
   if (ev.key >= "1" && ev.key <= "6") {
     switchToNumber(world, Number(ev.key));
     refreshRoster();
@@ -105,7 +109,11 @@ window.addEventListener("keydown", (ev) => {
 });
 
 window.addEventListener("keyup", (ev) => {
-  keys.delete(ev.key.toLowerCase());
+  const k = ev.key === " " ? " " : ev.key.toLowerCase();
+  keys.delete(k);
+  if (k === " " || k === "spacebar") {
+    shooting = false;
+  }
 });
 
 shareSelect.addEventListener("change", () => {

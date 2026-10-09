@@ -23,7 +23,8 @@ npm run build   # typecheck + production build
 | --- | --- |
 | Arrow keys | Move controlled tank |
 | Mouse | Aim |
-| Click | Shoot (or switch if clicking a friendly, or mark a wreck) |
+| Space or Click | Shoot (gunners only; scouts have no guns) |
+| Click friendly / wreck | Switch tank / mark wreck |
 | Keys `1`–`6` | Switch to tank #N |
 | Orders box + Enter | Natural-language team orders |
 | Radio button | Voice orders (Chrome/Edge + mic; often unavailable on Try Live VM) |

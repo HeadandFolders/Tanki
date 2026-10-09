@@ -197,7 +197,7 @@ export function stepWorld(world: WorldState, dt: number, input: InputState): voi
     } else {
       const ai = updateTankAi(world, tank, dt, false);
       if (ai.wantShoot && CONFIG.roles[tank.role].canShoot) {
-        tryShoot(world, tank, ai.aimAngle);
+        tryShoot(world, tank, ai.aimAngle, false);
       }
     }
 
@@ -259,7 +259,22 @@ function updatePlayer(
   const aim = angleTo(tank.x, tank.y, input.mouseX, input.mouseY);
   tank.angle = rotateToward(tank.angle, aim, CONFIG.tankTurnRate * 1.4 * dt);
 
-  if (input.shooting) tryShoot(world, tank, tank.angle);
+  const wantShoot =
+    input.shooting || input.keys.has(" ") || input.keys.has("spacebar");
+  if (wantShoot) {
+    if (tank.role === "scout") {
+      // Soft tip once in a while so Space not feeling "broken" on a scout
+      if (Math.random() < 0.02) {
+        pushEvent(
+          world,
+          `Scout #${tank.number} has no guns — switch to a G gunner (keys 1–6).`,
+          "sys",
+        );
+      }
+    } else {
+      tryShoot(world, tank, tank.angle, true);
+    }
+  }
 
   // Player can debug / report by standing near marked wreck or with report goal
   // Also allow player to contribute to debug when near marked wreck standing still
@@ -278,47 +293,25 @@ function updatePlayer(
   }
 }
 
-function tryShoot(world: WorldState, tank: Tank, aimAngle: number): void {
+function tryShoot(
+  world: WorldState,
+  tank: Tank,
+  aimAngle: number,
+  isPlayer: boolean,
+): void {
   if (tank.cooldown > 0 || !tank.alive) return;
   // Scouts are sensors/debuggers — no combat fire (shooters carry the guns).
-  if (tank.role === "scout") return;
+  if (tank.role === "scout" || !CONFIG.roles[tank.role].canShoot) return;
   const stats = CONFIG.roles[tank.role];
 
-  // Shooters may only engage enemies visible to any teammate
-  if (tank.role === "shooter") {
+  // AI shooters: only open fire if some teammate can see a target.
+  // Player gunners may always shoot (Battle City feel / suppress into fog).
+  if (!isPlayer && tank.role === "shooter") {
     const enemies = world.tanks.filter((e) => e.team !== tank.team && e.alive);
-    let permitted = false;
-    for (const e of enemies) {
-      if (!anyTeammateSees(world, tank.team, e)) continue;
-      const ang = angleTo(tank.x, tank.y, e.x, e.y);
-      let diff = ang - aimAngle;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      if (Math.abs(diff) < 0.55 && dist(tank.x, tank.y, e.x, e.y) < 280) {
-        permitted = true;
-        break;
-      }
-    }
-    // Allow speculative shots into fog only if some enemy is team-visible nearby
-    if (!permitted) {
-      const anyVisible = enemies.some((e) =>
-        anyTeammateSees(world, tank.team, e),
-      );
-      if (!anyVisible) return;
-      // still allow shooting toward last marker
-      if (!world.markers.some((m) => m.kind === "enemy")) {
-        // if aiming near a visible enemy broadly
-        if (
-          !enemies.some(
-            (e) =>
-              anyTeammateSees(world, tank.team, e) &&
-              dist(tank.x, tank.y, e.x, e.y) < CONFIG.ai.attackAggro,
-          )
-        ) {
-          return;
-        }
-      }
-    }
+    const anyVisible = enemies.some((e) =>
+      anyTeammateSees(world, tank.team, e),
+    );
+    if (!anyVisible) return;
   }
 
   tank.cooldown = stats.fireCooldown;

@@ -46,28 +46,6 @@ function friendlies(tanks: Tank[]): Tank[] {
   return tanks.filter((t) => t.team === "blue" && t.alive);
 }
 
-function resolveTargets(text: string, tanks: Tank[]): Tank[] {
-  const alive = friendlies(tanks);
-  const lower = text.toLowerCase();
-  if (/\b(all|everyone|team)\b/.test(lower)) return alive;
-
-  const nums = [...lower.matchAll(/\b(?:tank\s*)?#?([1-6])\b/g)].map((m) =>
-    Number(m[1]),
-  );
-  if (nums.length) {
-    return alive.filter((t) => nums.includes(t.number));
-  }
-
-  if (/\bscouts?\b/.test(lower)) return alive.filter((t) => t.role === "scout");
-  if (/\bshooters?\b/.test(lower))
-    return alive.filter((t) => t.role === "shooter");
-
-  // default: currently controlled if alive, else all
-  const controlled = alive.find((t) => t.id === /* filled below */ t.id);
-  void controlled;
-  return alive;
-}
-
 function resolveTargetsWithControl(
   text: string,
   tanks: Tank[],
@@ -318,5 +296,3 @@ Goals only from that list. tankId must be living blue tanks. You may loosely rei
   }
 }
 
-// silence unused helper if tree-shaken oddly
-void resolveTargets;

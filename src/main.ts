@@ -13,10 +13,12 @@ import {
   markWreckAt,
   pushEvent,
   sendOrder,
+  startMatch,
   stepWorld,
   switchToNumber,
   switchToTank,
 } from "./game";
+import { detectLlmProvider } from "./orders";
 import { renderWorld } from "./render";
 import { createVoiceRadio } from "./voice";
 import type { WorldState } from "./types";
@@ -36,6 +38,9 @@ const modeSelect = document.querySelector<HTMLSelectElement>("#game-mode")!;
 const restartBtn = document.querySelector<HTMLButtonElement>("#restart")!;
 const voiceBtn = document.querySelector<HTMLButtonElement>("#voice-btn")!;
 const voiceStatusEl = document.querySelector("#voice-status")!;
+const roundGate = document.querySelector<HTMLElement>("#round-gate")!;
+const llmStatusEl = document.querySelector<HTMLElement>("#llm-status")!;
+const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!;
 
 /** Apply Mode-menu preset to the Share select, then return resolved modes. */
 function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
@@ -59,6 +64,65 @@ let world: WorldState = createWorld(boot.share, boot.mode);
 const bootKey = resolveApiKey("");
 if (bootKey) {
   apiKeyInput.placeholder = `key loaded from ${apiKeySource("")}`;
+}
+
+function describeLlmStatus(): {
+  ready: boolean;
+  title: string;
+  detail: string;
+  provider?: string;
+} {
+  const key = resolveApiKey(apiKeyInput.value);
+  const src = apiKeySource(apiKeyInput.value);
+  if (!key) {
+    return {
+      ready: false,
+      title: "LLM: offline (keyword mock)",
+      detail:
+        "No API key. Orders use the local keyword parser. Paste a key in the sidebar or src/api-key.local.ts to enable cloud LLM calls.",
+    };
+  }
+  const provider = detectLlmProvider(key);
+  const label =
+    provider === "gemini"
+      ? "Gemini"
+      : provider === "anthropic"
+        ? "Anthropic"
+        : "OpenAI";
+  const srcLabel =
+    src === "ui" ? "sidebar field" : src === "file" ? "api-key.local.ts" : "env";
+  return {
+    ready: true,
+    title: `LLM: ready (${label})`,
+    detail: `Key loaded from ${srcLabel}. Radio/typed orders will call ${label} via /llm/* proxy, then set bot goals.`,
+    provider: label,
+  };
+}
+
+function refreshLlmStatusUi(): void {
+  const st = describeLlmStatus();
+  llmStatusEl.classList.toggle("llm-ok", st.ready);
+  llmStatusEl.classList.toggle("llm-off", !st.ready);
+  llmStatusEl.innerHTML = `<strong>${st.title}</strong><span>${st.detail}</span>`;
+}
+
+function showRoundGate(): void {
+  refreshLlmStatusUi();
+  roundGate.hidden = false;
+  startRoundBtn.focus();
+}
+
+function hideRoundGate(): void {
+  roundGate.hidden = true;
+  canvas.focus();
+}
+
+function beginRound(): void {
+  if (world.outcome !== "ready") return;
+  startMatch(world);
+  hideRoundGate();
+  flushLogs();
+  refreshRoster();
 }
 
 const keys = new Set<string>();
@@ -157,10 +221,21 @@ function restartMatch(fromMenu = false): void {
   eventsEl.innerHTML = "";
   refreshRoster();
   flushLogs();
+  showRoundGate();
 }
 
 restartBtn.addEventListener("click", () => restartMatch(false));
 modeSelect.addEventListener("change", () => restartMatch(true));
+startRoundBtn.addEventListener("click", beginRound);
+apiKeyInput.addEventListener("input", () => {
+  if (world.outcome === "ready") refreshLlmStatusUi();
+});
+roundGate.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" || ev.key === " ") {
+    ev.preventDefault();
+    beginRound();
+  }
+});
 
 async function dispatchOrder(
   text: string,
@@ -315,12 +390,15 @@ function frame(ts: number): void {
       : world.shareMode === "clear"
         ? "TDM No Fog"
         : "TDM";
-  matchStateEl.textContent =
-    world.outcome === "playing"
-      ? me
-        ? `${modeLabel} · #${me.number} · ${world.shareMode}`
-        : "No tanks"
-      : world.outcome.toUpperCase();
+  if (world.outcome === "ready") {
+    matchStateEl.textContent = `${modeLabel} · READY`;
+  } else if (world.outcome === "playing") {
+    matchStateEl.textContent = me
+      ? `${modeLabel} · #${me.number} · ${world.shareMode}`
+      : "No tanks";
+  } else {
+    matchStateEl.textContent = world.outcome.toUpperCase();
+  }
 
   if (Math.floor(world.time * 4) % 2 === 0) refreshRoster();
   flushLogs();
@@ -330,5 +408,5 @@ function frame(ts: number): void {
 
 refreshRoster();
 flushLogs();
-canvas.focus();
+showRoundGate();
 requestAnimationFrame(frame);

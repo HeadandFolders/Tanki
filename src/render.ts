@@ -52,7 +52,12 @@ export function renderWorld(
     ctx.setLineDash([]);
   }
 
-  if (world.outcome !== "playing") {
+  // End-of-match banner only (ready gate uses the HTML overlay).
+  if (
+    world.outcome === "win" ||
+    world.outcome === "lose" ||
+    world.outcome === "draw"
+  ) {
     ctx.fillStyle = "rgba(0,0,0,0.65)";
     ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = CONFIG.colors.accent;

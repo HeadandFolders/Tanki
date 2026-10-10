@@ -75,6 +75,91 @@ body {
   font-weight: 700;
 }
 
+.round-gate {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.72);
+  z-index: 2;
+}
+
+.round-gate[hidden] {
+  display: none !important;
+}
+
+.round-gate-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  background: #0c1118;
+  box-shadow: 0 0 0 1px #1a1a20;
+}
+
+.round-gate-card h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.round-gate-card .hint {
+  margin: 0;
+}
+
+.llm-status {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: #12161e;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.llm-status strong {
+  color: var(--ink);
+}
+
+.llm-status.llm-ok {
+  border-color: #3a5a3a;
+  background: #101810;
+}
+
+.llm-status.llm-ok strong {
+  color: #8fd48f;
+}
+
+.llm-status.llm-off {
+  border-color: #5a4a20;
+  background: #18140c;
+}
+
+.llm-status.llm-off strong {
+  color: #f0d060;
+}
+
+#start-round {
+  justify-self: start;
+  min-width: 7rem;
+  padding: 10px 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: #3a2e14;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#start-round:hover {
+  background: #4a3a18;
+}
+
 .layout {
   flex: 1 1 auto;
   min-height: 0;
@@ -84,6 +169,7 @@ body {
 }
 
 .canvas-wrap {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;

@@ -46,6 +46,7 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 | Phrase buttons / text box | Same order path without mic |
 | Mode select | Team Deathmatch No Fog (default) / Team Deathmatch / Capture the Code |
 | Share select | `clear` (no fog) / `report` / `auto` / `none` |
+| Start | After each Restart/mode change: review LLM status, then Start the clock |
 
 ## Modes
 

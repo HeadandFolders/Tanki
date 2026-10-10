@@ -124,7 +124,8 @@ export interface WorldState {
   fogCols: number;
   fogRows: number;
   controlledId: string;
-  outcome: "playing" | "win" | "lose" | "draw";
+  /** ready = briefing / LLM status gate before Start; playing = live match */
+  outcome: "ready" | "playing" | "win" | "lose" | "draw";
   chat: ChatLine[];
   events: ChatLine[];
   nextWreckLabel: number;

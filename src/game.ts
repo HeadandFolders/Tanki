@@ -56,7 +56,7 @@ export function createWorld(
     fogCols: fog.cols,
     fogRows: fog.rows,
     controlledId: controlled.id,
-    outcome: "playing",
+    outcome: "ready",
     chat: [],
     events: [],
     nextWreckLabel: 0,
@@ -77,8 +77,8 @@ export function createWorld(
     pushChat(
       world,
       shareMode === "clear"
-        ? "Net open. TDM No Fog. Radio LIVE for voice orders."
-        : "Net open. TDM rules. Radio LIVE for voice orders.",
+        ? "Stand by. TDM No Fog. Confirm radio / LLM, then Start."
+        : "Stand by. TDM rules. Confirm radio / LLM, then Start.",
       "sys",
     );
   } else {
@@ -87,9 +87,18 @@ export function createWorld(
       "Capture the Code — debug the enemy code-carrier wreck to win.",
       "sys",
     );
-    pushChat(world, "Net open. Find and debug their carrier.", "sys");
+    pushChat(world, "Stand by. Confirm radio / LLM, then Start.", "sys");
   }
+  pushEvent(world, "Round ready — review LLM status and press Start.", "sys");
   return world;
+}
+
+/** Begin the live match from the ready gate. */
+export function startMatch(world: WorldState): void {
+  if (world.outcome !== "ready") return;
+  world.outcome = "playing";
+  pushEvent(world, "Match started.", "warn");
+  pushChat(world, "Net live. Give orders.", "sys");
 }
 
 export function pushChat(

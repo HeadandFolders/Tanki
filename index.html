@@ -37,6 +37,14 @@
       <main class="layout">
         <div class="canvas-wrap">
           <canvas id="game" width="1280" height="800" tabindex="0"></canvas>
+          <div id="round-gate" class="round-gate" hidden>
+            <div class="round-gate-card">
+              <h2>Round ready</h2>
+              <p class="hint">Confirm how orders will be parsed before the clock starts.</p>
+              <div id="llm-status" class="llm-status" role="status" aria-live="polite"></div>
+              <button id="start-round" type="button">Start</button>
+            </div>
+          </div>
         </div>
 
         <aside class="panel">

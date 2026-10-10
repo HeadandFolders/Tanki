@@ -91,13 +91,57 @@ body {
 }
 
 .round-gate-card {
-  width: min(460px, 100%);
+  width: min(520px, 100%);
+  max-height: min(92vh, 720px);
+  overflow: auto;
   display: grid;
-  gap: 12px;
+  gap: 14px;
   padding: 18px 20px;
   border: 1px solid var(--line);
   background: #0c1118;
   box-shadow: 0 0 0 1px #1a1a20;
+}
+
+.gate-section {
+  display: grid;
+  gap: 8px;
+}
+
+.gate-modes {
+  display: grid;
+  gap: 8px;
+}
+
+.gate-mode {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  background: #12161e;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.gate-mode strong {
+  font-size: 0.8rem;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.gate-mode span {
+  font-size: 0.68rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.gate-mode[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: #3a2e14;
+}
+
+.gate-mode:hover {
+  border-color: var(--accent);
 }
 
 .gate-key-row {

@@ -13,23 +13,24 @@
         <div class="status">
           <span id="timer">5:00</span>
           <span id="match-state">Hunting…</span>
-          <label>
+          <label class="topbar-mode-label">
             Mode
-            <select id="game-mode">
-              <option value="tdm-nofog" selected>Team Deathmatch No Fog</option>
-              <option value="tdm">Team Deathmatch</option>
+            <select id="game-mode" title="Also changeable from the Game menu">
+              <option value="tdm-nofog" selected>TDM No Fog (all-clear)</option>
+              <option value="tdm">TDM Fog</option>
               <option value="ctf">Capture the Code</option>
             </select>
           </label>
-          <label>
+          <label class="topbar-share-label">
             Share
             <select id="share-mode">
-              <option value="clear" selected>clear (full vision)</option>
+              <option value="clear" selected>clear (all-clear / no fog)</option>
               <option value="report">report</option>
               <option value="auto">auto</option>
               <option value="none">none</option>
             </select>
           </label>
+          <button id="menu-btn" type="button" title="Open game menu">Menu</button>
           <button id="restart" type="button">Restart</button>
         </div>
       </header>
@@ -39,23 +40,47 @@
           <canvas id="game" width="1280" height="800" tabindex="0"></canvas>
           <div id="round-gate" class="round-gate" hidden>
             <div class="round-gate-card">
-              <h2>Before you deploy</h2>
-              <p class="hint">
-                Enter an LLM API key and run a dummy call. Start unlocks only after the key is verified
-                (or choose offline keyword orders).
-              </p>
-              <label class="gate-key-row">
-                <span class="gate-key-label">LLM API key</span>
-                <input
-                  id="gate-api-key"
-                  type="password"
-                  placeholder="OpenAI sk-… / Gemini AIza… / Anthropic sk-ant-…"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <span class="hint gate-key-hint">Also syncs to the sidebar field. Optional file: src/api-key.local.ts</span>
-              </label>
-              <div id="llm-status" class="llm-status" role="status" aria-live="polite"></div>
+              <h2>Game menu</h2>
+              <p class="hint">Pick a mode, verify your LLM key, then Start.</p>
+
+              <div class="gate-section">
+                <span class="gate-key-label">Mode</span>
+                <div id="gate-modes" class="gate-modes" role="radiogroup" aria-label="Game mode">
+                  <button
+                    type="button"
+                    class="gate-mode"
+                    data-mode="tdm-nofog"
+                    aria-pressed="true"
+                  >
+                    <strong>Team Deathmatch · No Fog</strong>
+                    <span>All-clear map — full terrain + enemies visible. Default playtest mode.</span>
+                  </button>
+                  <button type="button" class="gate-mode" data-mode="tdm" aria-pressed="false">
+                    <strong>Team Deathmatch · Fog</strong>
+                    <span>Classic fog of war with report-in share.</span>
+                  </button>
+                  <button type="button" class="gate-mode" data-mode="ctf" aria-pressed="false">
+                    <strong>Capture the Code</strong>
+                    <span>Debug the enemy code-carrier wreck to win.</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="gate-section">
+                <label class="gate-key-row">
+                  <span class="gate-key-label">LLM API key</span>
+                  <input
+                    id="gate-api-key"
+                    type="password"
+                    placeholder="OpenAI sk-… / Gemini AIza… / Anthropic sk-ant-…"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <span class="hint gate-key-hint">Gemini AIza… keys work. Optional file: src/api-key.local.ts</span>
+                </label>
+                <div id="llm-status" class="llm-status" role="status" aria-live="polite"></div>
+              </div>
+
               <div class="gate-actions">
                 <button id="recheck-llm" type="button">Test connection</button>
                 <button id="start-round" type="button" disabled>Start</button>

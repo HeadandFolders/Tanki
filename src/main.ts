@@ -44,6 +44,10 @@ const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!
 const startOfflineBtn = document.querySelector<HTMLButtonElement>("#start-offline")!;
 const recheckLlmBtn = document.querySelector<HTMLButtonElement>("#recheck-llm")!;
 const gateApiKeyInput = document.querySelector<HTMLInputElement>("#gate-api-key")!;
+const menuBtn = document.querySelector<HTMLButtonElement>("#menu-btn")!;
+const gateModeBtns = [
+  ...document.querySelectorAll<HTMLButtonElement>("#gate-modes .gate-mode"),
+];
 
 /** Apply Mode-menu preset to the Share select, then return resolved modes. */
 function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
@@ -196,8 +200,34 @@ async function runLlmProbe(): Promise<void> {
   renderGateStatus();
 }
 
+function syncGateModeButtons(): void {
+  const current = modeSelect.value;
+  for (const btn of gateModeBtns) {
+    const on = btn.dataset.mode === current;
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function selectMenuMode(menu: MenuMode, rebuild: boolean): void {
+  modeSelect.value = menu;
+  const resolved = modesFromMenu(menu);
+  shareSelect.value = resolved.share;
+  syncGateModeButtons();
+  if (rebuild) {
+    // Rebuild the paused match with the new mode (still behind the menu)
+    world = createWorld(resolved.share, resolved.mode);
+    chatCursor = 0;
+    eventCursor = 0;
+    chatEl.innerHTML = "";
+    eventsEl.innerHTML = "";
+    refreshRoster();
+    flushLogs();
+  }
+}
+
 function showRoundGate(): void {
   roundGate.hidden = false;
+  syncGateModeButtons();
   gateProbe = { kind: "idle" };
   renderGateStatus();
   // If file/env already has a key, auto-run the dummy call; else wait for input
@@ -343,8 +373,31 @@ function restartMatch(fromMenu = false): void {
   showRoundGate();
 }
 
+function openGameMenu(): void {
+  // Pause live match back to ready so mode/key can be changed
+  if (world.outcome === "playing") {
+    world.outcome = "ready";
+  }
+  if (world.outcome === "win" || world.outcome === "lose" || world.outcome === "draw") {
+    restartMatch(false);
+    return;
+  }
+  showRoundGate();
+}
+
 restartBtn.addEventListener("click", () => restartMatch(false));
-modeSelect.addEventListener("change", () => restartMatch(true));
+menuBtn.addEventListener("click", openGameMenu);
+modeSelect.addEventListener("change", () => {
+  syncGateModeButtons();
+  restartMatch(true);
+});
+for (const btn of gateModeBtns) {
+  btn.addEventListener("click", () => {
+    const menu = btn.dataset.mode as MenuMode;
+    if (!menu) return;
+    selectMenuMode(menu, true);
+  });
+}
 startRoundBtn.addEventListener("click", () => beginRound(false));
 startOfflineBtn.addEventListener("click", () => beginRound(true));
 recheckLlmBtn.addEventListener("click", () => {

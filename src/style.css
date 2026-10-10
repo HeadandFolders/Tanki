@@ -201,6 +201,31 @@ body {
   font-size: 0.75rem;
 }
 
+.mp-net-tips {
+  margin-top: 6px;
+  opacity: 0.9;
+}
+
+.mp-lan-urls {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  background: #0c1018;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #c8d4e8;
+}
+
+.mp-lan-urls strong {
+  color: #9ecf6a;
+  font-weight: 600;
+}
+
+.mp-lan-urls .mp-lan-warn {
+  margin-top: 6px;
+  color: #e0b060;
+}
+
 .mp-net-status {
   margin-top: 8px;
   font-size: 0.72rem;

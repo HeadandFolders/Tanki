@@ -73,6 +73,7 @@ const mpHostBtn = document.querySelector<HTMLButtonElement>("#mp-host-btn")!;
 const mpJoinBtn = document.querySelector<HTMLButtonElement>("#mp-join-btn")!;
 const mpStartBtn = document.querySelector<HTMLButtonElement>("#mp-start-btn")!;
 const mpNetStatus = document.querySelector<HTMLElement>("#mp-net-status")!;
+const mpLanUrls = document.querySelector<HTMLElement>("#mp-lan-urls")!;
 
 /** Local human team for online play (host=blue, guest=red). */
 let localTeam: NetTeam = "blue";
@@ -85,6 +86,40 @@ function setMpStatus(text: string, kind: "" | "ok" | "err" = ""): void {
   mpNetStatus.textContent = text;
   mpNetStatus.classList.remove("ok", "err");
   if (kind) mpNetStatus.classList.add(kind);
+}
+
+/** Prefer home Wi‑Fi IPs; flag Cursor/cloud 172.x as unreachable from home. */
+function rankLanIp(ip: string): number {
+  if (ip.startsWith("192.168.")) return 0;
+  if (ip.startsWith("10.")) return 1;
+  if (ip.startsWith("172.")) return 3;
+  return 2;
+}
+
+function showHostLanUrls(ips: string[], room: string): void {
+  const sorted = [...ips].sort(
+    (a, b) => rankLanIp(a) - rankLanIp(b) || a.localeCompare(b),
+  );
+  const preferred = sorted.filter((ip) => !ip.startsWith("172."));
+  const cloudish = sorted.filter((ip) => ip.startsWith("172."));
+  const show = preferred.length ? preferred : sorted;
+  const lines = show.map(
+    (ip) =>
+      `<div><strong>http://${ip}:4847</strong> · room <code>${room}</code> · relay <code>ws://${ip}:4855</code></div>`,
+  );
+  let warn = "";
+  if (!preferred.length && cloudish.length) {
+    warn = `<p class="mp-lan-warn">These look like cloud/docker addresses (172.x). Phones on home Wi‑Fi cannot reach a Cursor VM. Run <code>npm run dev:mp</code> on your home PC and share a <code>192.168.x.x</code> URL instead.</p>`;
+  } else if (cloudish.length) {
+    warn = `<p class="mp-lan-warn">Ignoring 172.x (${cloudish.join(", ")}) — often unreachable from home Wi‑Fi.</p>`;
+  }
+  mpLanUrls.innerHTML = `<div>Guest opens (same Wi‑Fi):</div>${lines.join("")}${warn}`;
+  mpLanUrls.hidden = false;
+}
+
+function clearHostLanUrls(): void {
+  mpLanUrls.hidden = true;
+  mpLanUrls.innerHTML = "";
 }
 
 function syncMpPanel(): void {
@@ -100,25 +135,37 @@ function syncMpPanel(): void {
 const net = new NetClient({
   onStatus: (s) => {
     if (s.kind === "connecting") {
+      clearHostLanUrls();
       setMpStatus("Connecting to relay…");
       mpStartBtn.disabled = true;
     } else if (s.kind === "connected" || s.kind === "lobby") {
       localTeam = s.team;
       netGuestConnected = s.kind === "lobby" ? s.guestConnected : false;
       const info = net.info;
-      const ips = info.lanIps.length
-        ? info.lanIps.map((ip) => `http://${ip}:4847`).join(" · ")
-        : "(checking LAN IPs…)";
+      if (s.role === "host" && info.lanIps.length) {
+        showHostLanUrls(info.lanIps, s.room);
+      } else {
+        clearHostLanUrls();
+      }
+      const homeIps = info.lanIps.filter((ip) => !ip.startsWith("172."));
+      const tip =
+        s.role === "host" && !homeIps.length && info.lanIps.some((ip) => ip.startsWith("172."))
+          ? "\n⚠ 172.x only — run host on your home PC, not a Cursor cloud VM."
+          : "";
       const line =
         s.kind === "lobby" && s.role === "host"
-          ? `Hosting room ${s.room} as BLUE.\nGuest opens: ${ips}\nThen Join with room ${s.room}` +
-            (s.guestConnected ? "\nGuest connected — Start match." : "\nWaiting for guest…")
+          ? `Hosting room ${s.room} as BLUE.` +
+            (s.guestConnected
+              ? "\nGuest connected — click Start when guest joins."
+              : "\nWaiting for guest on the same Wi‑Fi…") +
+            tip
           : s.kind === "lobby" && s.role === "guest"
             ? `Joined room ${s.room} as RED. Waiting for host to Start.`
             : `Connected as ${s.role.toUpperCase()} (${s.team}) room ${s.room}`;
       setMpStatus(line, "ok");
       mpStartBtn.disabled = !(s.role === "host" && netGuestConnected);
     } else if (s.kind === "error") {
+      clearHostLanUrls();
       setMpStatus(s.message, "err");
       mpStartBtn.disabled = true;
     }

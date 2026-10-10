@@ -41,12 +41,35 @@ npm run build
 
 ### Connect two devices (LAN)
 
-1. **Host laptop:** `npm run dev:mp`. Open the game, select **Multiplayer · Online**, set a room code (default `TANK`), click **Host match**. The panel shows LAN URLs like `http://192.168.x.x:4847`.
-2. **Guest device:** open that host URL in a browser (same Wi‑Fi). Select **Multiplayer · Online**, same room code, click **Join match**.
-3. **Host:** when status says guest connected, click **Start when guest joins**.
-4. Host plays **blue** (south); guest plays **red** (north). Same Offline rules: no fog, all gunners, blink deaths, denser map, wipe to win.
+**Host must be your home PC** on the same Wi‑Fi as the guest. A Cursor cloud VM IP (`172.x`, e.g. `172.30.0.2`) is **not** reachable from home Wi‑Fi — “took too long to respond” means you shared the wrong machine’s address.
+
+Vite and the WS relay already bind `0.0.0.0` (ports **4847** / **4855**).
+
+1. On your **home PC**: `npm run dev:mp` (branch `cursor/mp-offline-mode-1e16`).
+2. Open `http://127.0.0.1:4847` → **Multiplayer · Online** → room (default `TANK`) → **Host match**.
+3. Share a guest URL that looks like **`http://192.168.x.x:4847`** (shown in the Online panel). Avoid `172.x`.
+4. **Guest phone/laptop** (same Wi‑Fi): open that URL → Online → same room → **Join match**.
+5. **Host:** when status says guest connected → **Start when guest joins**. Host=blue, guest=red.
 
 Optional: set Relay to `ws://<host-lan-ip>:4855` if the guest page is not loaded from the host.
+
+#### Windows Firewall (host PC)
+
+Allow inbound TCP for Vite + relay (PowerShell **as Administrator**):
+
+```powershell
+New-NetFirewallRule -DisplayName "Tanki Vite 4847" -Direction Inbound -Protocol TCP -LocalPort 4847 -Action Allow
+New-NetFirewallRule -DisplayName "Tanki WS 4855" -Direction Inbound -Protocol TCP -LocalPort 4855 -Action Allow
+```
+
+Or: Windows Security → Firewall → Advanced → Inbound Rules → New Rule → Port → TCP → `4847,4855` → Allow.
+
+#### If guest “took too long to respond”
+
+- Confirm the URL is your home PC’s `192.168.x.x` (run `ipconfig` / `ip addr` on the host), not a Cursor agent VM.
+- Same Wi‑Fi; disable VPN; some routers isolate “Guest” SSIDs.
+- Firewall allows **4847** and **4855**.
+- On host, `http://127.0.0.1:4847` and `http://127.0.0.1:4855/health` work locally.
 
 ## LLM API key (Radio → STT → LLM → bots)
 

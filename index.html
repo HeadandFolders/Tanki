@@ -82,7 +82,15 @@
 
               <div id="mp-net-panel" class="gate-section mp-net-panel" hidden>
                 <span class="gate-key-label">LAN multiplayer</span>
-                <p class="hint">Host runs <code>npm run dev:mp</code>. Guest opens this page via the host LAN IP, then Join.</p>
+                <p class="hint">
+                  Run <code>npm run dev:mp</code> on your <strong>home PC</strong> (same Wi‑Fi as the guest).
+                  Cursor cloud VM IPs (<code>172.x</code>) are not reachable from home Wi‑Fi.
+                </p>
+                <p class="hint mp-net-tips">
+                  Guest URL looks like <code>http://192.168.x.x:4847</code>.
+                  Windows: allow inbound TCP <strong>4847</strong> and <strong>4855</strong> in Firewall.
+                  Both devices must share the same Wi‑Fi (not guest/VPN isolation).
+                </p>
                 <div class="mp-net-row">
                   <label class="gate-llm-field">
                     <span>Room code</span>
@@ -90,7 +98,7 @@
                   </label>
                   <label class="gate-llm-field">
                     <span>Relay (optional)</span>
-                    <input id="mp-url" type="text" placeholder="ws://HOST:4855" autocomplete="off" spellcheck="false" />
+                    <input id="mp-url" type="text" placeholder="ws://192.168.x.x:4855" autocomplete="off" spellcheck="false" />
                   </label>
                 </div>
                 <div class="mp-net-actions">
@@ -98,6 +106,7 @@
                   <button id="mp-join-btn" type="button">Join match</button>
                   <button id="mp-start-btn" type="button" disabled>Start when guest joins</button>
                 </div>
+                <div id="mp-lan-urls" class="mp-lan-urls" hidden></div>
                 <div id="mp-net-status" class="mp-net-status" role="status">Not connected.</div>
               </div>
 

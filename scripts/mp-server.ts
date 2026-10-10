@@ -19,16 +19,33 @@ import {
 
 const PORT = CONFIG.net.port;
 
+/** Prefer home Wi‑Fi (192.168 / 10) over docker/cloud (often 172.x). */
+function lanIpRank(ip: string): number {
+  if (ip.startsWith("192.168.")) return 0;
+  if (ip.startsWith("10.")) return 1;
+  if (ip.startsWith("172.")) return 3; // often cloud/docker — last
+  return 2;
+}
+
 function lanIps(): string[] {
   const out: string[] = [];
   const nets = os.networkInterfaces();
   for (const list of Object.values(nets)) {
     if (!list) continue;
     for (const n of list) {
-      if (n.family === "IPv4" && !n.internal) out.push(n.address);
+      const family = String(n.family);
+      if ((family === "IPv4" || family === "4") && !n.internal) {
+        out.push(n.address);
+      }
     }
   }
+  out.sort((a, b) => lanIpRank(a) - lanIpRank(b) || a.localeCompare(b));
   return out.length ? out : ["127.0.0.1"];
+}
+
+function looksLikeCloudOnly(ips: string[]): boolean {
+  const usable = ips.filter((ip) => ip !== "127.0.0.1");
+  return usable.length > 0 && usable.every((ip) => ip.startsWith("172."));
 }
 
 interface Peer {
@@ -224,8 +241,12 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `[mp] Fog of War relay on 0.0.0.0:${PORT}  LAN: ${lanIps().join(", ")}`,
-  );
+  const ips = lanIps();
+  console.log(`[mp] Fog of War relay on 0.0.0.0:${PORT}  LAN: ${ips.join(", ")}`);
   console.log(`[mp] Guest opens http://<lan-ip>:4847 and joins the room.`);
+  if (looksLikeCloudOnly(ips)) {
+    console.warn(
+      "[mp] Only 172.x addresses found — often a Cursor/cloud VM. Guests on home Wi‑Fi cannot reach this IP. Run npm run dev:mp on your home PC instead.",
+    );
+  }
 });

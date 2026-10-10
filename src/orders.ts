@@ -33,20 +33,16 @@ export async function interpretOrder(
         };
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "LLM error";
+      const raw = err instanceof Error ? err.message : "LLM error";
+      const msg = /401|invalid.?api.?key|incorrect api key/i.test(raw)
+        ? `invalid API key (${raw})`
+        : raw;
       const fallback = interpretOffline(text, tanks, worldState);
       return {
-        results: [
-          {
-            tankId: worldState.controlledId,
-            goal: "patrol",
-            params: {},
-            chatLine: `Command net: LLM failed (${msg}). Falling back to keyword parse.`,
-          },
-          ...fallback,
-        ],
+        results: fallback,
         source: "mock",
         ms: Math.round(performance.now() - t0),
+        llmError: msg,
       };
     }
   }
@@ -77,8 +73,17 @@ function resolveTargetsWithControl(
   if (nums.length) return alive.filter((t) => nums.includes(t.number));
 
   if (/\bscouts?\b/.test(lower)) return alive.filter((t) => t.role === "scout");
-  if (/\bshooters?\b/.test(lower))
+  if (/\b(shooters?|gunners?)\b/.test(lower))
     return alive.filter((t) => t.role === "shooter");
+
+  // Formation / company verbs imply the whole living team when no addressee
+  if (
+    /\b(spread(\s*out)?|fan\s*out|disperse|space\s*out|fall\s*back|retreat)\b/.test(
+      lower,
+    )
+  ) {
+    return alive;
+  }
 
   const controlled = alive.find((t) => t.id === controlledId);
   return controlled ? [controlled] : alive.slice(0, 1);
@@ -281,11 +286,19 @@ export function interpretOffline(
   }
 
   const homeY = CONFIG.canvasHeight * (1 - CONFIG.homeTerritoryFraction) - 60;
+  const spacing = CONFIG.ai.formationSpacing;
   const results: OrderResult[] = [];
   for (const t of targets) {
     let p = { ...params };
     if (perTankParams) {
-      if (kind === "spreadOut" || kind === "holdPosition") {
+      if (kind === "spreadOut") {
+        // Wide lane across the southern half — not a mid-map pile
+        const lane = (t.number - 0.5) / 6;
+        p = {
+          x: CONFIG.canvasWidth * (0.1 + lane * 0.8),
+          y: CONFIG.canvasHeight * (0.55 + (t.number % 3) * 0.1),
+        };
+      } else if (kind === "holdPosition") {
         const lane = (t.number - 0.5) / 6;
         p = {
           x: CONFIG.canvasWidth * (0.12 + lane * 0.76),
@@ -303,12 +316,19 @@ export function interpretOffline(
       p.y != null &&
       targets.length > 1
     ) {
-      // Fan out so the company doesn't stack on one corner pixel
+      // Fan out wider than separation radius so bots don't shove each other
       const col = (t.number - 1) % 3;
       const row = Math.floor((t.number - 1) / 3);
+      const pad = CONFIG.arenaPadding + CONFIG.tankRadius + 8;
       p = {
-        x: p.x + (col - 1) * 36,
-        y: p.y + (row - 0.5) * 36,
+        x: Math.min(
+          CONFIG.canvasWidth - pad,
+          Math.max(pad, p.x + (col - 1) * spacing),
+        ),
+        y: Math.min(
+          CONFIG.canvasHeight - pad,
+          Math.max(pad, p.y + (row - 0.5) * spacing),
+        ),
       };
     }
     let chatLine = `#${t.number}: ack, ${verb}.`;

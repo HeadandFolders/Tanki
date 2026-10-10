@@ -66,6 +66,7 @@ function steerTo(
   speed: number,
   dt: number,
   world: WorldState,
+  opts: { separate?: boolean } = {},
 ): { moveX: number; moveY: number; aimAngle: number } {
   const ang = angleTo(tank.x, tank.y, tx, ty);
   tank.angle = rotateToward(tank.angle, ang, CONFIG.tankTurnRate * 1.8 * dt);
@@ -75,15 +76,28 @@ function steerTo(
   let vx = Math.cos(ang) * speed;
   let vy = Math.sin(ang) * speed;
 
-  // Strong separation so bots don't stack / jitter in a pile
-  for (const o of world.tanks) {
-    if (o.id === tank.id || !o.alive) continue;
-    const dd = dist(tank.x, tank.y, o.x, o.y);
-    if (dd < CONFIG.tankRadius * 4.5 && dd > 0.1) {
-      const force = CONFIG.ai.separation * (1 - dd / (CONFIG.tankRadius * 4.5));
-      vx += ((tank.x - o.x) / dd) * force;
-      vy += ((tank.y - o.y) / dd) * force;
+  // Soft separation — capped so it can't cancel seek and cause corner-shiver
+  if (opts.separate !== false) {
+    const sepR = CONFIG.ai.separationRadius;
+    let sx = 0;
+    let sy = 0;
+    for (const o of world.tanks) {
+      if (o.id === tank.id || !o.alive || o.team !== tank.team) continue;
+      const dd = dist(tank.x, tank.y, o.x, o.y);
+      if (dd < sepR && dd > 0.1) {
+        const force = CONFIG.ai.separation * (1 - dd / sepR);
+        sx += ((tank.x - o.x) / dd) * force;
+        sy += ((tank.y - o.y) / dd) * force;
+      }
     }
+    const sepMag = Math.hypot(sx, sy);
+    const sepCap = speed * 0.45;
+    if (sepMag > sepCap && sepMag > 0) {
+      sx = (sx / sepMag) * sepCap;
+      sy = (sy / sepMag) * sepCap;
+    }
+    vx += sx;
+    vy += sy;
   }
 
   return { moveX: vx * dt, moveY: vy * dt, aimAngle: ang };
@@ -146,11 +160,10 @@ function newPatrolPoint(tank: Tank, world: WorldState): { x: number; y: number }
 }
 
 function spreadSlot(tank: Tank): { x: number; y: number } {
-  const home = homeTerritoryBounds("blue");
   const lane = (tank.number - 0.5) / 6;
   return clampMap(
-    CONFIG.canvasWidth * (0.12 + lane * 0.76),
-    home.y0 - 50 - (tank.number % 2) * 70,
+    CONFIG.canvasWidth * (0.1 + lane * 0.8),
+    CONFIG.canvasHeight * (0.55 + (tank.number % 3) * 0.1),
   );
 }
 
@@ -230,19 +243,25 @@ function friendlyBrain(
   let moveX = 0;
   let moveY = 0;
   const goal = tank.goal.kind;
+  const orderedMove =
+    goal === "moveTo" || goal === "spreadOut" || goal === "holdPosition";
 
-  // Universal combat interrupt (don't stand still under fire)
+  // Combat: only fully override ordered moves when the threat is on top of us
   const allowCombat =
     goal !== "reportIn" &&
     goal !== "retreat" &&
     !(goal === "debug" && tank.standStillTimer > 0.3);
   if (nearestEnemy && allowCombat) {
+    const dEnemy = dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
     const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
-    // Keep working the original goal unless threat is close
-    const threatClose =
-      dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y) <
-      CONFIG.ai.attackAggro;
-    if (threatClose || goal === "attackNearest" || goal === "idle") {
+    const abandonOrder =
+      !orderedMove &&
+      (dEnemy < CONFIG.ai.attackAggro ||
+        goal === "attackNearest" ||
+        goal === "idle");
+    const panic =
+      orderedMove && dEnemy < CONFIG.ai.orderThreatRadius;
+    if (abandonOrder || panic) {
       applyMove(tank, fight.moveX, fight.moveY, world);
       return {
         moveX: fight.moveX,
@@ -251,7 +270,7 @@ function friendlyBrain(
         aimAngle: fight.aimAngle,
       };
     }
-    // Distant contact: keep moving on orders but shoot if facing
+    // Distant contact while under orders: keep moving, still shoot
     wantShoot = true;
     aimAngle = fight.aimAngle;
   }
@@ -287,33 +306,26 @@ function friendlyBrain(
   } else if (goal === "holdPosition") {
     const hx = tank.goal.params?.x ?? tank.x;
     const hy = tank.goal.params?.y ?? tank.y;
-    // Soft hold: orbit / return, never hard-freeze
+    // Soft hold: return if drifted; idle when on station (no orbit shiver)
     if (dist(tank.x, tank.y, hx, hy) > CONFIG.ai.holdRadius) {
-      const s = steerTo(tank, hx, hy, speed, dt, world);
+      const s = steerTo(tank, hx, hy, speed, dt, world, { separate: true });
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;
     } else {
-      const orbit = world.time * 0.7 + tank.number;
-      const s = steerTo(
-        tank,
-        hx + Math.cos(orbit) * 22,
-        hy + Math.sin(orbit) * 22,
-        speed * 0.35,
-        dt,
-        world,
-      );
-      moveX = s.moveX;
-      moveY = s.moveY;
+      moveX = 0;
+      moveY = 0;
     }
   } else if (goal === "moveTo") {
     const tx = tank.goal.params?.x ?? tank.x;
     const ty = tank.goal.params?.y ?? tank.y;
     if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
-      // Arrived → keep moving (patrol), don't freeze
-      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+      // Arrived → hold station (don't flip to jittery patrol)
+      tank.goal = { kind: "holdPosition", params: { x: tx, y: ty } };
+      moveX = 0;
+      moveY = 0;
     } else {
-      const s = steerTo(tank, tx, ty, speed, dt, world);
+      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: true });
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;
@@ -342,14 +354,12 @@ function friendlyBrain(
     const tx = tank.goal.params?.x ?? slot.x;
     const ty = tank.goal.params?.y ?? slot.y;
     if (!tank.goal.params?.x) tank.goal.params = { x: tx, y: ty };
-    if (dist(tank.x, tank.y, tx, ty) < 30) {
-      // Hold spacing with tiny wander
-      tank.goal = {
-        kind: "patrol",
-        params: clampMap(tx + (Math.random() - 0.5) * 60, ty + (Math.random() - 0.5) * 40),
-      };
+    if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
+      tank.goal = { kind: "holdPosition", params: { x: tx, y: ty } };
+      moveX = 0;
+      moveY = 0;
     } else {
-      const s = steerTo(tank, tx, ty, speed, dt, world);
+      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: true });
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;

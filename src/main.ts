@@ -66,6 +66,9 @@ if (bootKey) {
   apiKeyInput.placeholder = `key loaded from ${apiKeySource("")}`;
 }
 
+/** Last rejected key fingerprint (401) — gate shows invalid until key changes. */
+let llmAuthFailedFor: string | null = null;
+
 function describeLlmStatus(): {
   ready: boolean;
   title: string;
@@ -91,6 +94,14 @@ function describeLlmStatus(): {
         : "OpenAI";
   const srcLabel =
     src === "ui" ? "sidebar field" : src === "file" ? "api-key.local.ts" : "env";
+  if (llmAuthFailedFor === key) {
+    return {
+      ready: false,
+      title: `LLM: key rejected (401 · ${label})`,
+      detail: `The ${label} key from ${srcLabel} was rejected. Fix/replace it, or Start anyway — orders will use the keyword parser until the key works.`,
+      provider: label,
+    };
+  }
   return {
     ready: true,
     title: `LLM: ready (${label})`,
@@ -104,6 +115,11 @@ function refreshLlmStatusUi(): void {
   llmStatusEl.classList.toggle("llm-ok", st.ready);
   llmStatusEl.classList.toggle("llm-off", !st.ready);
   llmStatusEl.innerHTML = `<strong>${st.title}</strong><span>${st.detail}</span>`;
+}
+
+function noteLlmAuthFailure(err: string, key?: string): void {
+  if (!key || !/401|invalid.?api.?key|incorrect api key/i.test(err)) return;
+  llmAuthFailedFor = key;
 }
 
 function showRoundGate(): void {
@@ -228,6 +244,7 @@ restartBtn.addEventListener("click", () => restartMatch(false));
 modeSelect.addEventListener("change", () => restartMatch(true));
 startRoundBtn.addEventListener("click", beginRound);
 apiKeyInput.addEventListener("input", () => {
+  llmAuthFailedFor = null;
   if (world.outcome === "ready") refreshLlmStatusUi();
 });
 roundGate.addEventListener("keydown", (ev) => {
@@ -262,7 +279,13 @@ async function dispatchOrder(
     "sys",
   );
 
+  // Capture LLM auth failures from the interpret path via a one-shot probe:
+  // sendOrder already falls back offline; we re-check status after for the gate.
+  const beforeEvents = world.events.length;
   await sendOrder(world, cleaned, key);
+  const newEvents = world.events.slice(beforeEvents);
+  const failLine = newEvents.find((e) => e.text.startsWith("LLM failed:"));
+  if (failLine && key) noteLlmAuthFailure(failLine.text, key);
   if (via === "voice") orderInput.value = "";
   flushLogs();
   refreshRoster();

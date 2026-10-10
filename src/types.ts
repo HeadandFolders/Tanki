@@ -140,4 +140,6 @@ export interface InterpretBundle {
   results: OrderResult[];
   source: "llm" | "mock";
   ms: number;
+  /** Set when an LLM attempt failed and results came from offline fallback. */
+  llmError?: string;
 }

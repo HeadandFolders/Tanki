@@ -65,13 +65,19 @@ export const CONFIG = {
     thinkInterval: 0.25,
     holdRadius: 36,
     attackAggro: 260,
+    /** Only abandon move/spread/hold orders when an enemy is this close. */
+    orderThreatRadius: 70,
     escortDistance: 70,
     retreatHpFraction: 0.32,
     pathStep: 36,
     pushbackChance: 0.12,
-    separation: 140,
+    /** Soft separation; keep below seek speed to avoid corner-shiver. */
+    separation: 55,
+    separationRadius: 40,
     patrolRadius: 160,
     kiteRange: 55,
+    /** Spacing between tanks sharing one moveTo landmark. */
+    formationSpacing: 72,
   },
 
   /**

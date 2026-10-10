@@ -173,6 +173,18 @@ export async function sendOrder(
   const bundle = await interpretOrder(orderText, world.tanks, world, {
     apiKey,
   });
+  if (bundle.llmError) {
+    pushEvent(
+      world,
+      `LLM failed: ${bundle.llmError} — using keyword parse.`,
+      "warn",
+    );
+    pushChat(
+      world,
+      `Command net: LLM failed (${bundle.llmError}). Falling back to keyword parse.`,
+      "sys",
+    );
+  }
   pushEvent(
     world,
     `Radio parse: ${bundle.source.toUpperCase()} (${bundle.ms}ms) → ${bundle.results.length} tank(s)`,

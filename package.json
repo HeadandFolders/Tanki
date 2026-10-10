@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 4731",
     "build": "tsc && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 4732"
+    "preview": "vite preview --host 0.0.0.0 --port 4732",
+    "eval:orders": "tsx scripts/eval-orders.ts",
+    "test": "npm run eval:orders"
   },
   "devDependencies": {
+    "tsx": "^4.20.5",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   }

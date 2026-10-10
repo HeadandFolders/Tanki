@@ -1,4 +1,9 @@
-import { CONFIG, type GameMode, type ShareMode } from "./config";
+import {
+  CONFIG,
+  type GameMode,
+  type RedDifficulty,
+  type ShareMode,
+} from "./config";
 import {
   buildArena,
   dist,
@@ -8,6 +13,7 @@ import {
   unstickFromWalls,
 } from "./arena";
 import { updateTankAi } from "./ai";
+import { updateTeamBelief } from "./belief";
 import {
   applyDiscoveryCells,
   captureVisibleCells,
@@ -33,10 +39,11 @@ let wreckSeq = 0;
 export function createWorld(
   shareMode: ShareMode = CONFIG.shareModeDefault,
   gameMode: GameMode = CONFIG.gameModeDefault,
+  redDifficulty: RedDifficulty = CONFIG.ai.redDifficultyDefault,
 ): WorldState {
   const fog = createFogGrid();
   const seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
-  const tanks = createTeams(seed, gameMode === "ctf");
+  const tanks = createTeams(seed, gameMode === "ctf", shareMode);
   const controlled =
     tanks.find((t) => t.team === "blue" && t.role === "shooter") ??
     tanks.find((t) => t.team === "blue")!;
@@ -62,6 +69,8 @@ export function createWorld(
     events: [],
     nextWreckLabel: 0,
     rngSeed: seed,
+    teamBelief: { contacts: [] },
+    redDifficulty,
   };
 
   revealHomeTerritory(world);
@@ -211,7 +220,11 @@ export async function sendOrder(
 
   for (const r of living) {
     const tank = world.tanks.find((t) => t.id === r.tankId)!;
-    tank.goal = { kind: r.goal, params: r.params ?? {} };
+    tank.goal = {
+      kind: r.goal,
+      params: r.params ?? {},
+      source: "player",
+    };
     tank.lastOrderChat = r.chatLine;
     const px = r.params?.x;
     const py = r.params?.y;
@@ -244,6 +257,9 @@ export function stepWorld(world: WorldState, dt: number, input: InputState): voi
     pushChat(world, "Clock zero. No code confirmed. Draw.", "warn");
     return;
   }
+
+  // AI team belief before brains (share modes feed contacts, not only player map)
+  updateTeamBelief(world);
 
   // Expire markers
   world.markers = world.markers.filter(
@@ -519,7 +535,11 @@ function handleReportIn(world: WorldState, tank: Tank): void {
   const n = applyDiscoveryCells(world, cells);
   tank.reportProgress = 0;
   tank.standStillTimer = 0;
-  tank.goal = { kind: "holdPosition", params: { x: tank.x, y: tank.y } };
+  tank.goal = {
+    kind: "holdPosition",
+    params: { x: tank.x, y: tank.y },
+    source: "system",
+  };
 
   pushEvent(
     world,

@@ -1,18 +1,13 @@
-import type { GameMode, Role, ShareMode } from "./config";
+import type { GameMode, RedDifficulty, Role, ShareMode } from "./config";
+import type { GoalKind } from "./goals";
+
+export type { RedDifficulty };
 
 export type TeamId = "blue" | "red";
+export type { GoalKind };
 
-export type GoalKind =
-  | "moveTo"
-  | "holdPosition"
-  | "attackNearest"
-  | "escort"
-  | "retreat"
-  | "reportIn"
-  | "debug"
-  | "patrol"
-  | "spreadOut"
-  | "idle";
+/** Who assigned the current goal — player orders outrank soft AI rewrites. */
+export type GoalSource = "player" | "system";
 
 export interface Goal {
   kind: GoalKind;
@@ -22,6 +17,21 @@ export interface Goal {
     targetTankId?: string;
     wreckId?: string;
   };
+  /** Default system; set to player when radio/text order applied. */
+  source?: GoalSource;
+}
+
+/** Shared fog-of-war contact for AI (share modes feed this, not only the map). */
+export interface TeamContact {
+  enemyId: string;
+  x: number;
+  y: number;
+  seenAt: number;
+  seenBy: string;
+}
+
+export interface TeamBelief {
+  contacts: TeamContact[];
 }
 
 export interface OrderResult {
@@ -130,6 +140,10 @@ export interface WorldState {
   events: ChatLine[];
   nextWreckLabel: number;
   rngSeed: number;
+  /** AI-facing shared contacts (P1: share modes affect team belief). */
+  teamBelief: TeamBelief;
+  /** Red AI aggression tier for measurable “strong” baselines. */
+  redDifficulty: RedDifficulty;
 }
 
 /** Resolved LLM backend for radio orders (provider is never "auto" here). */

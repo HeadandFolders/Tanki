@@ -6,7 +6,13 @@ import {
   tryMove,
   unstickFromWalls,
 } from "./arena";
+import {
+  freshestContact,
+  knownEnemyTanks,
+  liveVisibleEnemies,
+} from "./belief";
 import { canSeeTank } from "./fog";
+import { COMBAT_LOCKED_GOALS, ORDERED_MOVE_GOALS } from "./goals";
 import type { Tank, WorldState, Wreck } from "./types";
 
 export function updateTankAi(
@@ -36,12 +42,6 @@ export function updateTankAi(
   return friendlyBrain(world, tank, dt);
 }
 
-function visibleEnemies(world: WorldState, tank: Tank): Tank[] {
-  return world.tanks.filter(
-    (e) => e.team !== tank.team && e.alive && canSeeTank(tank, e, world.walls),
-  );
-}
-
 function nearest<T extends { x: number; y: number }>(
   list: T[],
   x: number,
@@ -57,6 +57,10 @@ function nearest<T extends { x: number; y: number }>(
     }
   }
   return best;
+}
+
+function isPlayerOrder(tank: Tank): boolean {
+  return tank.goal.source === "player";
 }
 
 function steerTo(
@@ -148,14 +152,27 @@ function clampMap(x: number, y: number): { x: number; y: number } {
 function newPatrolPoint(tank: Tank, world: WorldState): { x: number; y: number } {
   const home = homeTerritoryBounds("blue");
   const marker = world.markers.find((m) => m.kind === "enemy");
-  const baseX = marker?.x ?? CONFIG.canvasWidth * (0.2 + (tank.number % 5) * 0.15);
+  const contact = freshestContact(world);
+  const baseX =
+    contact?.x ??
+    marker?.x ??
+    CONFIG.canvasWidth * (0.2 + (tank.number % 5) * 0.15);
   const baseY =
+    contact?.y ??
     marker?.y ??
     home.y0 - 40 - (tank.number % 4) * 35 - Math.random() * 80;
   const jitter = CONFIG.ai.patrolRadius;
   return clampMap(
     baseX + (Math.random() - 0.5) * jitter,
     baseY + (Math.random() - 0.5) * jitter * 0.7,
+  );
+}
+
+function newScoutPoint(tank: Tank): { x: number; y: number } {
+  const lane = 0.15 + ((tank.number - 1) % 5) * 0.17;
+  return clampMap(
+    CONFIG.canvasWidth * lane + (Math.random() - 0.5) * 60,
+    CONFIG.canvasHeight * (0.22 + Math.random() * 0.28),
   );
 }
 
@@ -169,7 +186,7 @@ function spreadSlot(tank: Tank): { x: number; y: number } {
 
 /**
  * Combat overlay: close to fight range, kite if too close, always shoot when
- * an enemy is visible. Returns null if no combat action.
+ * an enemy is visible.
  */
 function combatManeuver(
   world: WorldState,
@@ -186,7 +203,6 @@ function combatManeuver(
   let moveX = 0;
   let moveY = 0;
   if (d < CONFIG.ai.kiteRange) {
-    // Back off while shooting
     const away = angleTo(enemy.x, enemy.y, tank.x, tank.y);
     const s = steerTo(
       tank,
@@ -203,7 +219,6 @@ function combatManeuver(
     moveX = s.moveX;
     moveY = s.moveY;
   } else {
-    // Strafe in band
     const side = tank.number % 2 === 0 ? 1 : -1;
     const s = steerTo(
       tank,
@@ -220,51 +235,76 @@ function combatManeuver(
   return { moveX, moveY, wantShoot: true, aimAngle };
 }
 
+/**
+ * Soft AI: under fog, system-hold gunners peel toward team-belief contacts.
+ * Never steals a player order.
+ */
+function maybeEngageFromBelief(world: WorldState, tank: Tank): void {
+  if (isPlayerOrder(tank)) return;
+  if (world.shareMode === "clear") return;
+  if (tank.role !== "shooter") return;
+  const g = tank.goal.kind;
+  if (g !== "holdPosition" && g !== "patrol" && g !== "idle") return;
+
+  const contact = freshestContact(world);
+  if (!contact) return;
+  const d = dist(tank.x, tank.y, contact.x, contact.y);
+  if (d > CONFIG.ai.beliefEngageRadius) return;
+
+  tank.goal = {
+    kind: "attackNearest",
+    source: "system",
+    params: { x: contact.x, y: contact.y },
+  };
+}
+
 function friendlyBrain(
   world: WorldState,
   tank: Tank,
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
   const speed = CONFIG.roles[tank.role].speed;
-  const enemies = visibleEnemies(world, tank);
-  const nearestEnemy = nearest(enemies, tank.x, tank.y);
+  const liveEnemies = liveVisibleEnemies(world, tank);
+  const known = knownEnemyTanks(world, tank);
+  const nearestLive = nearest(liveEnemies, tank.x, tank.y);
+  const nearestKnown = nearest(known, tank.x, tank.y);
 
   let wantShoot = false;
   let aimAngle = tank.angle;
   let moveX = 0;
   let moveY = 0;
-  const goal = tank.goal.kind;
-  const orderedMove =
-    goal === "moveTo" ||
-    goal === "spreadOut" ||
-    goal === "holdPosition" ||
-    goal === "escort";
 
-  // Low HP → fall back, but don't cancel an explicit move/spread/hold/escort order
+  maybeEngageFromBelief(world, tank);
+
+  let goal = tank.goal.kind;
+  const orderedMove = ORDERED_MOVE_GOALS.has(goal) && isPlayerOrder(tank);
+  const softOrdered = ORDERED_MOVE_GOALS.has(goal);
+
+  // Low HP → fall back, but don't cancel an explicit player move/spread/hold/escort
   if (
     !orderedMove &&
     tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction &&
     tank.goal.kind !== "retreat" &&
     tank.goal.kind !== "reportIn"
   ) {
-    tank.goal = { kind: "retreat" };
+    tank.goal = { kind: "retreat", source: "system" };
+    goal = "retreat";
   }
 
   // Combat: only fully override ordered moves when the threat is on top of us
   const allowCombat =
-    goal !== "reportIn" &&
-    goal !== "retreat" &&
+    !COMBAT_LOCKED_GOALS.has(goal) &&
     !(goal === "debug" && tank.standStillTimer > 0.3);
-  if (nearestEnemy && allowCombat) {
-    const dEnemy = dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
-    const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
+  if (nearestLive && allowCombat) {
+    const dEnemy = dist(tank.x, tank.y, nearestLive.x, nearestLive.y);
+    const fight = combatManeuver(world, tank, nearestLive, speed, dt);
     const abandonOrder =
-      !orderedMove &&
+      !softOrdered &&
       (dEnemy < CONFIG.ai.attackAggro ||
         goal === "attackNearest" ||
         goal === "idle");
-    const panic =
-      orderedMove && dEnemy < CONFIG.ai.orderThreatRadius;
+    // Player orders: only panic radius. System holds/scouts: same panic.
+    const panic = softOrdered && dEnemy < CONFIG.ai.orderThreatRadius;
     if (abandonOrder || panic) {
       applyMove(tank, fight.moveX, fight.moveY, world);
       return {
@@ -274,26 +314,44 @@ function friendlyBrain(
         aimAngle: fight.aimAngle,
       };
     }
-    // Distant contact while under orders: keep moving, still shoot
+    // Distant contact while under orders: keep moving, still shoot if LOS
     wantShoot = true;
     aimAngle = fight.aimAngle;
   }
 
-  if (goal === "attackNearest") {
-    if (nearestEnemy) {
-      const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
+  const activeGoal = tank.goal.kind;
+
+  if (activeGoal === "attackNearest") {
+    if (nearestLive) {
+      const fight = combatManeuver(world, tank, nearestLive, speed, dt);
       moveX = fight.moveX;
       moveY = fight.moveY;
       wantShoot = fight.wantShoot;
       aimAngle = fight.aimAngle;
+    } else if (nearestKnown) {
+      // Hunt last team-belief contact under fog
+      const s = steerTo(
+        tank,
+        nearestKnown.x,
+        nearestKnown.y,
+        speed * 0.95,
+        dt,
+        world,
+      );
+      moveX = s.moveX;
+      moveY = s.moveY;
+      aimAngle = s.aimAngle;
     } else {
-      // Hunt: keep advancing / patrol toward fog of war
       ensureWaypoint(tank, world);
       const tx = tank.goal.params?.x ?? tank.x;
       const ty = tank.goal.params?.y ?? tank.y;
       if (dist(tank.x, tank.y, tx, ty) < 28) {
         const p = newPatrolPoint(tank, world);
-        tank.goal = { kind: "attackNearest", params: p };
+        tank.goal = {
+          kind: "attackNearest",
+          source: tank.goal.source ?? "system",
+          params: p,
+        };
       }
       const s = steerTo(
         tank,
@@ -307,10 +365,9 @@ function friendlyBrain(
       moveY = s.moveY;
       aimAngle = s.aimAngle;
     }
-  } else if (goal === "holdPosition") {
+  } else if (activeGoal === "holdPosition") {
     const hx = tank.goal.params?.x ?? tank.x;
     const hy = tank.goal.params?.y ?? tank.y;
-    // Soft hold: return if drifted; idle when on station (no orbit shiver)
     if (dist(tank.x, tank.y, hx, hy) > CONFIG.ai.holdRadius) {
       const s = steerTo(tank, hx, hy, speed, dt, world, { separate: true });
       moveX = s.moveX;
@@ -320,12 +377,15 @@ function friendlyBrain(
       moveX = 0;
       moveY = 0;
     }
-  } else if (goal === "moveTo") {
+  } else if (activeGoal === "moveTo") {
     const tx = tank.goal.params?.x ?? tank.x;
     const ty = tank.goal.params?.y ?? tank.y;
     if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
-      // Arrived → hold station (don't flip to jittery patrol)
-      tank.goal = { kind: "holdPosition", params: { x: tx, y: ty } };
+      tank.goal = {
+        kind: "holdPosition",
+        params: { x: tx, y: ty },
+        source: tank.goal.source ?? "system",
+      };
       moveX = 0;
       moveY = 0;
     } else {
@@ -334,13 +394,48 @@ function friendlyBrain(
       moveY = s.moveY;
       aimAngle = s.aimAngle;
     }
-  } else if (goal === "patrol" || goal === "idle") {
-    if (goal === "idle") tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+  } else if (activeGoal === "scout") {
+    ensureScoutWaypoint(tank);
+    const tx = tank.goal.params!.x!;
+    const ty = tank.goal.params!.y!;
+    if (dist(tank.x, tank.y, tx, ty) < 28) {
+      // Arrived probe point → report in under report mode, else next probe
+      if (world.shareMode === "report" && !isPlayerOrder(tank)) {
+        tank.goal = { kind: "reportIn", source: "system" };
+      } else {
+        tank.goal = {
+          kind: "scout",
+          source: tank.goal.source ?? "system",
+          params: newScoutPoint(tank),
+        };
+      }
+    }
+    const s = steerTo(tank, tx, ty, speed * 0.95, dt, world, {
+      separate: true,
+    });
+    moveX = s.moveX;
+    moveY = s.moveY;
+    aimAngle = nearestLive
+      ? angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y)
+      : s.aimAngle;
+    if (nearestLive) wantShoot = true;
+  } else if (activeGoal === "patrol" || activeGoal === "idle") {
+    if (activeGoal === "idle") {
+      tank.goal = {
+        kind: "patrol",
+        source: "system",
+        params: newPatrolPoint(tank, world),
+      };
+    }
     ensureWaypoint(tank, world);
     const tx = tank.goal.params?.x ?? tank.x;
     const ty = tank.goal.params?.y ?? tank.y;
     if (dist(tank.x, tank.y, tx, ty) < 24) {
-      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+      tank.goal = {
+        kind: "patrol",
+        source: tank.goal.source ?? "system",
+        params: newPatrolPoint(tank, world),
+      };
     }
     const s = steerTo(
       tank,
@@ -353,13 +448,17 @@ function friendlyBrain(
     moveX = s.moveX;
     moveY = s.moveY;
     aimAngle = s.aimAngle;
-  } else if (goal === "spreadOut") {
+  } else if (activeGoal === "spreadOut") {
     const slot = spreadSlot(tank);
     const tx = tank.goal.params?.x ?? slot.x;
     const ty = tank.goal.params?.y ?? slot.y;
     if (!tank.goal.params?.x) tank.goal.params = { x: tx, y: ty };
     if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
-      tank.goal = { kind: "holdPosition", params: { x: tx, y: ty } };
+      tank.goal = {
+        kind: "holdPosition",
+        params: { x: tx, y: ty },
+        source: tank.goal.source ?? "system",
+      };
       moveX = 0;
       moveY = 0;
     } else {
@@ -368,11 +467,10 @@ function friendlyBrain(
       moveY = s.moveY;
       aimAngle = s.aimAngle;
     }
-  } else if (goal === "escort") {
+  } else if (activeGoal === "escort") {
     const tid = tank.goal.params?.targetTankId;
     const buddy = world.tanks.find((t) => t.id === tid && t.alive);
     if (buddy && buddy.id !== tank.id) {
-      // Trail on the VIP's six so we stick close while they drive
       const trailAng = buddy.angle + Math.PI;
       const slot = CONFIG.ai.escortDistance;
       const tx = buddy.x + Math.cos(trailAng) * slot;
@@ -385,34 +483,42 @@ function friendlyBrain(
       });
       moveX = s.moveX;
       moveY = s.moveY;
-      aimAngle = nearestEnemy
-        ? angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y)
+      aimAngle = nearestLive
+        ? angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y)
         : buddy.angle;
-      if (nearestEnemy) wantShoot = true;
+      if (nearestLive) wantShoot = true;
     } else {
-      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+      tank.goal = {
+        kind: "patrol",
+        source: "system",
+        params: newPatrolPoint(tank, world),
+      };
     }
-  } else if (goal === "retreat") {
+  } else if (activeGoal === "retreat") {
     const home = homeTerritoryBounds("blue");
     const homeX = CONFIG.canvasWidth * (0.15 + (tank.number % 5) * 0.15);
     const homeY = (home.y0 + home.y1) / 2;
     const s = steerTo(tank, homeX, homeY, speed * 1.1, dt, world);
     moveX = s.moveX;
     moveY = s.moveY;
-    aimAngle = nearestEnemy
-      ? angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y)
+    aimAngle = nearestLive
+      ? angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y)
       : s.aimAngle;
-    if (nearestEnemy) wantShoot = true;
+    if (nearestLive) wantShoot = true;
     if (dist(tank.x, tank.y, homeX, homeY) < 45) {
-      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+      tank.goal = {
+        kind: "patrol",
+        source: "system",
+        params: newPatrolPoint(tank, world),
+      };
     }
-  } else if (goal === "reportIn") {
-    // Stand for radio — but break to kite if enemy is on top of us
+  } else if (activeGoal === "reportIn") {
     if (
-      nearestEnemy &&
-      dist(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y) < CONFIG.ai.kiteRange + 20
+      nearestLive &&
+      dist(tank.x, tank.y, nearestLive.x, nearestLive.y) <
+        CONFIG.ai.kiteRange + 20
     ) {
-      const fight = combatManeuver(world, tank, nearestEnemy, speed, dt);
+      const fight = combatManeuver(world, tank, nearestLive, speed, dt);
       moveX = fight.moveX;
       moveY = fight.moveY;
       wantShoot = true;
@@ -420,12 +526,12 @@ function friendlyBrain(
     } else {
       moveX = 0;
       moveY = 0;
-      if (nearestEnemy) {
-        aimAngle = angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y);
+      if (nearestLive) {
+        aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
         wantShoot = true;
       }
     }
-  } else if (goal === "debug") {
+  } else if (activeGoal === "debug") {
     const wreck = pickDebugWreck(world, tank);
     if (wreck) {
       tank.debugTargetId = wreck.id;
@@ -436,7 +542,11 @@ function friendlyBrain(
         aimAngle = s.aimAngle;
       }
     } else {
-      tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };
+      tank.goal = {
+        kind: "patrol",
+        source: "system",
+        params: newPatrolPoint(tank, world),
+      };
     }
   }
 
@@ -451,6 +561,12 @@ function ensureWaypoint(tank: Tank, world: WorldState): void {
   }
 }
 
+function ensureScoutWaypoint(tank: Tank): void {
+  if (tank.goal.params?.x == null || tank.goal.params?.y == null) {
+    tank.goal.params = { ...tank.goal.params, ...newScoutPoint(tank) };
+  }
+}
+
 function pickDebugWreck(world: WorldState, tank: Tank): Wreck | null {
   if (tank.goal.params?.wreckId) {
     const specific = world.wrecks.find(
@@ -459,11 +575,15 @@ function pickDebugWreck(world: WorldState, tank: Tank): Wreck | null {
     if (specific) return specific;
   }
   const marked = world.wrecks.filter((w) => w.marked && !w.debugged);
-  const visibleThreat = visibleEnemies(world, tank).some(
+  const visibleThreat = liveVisibleEnemies(world, tank).some(
     (e) => dist(tank.x, tank.y, e.x, e.y) < 140,
   );
   if (visibleThreat) return null;
   return nearest(marked, tank.x, tank.y);
+}
+
+function redTier(world: WorldState) {
+  return CONFIG.ai.redDifficulty[world.redDifficulty] ?? CONFIG.ai.redDifficulty.normal;
 }
 
 function enemyBrain(
@@ -471,11 +591,13 @@ function enemyBrain(
   tank: Tank,
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
-  const speed = CONFIG.roles[tank.role].speed;
+  const tier = redTier(world);
+  const speed = CONFIG.roles[tank.role].speed * tier.speedMul;
   const players = world.tanks.filter(
     (t) => t.team === "blue" && t.alive && canSeeTank(tank, t, world.walls),
   );
   const nearestPlayer = nearest(players, tank.x, tank.y);
+  const engageMul = tier.engageRangeMul;
 
   let moveX = 0;
   let moveY = 0;
@@ -483,7 +605,6 @@ function enemyBrain(
   let aimAngle = tank.angle;
 
   if (tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction && nearestPlayer) {
-    // Kite south→north toward their home
     const redHome = homeTerritoryBounds("red");
     const s = steerTo(
       tank,
@@ -499,8 +620,10 @@ function enemyBrain(
     wantShoot = true;
   } else if (nearestPlayer) {
     const fight = combatManeuver(world, tank, nearestPlayer, speed, dt);
-    moveX = fight.moveX;
-    moveY = fight.moveY;
+    // Hard: stick closer; easy: hang back a bit
+    const scale = tier.aggroMul;
+    moveX = fight.moveX * Math.min(1.15, 0.85 + 0.15 * scale);
+    moveY = fight.moveY * Math.min(1.15, 0.85 + 0.15 * scale);
     wantShoot = fight.wantShoot;
     aimAngle = fight.aimAngle;
   } else {
@@ -508,7 +631,7 @@ function enemyBrain(
       (w) => w.team === "blue" && !w.debugged,
     );
     const wreck = nearest(playerWrecks, tank.x, tank.y);
-    if (wreck && dist(tank.x, tank.y, wreck.x, wreck.y) < 280) {
+    if (wreck && dist(tank.x, tank.y, wreck.x, wreck.y) < 280 * engageMul) {
       tank.debugTargetId = wreck.id;
       if (dist(tank.x, tank.y, wreck.x, wreck.y) > CONFIG.debugRange * 0.7) {
         const s = steerTo(tank, wreck.x, wreck.y, speed, dt, world);
@@ -519,10 +642,13 @@ function enemyBrain(
     } else {
       const home = homeTerritoryBounds("blue");
       const lane = 0.18 + (tank.number % 5) * 0.16;
-      const targetY = home.y0 - 20 - (world.time * 8 + tank.number * 40) % 120;
+      const push = 20 + 40 * tier.aggroMul;
+      const targetY =
+        home.y0 - push - ((world.time * 8 + tank.number * 40) % 120);
       const s = steerTo(
         tank,
-        CONFIG.canvasWidth * lane + Math.sin(world.time * 0.4 + tank.number) * 30,
+        CONFIG.canvasWidth * lane +
+          Math.sin(world.time * 0.4 + tank.number) * 30,
         targetY,
         speed * 0.9,
         dt,

@@ -1,4 +1,5 @@
 import { CONFIG } from "./config";
+import { goalKindsForPrompt, isGoalKind } from "./goals";
 import type {
   GoalKind,
   InterpretBundle,
@@ -10,6 +11,7 @@ import type {
 } from "./types";
 
 export type { LlmBackend };
+export { GOAL_KINDS, isGoalKind } from "./goals";
 
 /**
  * Radio path: transcript/text → (optional LLM) → goals for bots.
@@ -283,6 +285,10 @@ export function interpretOffline(
     kind = "spreadOut";
     verb = "spreading out";
     perTankParams = true;
+  } else if (/\b(scout|recon|probe|screen)\b/.test(lower)) {
+    kind = "scout";
+    verb = "scouting ahead";
+    perTankParams = true;
   } else if (
     /\b(keep\s*moving|stay\s*mobile|patrol|roam|keep\s*rolling|don't\s*stop|dont\s*stop)\b/.test(
       lower,
@@ -384,10 +390,17 @@ export function interpretOffline(
           x: CONFIG.canvasWidth * (0.12 + lane * 0.76),
           y: homeY - (t.number % 2) * 50,
         };
-      } else if (kind === "patrol" || kind === "attackNearest") {
+      } else if (
+        kind === "patrol" ||
+        kind === "attackNearest" ||
+        kind === "scout"
+      ) {
         p = {
           x: CONFIG.canvasWidth * (0.2 + (t.number % 5) * 0.15),
-          y: homeY - 40 - (t.number % 3) * 50,
+          y:
+            kind === "scout"
+              ? CONFIG.canvasHeight * (0.25 + (t.number % 3) * 0.08)
+              : homeY - 40 - (t.number % 3) * 50,
         };
       }
     } else if (
@@ -609,35 +622,24 @@ export async function probeLlmConnection(
   }
 }
 
-const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
-Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.
+const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"${goalKindsForPrompt()}","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
+Goals only from that list. Prefer patrol/scout/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.
 Map is top-down: x right, y down; origin top-left. When the order names a place (corner, side, north/south/east/west), set goal moveTo with numeric x,y inside the map for EVERY addressed tank. Example corners: bottom-left ≈ (0.1*W, 0.9*H), top-right ≈ (0.9*W, 0.1*H). Always include x and y for moveTo/holdPosition.
-Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3.`;
+Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3. Scout/recon → goal scout with northward x,y.`;
 
-function sanitizeOrders(
+/** Exported for the order eval suite (roadmap P0). */
+export function sanitizeOrders(
   orders: OrderResult[],
   tanks: Tank[],
   orderText?: string,
   world?: WorldState,
 ): OrderResult[] {
   const living = new Set(friendlies(tanks).map((t) => t.id));
-  const goals = new Set<GoalKind>([
-    "moveTo",
-    "holdPosition",
-    "attackNearest",
-    "escort",
-    "retreat",
-    "reportIn",
-    "debug",
-    "patrol",
-    "spreadOut",
-    "idle",
-  ]);
   const spot =
     orderText && world ? landmark(orderText, world) : null;
   const controlledId = world?.controlledId;
   return orders
-    .filter((o) => living.has(o.tankId) && goals.has(o.goal))
+    .filter((o) => living.has(o.tankId) && isGoalKind(o.goal))
     .map((o) => {
       const params = { ...(o.params ?? {}) };
       // If LLM chose moveTo/hold without coords, fill from parsed landmark.

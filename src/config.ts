@@ -83,6 +83,20 @@ export const CONFIG = {
     kiteRange: 55,
     /** Spacing between tanks sharing one moveTo landmark. */
     formationSpacing: 72,
+    /** How long shared enemy contacts stay in team belief (seconds). */
+    beliefTtlSec: 12,
+    /**
+     * Under fog, gunners with system hold/patrol only peel for team contacts
+     * inside this radius (player orders still use orderThreatRadius).
+     */
+    beliefEngageRadius: 220,
+    /** Default red difficulty for TDM baselines. */
+    redDifficultyDefault: "normal" as RedDifficulty,
+    redDifficulty: {
+      easy: { speedMul: 0.85, aggroMul: 0.7, engageRangeMul: 0.85 },
+      normal: { speedMul: 1, aggroMul: 1, engageRangeMul: 1 },
+      hard: { speedMul: 1.12, aggroMul: 1.25, engageRangeMul: 1.2 },
+    },
   },
 
   /**
@@ -169,6 +183,7 @@ export type GameMode = "tdm" | "ctf";
 /** Mode menu presets shown in the top bar. */
 export type MenuMode = "tdm-nofog" | "tdm" | "ctf";
 export type Role = keyof typeof CONFIG.roles;
+export type RedDifficulty = "easy" | "normal" | "hard";
 
 /** Resolve a Mode-menu preset into game rules + fog share. */
 export function modesFromMenu(menu: MenuMode): {

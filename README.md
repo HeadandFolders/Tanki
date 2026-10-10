@@ -61,11 +61,15 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 - No Fog (`clear`): whole map visible; fogged modes keep the southern ~20% home strip pre-revealed.
 - Tunables in `src/config.ts`.
 
-## Roadmap / stretch
+## Committed roadmap
 
-1. **Now:** Radio LIVE → STT → LLM (optional) → local bot AI goals.
-2. **Next:** better goal-conditioned scripted / learned motor policies.
-3. **Stretch / end goal:** end-to-end RL for speech → tactics (research-scale; not required for fun playtests).
+Ship **strong cooperative TDM under fog** with **speech → controls** (hierarchical: STT → LLM planner → goal-conditioned executor). See project docs for the full phase plan.
+
+**This PR slice (P0/P1):** frozen goal schema + order eval suite; team belief from share modes; order priority; fog-aware scout/gunner defaults; red difficulty tiers (`CONFIG.ai.redDifficultyDefault`).
+
+```bash
+npm run eval:orders   # goal schema + offline order gold cases
+```
 
 ## Playtest checklist
 

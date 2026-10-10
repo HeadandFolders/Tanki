@@ -1,6 +1,11 @@
-import { CONFIG, homeTerritoryBounds, type Role } from "./config";
+import {
+  CONFIG,
+  homeTerritoryBounds,
+  type Role,
+  type ShareMode,
+} from "./config";
 import { buildArena, findClearPoint } from "./arena";
-import type { Tank, TeamId } from "./types";
+import type { Goal, Tank, TeamId } from "./types";
 
 function mulberry32(seed: number): () => number {
   return () => {
@@ -15,12 +20,14 @@ function mulberry32(seed: number): () => number {
 export function createTeams(
   seed = Date.now(),
   withCarriers = false,
+  shareMode: ShareMode = CONFIG.shareModeDefault,
 ): Tank[] {
   const rng = mulberry32(seed >>> 0);
   const walls = buildArena();
   const tanks: Tank[] = [];
   const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
   const W = CONFIG.canvasWidth;
+  const fogged = shareMode !== "clear";
 
   const blueHome = homeTerritoryBounds("blue");
   const redHome = homeTerritoryBounds("red");
@@ -34,6 +41,7 @@ export function createTeams(
       Math.min(blueHome.y1 - 20, CONFIG.canvasHeight - pad),
       rng,
       walls,
+      fogged,
     ),
   );
   tanks.push(
@@ -45,6 +53,7 @@ export function createTeams(
       Math.min(redHome.y1 - 20, CONFIG.canvasHeight - pad),
       rng,
       walls,
+      fogged,
     ),
   );
 
@@ -55,6 +64,50 @@ export function createTeams(
   return tanks;
 }
 
+function defaultBlueGoal(
+  role: Role,
+  i: number,
+  preferX: number,
+  fogged: boolean,
+  rng: () => number,
+): Goal {
+  const frontY =
+    CONFIG.canvasHeight * (1 - CONFIG.homeTerritoryFraction) -
+    30 -
+    (i % 3) * 24;
+
+  if (fogged && role === "scout") {
+    // Scouts probe north into fog; report-capable by default path.
+    return {
+      kind: "scout",
+      source: "system",
+      params: {
+        x: preferX + (rng() - 0.5) * 100,
+        y: CONFIG.canvasHeight * (0.28 + (i % 2) * 0.1),
+      },
+    };
+  }
+  if (fogged && role === "shooter") {
+    // Gunners hold the line until team belief has contacts.
+    return {
+      kind: "holdPosition",
+      source: "system",
+      params: { x: preferX + (rng() - 0.5) * 40, y: frontY },
+    };
+  }
+  // No-fog / clear: push midfield
+  return {
+    kind: "patrol",
+    source: "system",
+    params: {
+      x: preferX + (rng() - 0.5) * 80,
+      y:
+        CONFIG.canvasHeight * (0.52 + (i % 3) * 0.06) -
+        (role === "scout" ? 30 : 0),
+    },
+  };
+}
+
 function spawnTeam(
   team: TeamId,
   x0: number,
@@ -63,6 +116,7 @@ function spawnTeam(
   y1: number,
   rng: () => number,
   walls: ReturnType<typeof buildArena>,
+  fogged: boolean,
 ): Tank[] {
   const roles: Role[] = [
     "scout",
@@ -98,19 +152,10 @@ function spawnTeam(
     );
     const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
 
-    // Friendlies push toward midfield immediately (not a near-spawn dither).
-    const goal =
+    const goal: Goal =
       team === "blue"
-        ? {
-            kind: "patrol" as const,
-            params: {
-              x: preferX + (rng() - 0.5) * 80,
-              y:
-                CONFIG.canvasHeight * (0.52 + (i % 3) * 0.06) -
-                (role === "scout" ? 30 : 0),
-            },
-          }
-        : { kind: "attackNearest" as const };
+        ? defaultBlueGoal(role, i, preferX, fogged, rng)
+        : { kind: "attackNearest", source: "system" };
 
     out.push({
       id: `${team}-${i + 1}`,

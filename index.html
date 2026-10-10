@@ -20,6 +20,7 @@
               <option value="tdm">TDM Fog</option>
               <option value="ctf">Capture the Code</option>
               <option value="mp-offline">Multiplayer · Offline</option>
+              <option value="mp-online">Multiplayer · Online</option>
             </select>
           </label>
           <label class="topbar-share-label">
@@ -72,7 +73,32 @@
                     <strong>Multiplayer · Offline</strong>
                     <span>Local/bot TDM — no fog, all gunners, hold until ordered, wipe the enemy team.</span>
                   </button>
+                  <button type="button" class="gate-mode" data-mode="mp-online" aria-pressed="false">
+                    <strong>Multiplayer · Online</strong>
+                    <span>Two devices on LAN — Host / Join. Same rules as Offline (no fog, gunners, wipe).</span>
+                  </button>
                 </div>
+              </div>
+
+              <div id="mp-net-panel" class="gate-section mp-net-panel" hidden>
+                <span class="gate-key-label">LAN multiplayer</span>
+                <p class="hint">Host runs <code>npm run dev:mp</code>. Guest opens this page via the host LAN IP, then Join.</p>
+                <div class="mp-net-row">
+                  <label class="gate-llm-field">
+                    <span>Room code</span>
+                    <input id="mp-room" type="text" value="TANK" maxlength="8" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="gate-llm-field">
+                    <span>Relay (optional)</span>
+                    <input id="mp-url" type="text" placeholder="ws://HOST:4855" autocomplete="off" spellcheck="false" />
+                  </label>
+                </div>
+                <div class="mp-net-actions">
+                  <button id="mp-host-btn" type="button">Host match</button>
+                  <button id="mp-join-btn" type="button">Join match</button>
+                  <button id="mp-start-btn" type="button" disabled>Start when guest joins</button>
+                </div>
+                <div id="mp-net-status" class="mp-net-status" role="status">Not connected.</div>
               </div>
 
               <div class="gate-section">

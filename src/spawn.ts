@@ -1,7 +1,7 @@
 import {
   CONFIG,
   homeTerritoryBounds,
-  isMpOffline,
+  isMpRules,
   type GameMode,
   type Role,
   type ShareMode,
@@ -27,13 +27,13 @@ export function createTeams(
 ): Tank[] {
   const rng = mulberry32(seed >>> 0);
   const density: ArenaDensity =
-    isMpOffline(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
+    isMpRules(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
   const walls = buildArena(density);
   const tanks: Tank[] = [];
   const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
   const W = CONFIG.canvasWidth;
   const fogged = shareMode !== "clear";
-  const mpOffline = isMpOffline(gameMode);
+  const mpRules = isMpRules(gameMode);
 
   const blueHome = homeTerritoryBounds("blue");
   const redHome = homeTerritoryBounds("red");
@@ -48,7 +48,7 @@ export function createTeams(
       rng,
       walls,
       fogged,
-      mpOffline,
+      mpRules,
     ),
   );
   tanks.push(
@@ -61,7 +61,7 @@ export function createTeams(
       rng,
       walls,
       fogged,
-      mpOffline,
+      mpRules,
     ),
   );
 
@@ -78,15 +78,15 @@ function defaultBlueGoal(
   preferX: number,
   fogged: boolean,
   rng: () => number,
-  mpOffline: boolean,
+  mpRules: boolean,
 ): Goal {
   const frontY =
     CONFIG.canvasHeight * (1 - CONFIG.homeTerritoryFraction) -
     30 -
     (i % 3) * 24;
 
-  // Multiplayer · Offline: hold spawn until voice/text orders; no patrol/scout.
-  if (mpOffline) {
+  // Multiplayer: hold spawn until voice/text orders; no patrol/scout.
+  if (mpRules) {
     return {
       kind: "holdPosition",
       source: "system",
@@ -132,13 +132,13 @@ function spawnTeam(
   rng: () => number,
   walls: ReturnType<typeof buildArena>,
   fogged: boolean,
-  mpOffline: boolean,
+  mpRules: boolean,
 ): Tank[] {
-  // mp-offline: every tank is a standard gunner (no scout/gunner split).
-  const roles: Role[] = mpOffline
+  // Multiplayer rules: every tank is a standard gunner (no scout/gunner split).
+  const roles: Role[] = mpRules
     ? ["shooter", "shooter", "shooter", "shooter", "shooter", "shooter"]
     : ["scout", "scout", "shooter", "shooter", "shooter", "shooter"];
-  if (!mpOffline) {
+  if (!mpRules) {
     for (let i = roles.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
       [roles[i], roles[j]] = [roles[j], roles[i]];
@@ -166,9 +166,10 @@ function spawnTeam(
     );
     const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
 
-    const goal: Goal =
-      team === "blue"
-        ? defaultBlueGoal(role, i, preferX, fogged, rng, mpOffline)
+    const goal: Goal = mpRules
+      ? defaultBlueGoal(role, i, preferX, fogged, rng, true)
+      : team === "blue"
+        ? defaultBlueGoal(role, i, preferX, fogged, rng, false)
         : { kind: "attackNearest", source: "system" };
 
     out.push({

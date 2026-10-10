@@ -148,6 +148,11 @@ export interface WorldState {
   fogCols: number;
   fogRows: number;
   controlledId: string;
+  /**
+   * Online multiplayer: red tank controlled by the joining human.
+   * Null in single-player / offline modes.
+   */
+  remoteControlledId: string | null;
   /** ready = menu; countdown = 3-2-1; playing = live match */
   outcome: "ready" | "countdown" | "playing" | "win" | "lose" | "draw";
   chat: ChatLine[];

@@ -91,6 +91,16 @@ export const CONFIG = {
     denseArena: true,
   },
 
+  /** Two-device LAN multiplayer (WebSocket relay + host-authoritative sim). */
+  net: {
+    /** Dedicated WS/HTTP port (Vite stays on 4847). */
+    port: 4855,
+    /** Snapshot send rate from host (Hz). */
+    snapshotHz: 18,
+    /** Default room when none typed. */
+    defaultRoom: "TANK",
+  },
+
   ai: {
     thinkInterval: 0.25,
     holdRadius: 36,
@@ -230,9 +240,9 @@ export function homeTerritoryBounds(team: "blue" | "red"): {
 
 /** Vision/share modes. `clear` = no fog; map and enemies always visible. */
 export type ShareMode = "auto" | "report" | "none" | "clear";
-export type GameMode = "tdm" | "ctf" | "mp-offline";
+export type GameMode = "tdm" | "ctf" | "mp-offline" | "mp-online";
 /** Mode menu presets shown in the top bar. */
-export type MenuMode = "tdm-nofog" | "tdm" | "ctf" | "mp-offline";
+export type MenuMode = "tdm-nofog" | "tdm" | "ctf" | "mp-offline" | "mp-online";
 export type Role = keyof typeof CONFIG.roles;
 export type RedDifficulty = "easy" | "normal" | "hard";
 
@@ -250,10 +260,25 @@ export function modesFromMenu(menu: MenuMode): {
       return { share: "report", mode: "ctf" };
     case "mp-offline":
       return { share: "clear", mode: "mp-offline" };
+    case "mp-online":
+      return { share: "clear", mode: "mp-online" };
   }
 }
 
-/** Local/bot TDM slice: no fog, no wreck/debug, hold-until-ordered teammates. */
+/** Local/bot only (no network). */
 export function isMpOffline(mode: GameMode): boolean {
   return mode === "mp-offline";
+}
+
+/** Two-device networked match. */
+export function isMpOnline(mode: GameMode): boolean {
+  return mode === "mp-online";
+}
+
+/**
+ * Shared Multiplayer ruleset: no fog, all gunners, blink deaths, denser map,
+ * hold-until-ordered teammates (offline bots or online humans+bots).
+ */
+export function isMpRules(mode: GameMode): boolean {
+  return mode === "mp-offline" || mode === "mp-online";
 }

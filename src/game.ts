@@ -1,6 +1,8 @@
 import {
   CONFIG,
   isMpOffline,
+  isMpOnline,
+  isMpRules,
   type GameMode,
   type RedDifficulty,
   type ShareMode,
@@ -43,19 +45,27 @@ export function createWorld(
   shareMode: ShareMode = CONFIG.shareModeDefault,
   gameMode: GameMode = CONFIG.gameModeDefault,
   redDifficulty: RedDifficulty = CONFIG.ai.redDifficultyDefault,
+  seedOverride?: number,
 ): WorldState {
   const fog = createFogGrid();
-  const seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
+  const seed =
+    seedOverride != null
+      ? seedOverride >>> 0
+      : (Date.now() ^ (Math.random() * 1e9)) >>> 0;
   const tanks = createTeams(seed, gameMode === "ctf", shareMode, gameMode);
   const controlled =
     tanks.find((t) => t.team === "blue" && t.role === "shooter") ??
     tanks.find((t) => t.team === "blue")!;
+  const remoteControlled = isMpOnline(gameMode)
+    ? (tanks.find((t) => t.team === "red" && t.role === "shooter") ??
+      tanks.find((t) => t.team === "red")!)
+    : null;
 
   wreckSeq = 0;
   deathFxSeq = 0;
 
   const density =
-    isMpOffline(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
+    isMpRules(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
 
   const world: WorldState = {
     time: 0,
@@ -72,6 +82,7 @@ export function createWorld(
     fogCols: fog.cols,
     fogRows: fog.rows,
     controlledId: controlled.id,
+    remoteControlledId: remoteControlled?.id ?? null,
     outcome: "ready",
     chat: [],
     events: [],
@@ -82,7 +93,18 @@ export function createWorld(
   };
 
   revealHomeTerritory(world);
-  if (isMpOffline(gameMode)) {
+  if (isMpOnline(gameMode)) {
+    pushEvent(
+      world,
+      "Multiplayer · Online — two-device TDM. No fog. Host=blue, Join=red. Wipe the enemy team.",
+      "sys",
+    );
+    pushChat(
+      world,
+      "Stand by. Multiplayer · Online. Host or Join from the panel below.",
+      "sys",
+    );
+  } else if (isMpOffline(gameMode)) {
     pushEvent(
       world,
       "Multiplayer · Offline — local/bot TDM. No fog. Wipe the enemy team. Allies hold until ordered.",
@@ -161,38 +183,50 @@ export function controlledTank(world: WorldState): Tank | undefined {
   return world.tanks.find((t) => t.id === world.controlledId);
 }
 
-export function switchToTank(world: WorldState, id: string): void {
-  const t = world.tanks.find((x) => x.id === id && x.team === "blue" && x.alive);
+export function switchToTank(
+  world: WorldState,
+  id: string,
+  team: "blue" | "red" = "blue",
+): void {
+  const t = world.tanks.find((x) => x.id === id && x.team === team && x.alive);
   if (!t) return;
-  const prev = controlledTank(world);
-  world.controlledId = t.id;
-  pushEvent(world, `Control → #${t.number} (${t.role})`, "sys");
-  if (prev && prev.id !== t.id) {
-    // left tank keeps last AI order
-    pushChat(world, `#${prev.number}: continuing last order.`, "ally");
+  if (team === "blue") {
+    const prev = controlledTank(world);
+    world.controlledId = t.id;
+    pushEvent(world, `Control → #${t.number} (${t.role})`, "sys");
+    if (prev && prev.id !== t.id) {
+      pushChat(world, `#${prev.number}: continuing last order.`, "ally");
+    }
+  } else {
+    world.remoteControlledId = t.id;
+    pushEvent(world, `Remote control → red #${t.number}`, "sys");
   }
 }
 
-export function switchToNumber(world: WorldState, n: number): void {
+export function switchToNumber(
+  world: WorldState,
+  n: number,
+  team: "blue" | "red" = "blue",
+): void {
   const t = world.tanks.find(
-    (x) => x.team === "blue" && x.number === n && x.alive,
+    (x) => x.team === team && x.number === n && x.alive,
   );
-  if (t) switchToTank(world, t.id);
+  if (t) switchToTank(world, t.id, team);
 }
 
 function autoSwitchNearest(world: WorldState, from: Tank): void {
-  const living = world.tanks.filter((t) => t.team === "blue" && t.alive);
+  const living = world.tanks.filter((t) => t.team === from.team && t.alive);
   if (!living.length) return;
   living.sort(
     (a, b) =>
       dist(from.x, from.y, a.x, a.y) - dist(from.x, from.y, b.x, b.y),
   );
-  switchToTank(world, living[0].id);
+  switchToTank(world, living[0]!.id, from.team);
 }
 
 export function markWreckAt(world: WorldState, x: number, y: number): boolean {
   // No wreck / Capture-the-Code debugging in Multiplayer · Offline.
-  if (isMpOffline(world.gameMode)) return false;
+  if (isMpRules(world.gameMode)) return false;
   const w = world.wrecks.find(
     (wr) => dist(wr.x, wr.y, x, y) <= CONFIG.wreckMarkClickRadius,
   );
@@ -214,10 +248,17 @@ export async function sendOrder(
   world: WorldState,
   orderText: string,
   ctx: InterpretContext = {},
+  team: "blue" | "red" = "blue",
 ): Promise<void> {
   if (world.outcome !== "playing") return;
-  pushEvent(world, `Order: ${orderText}`, "sys");
-  const bundle = await interpretOrder(orderText, world.tanks, world, ctx);
+  pushEvent(world, `Order (${team}): ${orderText}`, "sys");
+  const bundle = await interpretOrder(
+    orderText,
+    world.tanks,
+    world,
+    ctx,
+    team,
+  );
   if (bundle.llmError) {
     // Event log only — keep team chat free of API noise
     pushEvent(
@@ -266,14 +307,23 @@ export async function sendOrder(
   }
 }
 
-interface InputState {
-  keys: Set<string>;
+export interface InputState {
+  keys: Set<string> | string[];
   mouseX: number;
   mouseY: number;
   shooting: boolean;
 }
 
-export function stepWorld(world: WorldState, dt: number, input: InputState): void {
+function asKeySet(keys: Set<string> | string[]): Set<string> {
+  return keys instanceof Set ? keys : new Set(keys);
+}
+
+export function stepWorld(
+  world: WorldState,
+  dt: number,
+  input: InputState,
+  remoteInput?: InputState | null,
+): void {
   if (world.outcome !== "playing") return;
 
   world.time += dt;
@@ -294,15 +344,37 @@ export function stepWorld(world: WorldState, dt: number, input: InputState): voi
     (m) => world.time - m.createdAt < CONFIG.markerFadeSeconds,
   );
 
+  const localInput: InputState = {
+    keys: asKeySet(input.keys),
+    mouseX: input.mouseX,
+    mouseY: input.mouseY,
+    shooting: input.shooting,
+  };
+  const guestInput: InputState | null = remoteInput
+    ? {
+        keys: asKeySet(remoteInput.keys),
+        mouseX: remoteInput.mouseX,
+        mouseY: remoteInput.mouseY,
+        shooting: remoteInput.shooting,
+      }
+    : null;
+
   for (const tank of world.tanks) {
     if (!tank.alive) continue;
     tank.cooldown = Math.max(0, tank.cooldown - dt);
 
-    const isControlled =
+    const isLocalControlled =
       tank.team === "blue" && tank.id === world.controlledId;
+    const isRemoteControlled =
+      !!guestInput &&
+      !!world.remoteControlledId &&
+      tank.team === "red" &&
+      tank.id === world.remoteControlledId;
 
-    if (isControlled) {
-      updatePlayer(world, tank, dt, input);
+    if (isLocalControlled) {
+      updatePlayer(world, tank, dt, localInput);
+    } else if (isRemoteControlled && guestInput) {
+      updatePlayer(world, tank, dt, guestInput);
     } else {
       const ai = updateTankAi(world, tank, dt, false);
       if (ai.wantShoot && CONFIG.roles[tank.role].canShoot) {
@@ -325,7 +397,7 @@ export function stepWorld(world: WorldState, dt: number, input: InputState): voi
     tank.lastKnownPos = { x: tank.x, y: tank.y };
 
     handleReportIn(world, tank);
-    if (!isMpOffline(world.gameMode)) {
+    if (!isMpRules(world.gameMode)) {
       handleDebug(world, tank, dt);
     }
   }
@@ -357,13 +429,14 @@ function updatePlayer(
   tank.x = freed.x;
   tank.y = freed.y;
 
+  const keys = asKeySet(input.keys);
   const speed = CONFIG.roles[tank.role].speed;
   let mx = 0;
   let my = 0;
-  if (input.keys.has("arrowup")) my -= 1;
-  if (input.keys.has("arrowdown")) my += 1;
-  if (input.keys.has("arrowleft")) mx -= 1;
-  if (input.keys.has("arrowright")) mx += 1;
+  if (keys.has("arrowup")) my -= 1;
+  if (keys.has("arrowdown")) my += 1;
+  if (keys.has("arrowleft")) mx -= 1;
+  if (keys.has("arrowright")) mx += 1;
   if (mx || my) {
     const len = Math.hypot(mx, my);
     mx = (mx / len) * speed * dt;
@@ -375,7 +448,7 @@ function updatePlayer(
 
   const aim = angleTo(tank.x, tank.y, input.mouseX, input.mouseY);
   const wantShoot =
-    input.shooting || input.keys.has(" ") || input.keys.has("spacebar");
+    input.shooting || keys.has(" ") || keys.has("spacebar");
   // Snap aim when firing so shots track the cursor; otherwise turn smoothly.
   if (wantShoot) {
     tank.angle = aim;
@@ -385,7 +458,7 @@ function updatePlayer(
   }
 
   // Player can debug / report by standing near marked wreck (not in mp-offline)
-  if (!isMpOffline(world.gameMode) && tank.goal.kind !== "debug") {
+  if (!isMpRules(world.gameMode) && tank.goal.kind !== "debug") {
     const near = world.wrecks.find(
       (w) =>
         w.marked &&
@@ -489,7 +562,7 @@ function applyDamage(
   if (tank.hp <= 0) {
     tank.hp = 0;
     tank.alive = false;
-    if (isMpOffline(world.gameMode)) {
+    if (isMpRules(world.gameMode)) {
       spawnDeathFx(world, tank);
     } else {
       spawnWreck(world, tank);
@@ -499,9 +572,14 @@ function applyDamage(
       `${tank.team === "blue" ? "Friendly" : "Enemy"} #${tank.number} destroyed.`,
       "warn",
     );
-    if (tank.team === "blue") {
-      // Deaths stay in the event log — don't flood team chat
-      if (tank.id === world.controlledId) autoSwitchNearest(world, tank);
+    if (tank.team === "blue" && tank.id === world.controlledId) {
+      autoSwitchNearest(world, tank);
+    } else if (
+      tank.team === "red" &&
+      world.remoteControlledId &&
+      tank.id === world.remoteControlledId
+    ) {
+      autoSwitchNearest(world, tank);
     }
   }
 }
@@ -625,7 +703,7 @@ function handleReportIn(world: WorldState, tank: Tank): void {
 
 function handleDebug(world: WorldState, tank: Tank, dt: number): void {
   if (!tank.alive) return;
-  if (isMpOffline(world.gameMode)) return;
+  if (isMpRules(world.gameMode)) return;
   if (tank.goal.kind !== "debug" && tank.team === "blue") return;
 
   let wreck: Wreck | undefined;
@@ -788,13 +866,15 @@ function checkOutcome(world: WorldState): void {
     return;
   }
   if (!redAlive) {
-    if (world.gameMode === "tdm" || isMpOffline(world.gameMode)) {
+    if (world.gameMode === "tdm" || isMpRules(world.gameMode)) {
       world.outcome = "win";
       pushEvent(
         world,
-        isMpOffline(world.gameMode)
-          ? "Enemy company wiped — Multiplayer · Offline victory."
-          : "Enemy company wiped — Team Deathmatch victory.",
+        isMpOnline(world.gameMode)
+          ? "Enemy company wiped — Multiplayer · Online victory."
+          : isMpOffline(world.gameMode)
+            ? "Enemy company wiped — Multiplayer · Offline victory."
+            : "Enemy company wiped — Team Deathmatch victory.",
         "warn",
       );
       pushChat(world, "All hostiles down. We win.", "ally");

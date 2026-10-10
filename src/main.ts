@@ -1,5 +1,6 @@
 import {
   CONFIG,
+  isMpOnline,
   modesFromMenu,
   type GameMode,
   type MenuMode,
@@ -18,6 +19,7 @@ import {
   stepWorld,
   switchToNumber,
   switchToTank,
+  type InputState,
 } from "./game";
 import {
   defaultModelFor,
@@ -29,6 +31,9 @@ import {
 } from "./orders";
 import { renderWorld } from "./render";
 import { createVoiceRadio } from "./voice";
+import { NetClient } from "./net/client";
+import type { NetInput, NetTeam } from "./net/protocol";
+import { applySnap, worldToSnap } from "./net/snapshot";
 import type { LlmBackend, WorldState } from "./types";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
@@ -61,6 +66,107 @@ const menuBtn = document.querySelector<HTMLButtonElement>("#menu-btn")!;
 const gateModeBtns = [
   ...document.querySelectorAll<HTMLButtonElement>("#gate-modes .gate-mode"),
 ];
+const mpNetPanel = document.querySelector<HTMLElement>("#mp-net-panel")!;
+const mpRoomInput = document.querySelector<HTMLInputElement>("#mp-room")!;
+const mpUrlInput = document.querySelector<HTMLInputElement>("#mp-url")!;
+const mpHostBtn = document.querySelector<HTMLButtonElement>("#mp-host-btn")!;
+const mpJoinBtn = document.querySelector<HTMLButtonElement>("#mp-join-btn")!;
+const mpStartBtn = document.querySelector<HTMLButtonElement>("#mp-start-btn")!;
+const mpNetStatus = document.querySelector<HTMLElement>("#mp-net-status")!;
+
+/** Local human team for online play (host=blue, guest=red). */
+let localTeam: NetTeam = "blue";
+let netGuestConnected = false;
+let latestPeerInput: InputState | null = null;
+let snapAcc = 0;
+let guestControlledNumber = 1;
+
+function setMpStatus(text: string, kind: "" | "ok" | "err" = ""): void {
+  mpNetStatus.textContent = text;
+  mpNetStatus.classList.remove("ok", "err");
+  if (kind) mpNetStatus.classList.add(kind);
+}
+
+function syncMpPanel(): void {
+  const online = modeSelect.value === "mp-online";
+  mpNetPanel.hidden = !online;
+  if (online) {
+    startOfflineBtn.textContent = "Play bots offline instead";
+  } else {
+    startOfflineBtn.textContent = "Play offline";
+  }
+}
+
+const net = new NetClient({
+  onStatus: (s) => {
+    if (s.kind === "connecting") {
+      setMpStatus("Connecting to relay…");
+      mpStartBtn.disabled = true;
+    } else if (s.kind === "connected" || s.kind === "lobby") {
+      localTeam = s.team;
+      netGuestConnected = s.kind === "lobby" ? s.guestConnected : false;
+      const info = net.info;
+      const ips = info.lanIps.length
+        ? info.lanIps.map((ip) => `http://${ip}:4847`).join(" · ")
+        : "(checking LAN IPs…)";
+      const line =
+        s.kind === "lobby" && s.role === "host"
+          ? `Hosting room ${s.room} as BLUE.\nGuest opens: ${ips}\nThen Join with room ${s.room}` +
+            (s.guestConnected ? "\nGuest connected — Start match." : "\nWaiting for guest…")
+          : s.kind === "lobby" && s.role === "guest"
+            ? `Joined room ${s.room} as RED. Waiting for host to Start.`
+            : `Connected as ${s.role.toUpperCase()} (${s.team}) room ${s.room}`;
+      setMpStatus(line, "ok");
+      mpStartBtn.disabled = !(s.role === "host" && netGuestConnected);
+    } else if (s.kind === "error") {
+      setMpStatus(s.message, "err");
+      mpStartBtn.disabled = true;
+    }
+  },
+  onStart: (seed) => {
+    const resolved = modesFromMenu("mp-online");
+    world = createWorld(resolved.share, resolved.mode, "normal", seed);
+    chatCursor = 0;
+    eventCursor = 0;
+    chatEl.innerHTML = "";
+    eventsEl.innerHTML = "";
+    gateProbe = { kind: "offline_chosen" };
+    pushEvent(
+      world,
+      localTeam === "blue"
+        ? "Online match — you are BLUE (host)."
+        : "Online match — you are RED (guest).",
+      "warn",
+    );
+    startPreMatchCountdown();
+  },
+  onState: (snap) => {
+    if (localTeam !== "red") return;
+    applySnap(world, snap, "red");
+    // Keep guest's selected tank from snapshot remote id
+    if (world.remoteControlledId) {
+      const t = world.tanks.find((x) => x.id === world.remoteControlledId);
+      if (t) guestControlledNumber = t.number;
+    }
+  },
+  onPeerInput: (input) => {
+    latestPeerInput = {
+      keys: new Set(input.keys),
+      mouseX: input.mouseX,
+      mouseY: input.mouseY,
+      shooting: input.shooting,
+    };
+    if (input.controlledNumber >= 1 && input.controlledNumber <= 6) {
+      switchToNumber(world, input.controlledNumber, "red");
+    }
+  },
+  onPeerOrder: (text) => {
+    void sendOrder(world, text, {}, "red");
+  },
+  onLog: (line) => {
+    if (world) pushEvent(world, line, "sys");
+  },
+});
 
 /** Apply Mode-menu preset to the Share select, then return resolved modes. */
 function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
@@ -260,6 +366,13 @@ function selectMenuMode(menu: MenuMode, rebuild: boolean): void {
   const resolved = modesFromMenu(menu);
   shareSelect.value = resolved.share;
   syncGateModeButtons();
+  syncMpPanel();
+  if (menu !== "mp-online") {
+    net.disconnect();
+    localTeam = "blue";
+    latestPeerInput = null;
+    setMpStatus("Not connected.");
+  }
   if (rebuild) {
     // Rebuild the paused match with the new mode (still behind the menu)
     world = createWorld(resolved.share, resolved.mode);
@@ -358,8 +471,18 @@ function beginRound(forceOffline = false): void {
   if (world.outcome !== "ready") return;
   if (gateProbe.kind === "checking") return;
 
+  // Online matches start via Host "Start when guest joins" (net onStart).
+  if (isMpOnline(world.gameMode) && !forceOffline) {
+    setMpStatus("Use Host / Join below, then Start when guest joins.", "err");
+    return;
+  }
+
   if (forceOffline) {
     gateProbe = { kind: "offline_chosen" };
+    // Playing bots locally even if Online mode card is selected
+    if (modeSelect.value === "mp-online") {
+      selectMenuMode("mp-offline", true);
+    }
   }
 
   // Require verified key unless explicitly playing offline
@@ -374,6 +497,36 @@ function beginRound(forceOffline = false): void {
   syncKeyFields("gate");
   startPreMatchCountdown();
 }
+
+mpHostBtn.addEventListener("click", () => {
+  selectMenuMode("mp-online", true);
+  net.connect({
+    role: "host",
+    room: mpRoomInput.value.trim() || CONFIG.net.defaultRoom,
+    url: mpUrlInput.value.trim() || undefined,
+  });
+  net.sendReady();
+});
+
+mpJoinBtn.addEventListener("click", () => {
+  selectMenuMode("mp-online", true);
+  net.connect({
+    role: "guest",
+    room: mpRoomInput.value.trim() || CONFIG.net.defaultRoom,
+    url: mpUrlInput.value.trim() || undefined,
+  });
+  net.sendReady();
+});
+
+mpStartBtn.addEventListener("click", () => {
+  if (!net.info.connected || net.info.role !== "host") return;
+  if (!netGuestConnected) {
+    setMpStatus("Wait for a guest to join first.", "err");
+    return;
+  }
+  gateProbe = { kind: "offline_chosen" };
+  net.sendStart();
+});
 
 const keys = new Set<string>();
 let mouseX = CONFIG.canvasWidth / 2;
@@ -405,12 +558,13 @@ canvas.addEventListener("mousedown", (ev) => {
   if (ev.button === 0) {
     const friendly = world.tanks.find(
       (t) =>
-        t.team === "blue" &&
+        t.team === localTeam &&
         t.alive &&
         Math.hypot(t.x - p.x, t.y - p.y) <= CONFIG.tankRadius + 6,
     );
     if (friendly) {
-      switchToTank(world, friendly.id);
+      if (localTeam === "red") guestControlledNumber = friendly.number;
+      switchToTank(world, friendly.id, localTeam);
       refreshRoster();
       return;
     }
@@ -445,7 +599,13 @@ window.addEventListener("keydown", (ev) => {
     shooting = true;
   }
   if (ev.key >= "1" && ev.key <= "6") {
-    switchToNumber(world, Number(ev.key));
+    const n = Number(ev.key);
+    if (localTeam === "red") {
+      guestControlledNumber = n;
+      switchToNumber(world, n, "red");
+    } else {
+      switchToNumber(world, n, "blue");
+    }
     refreshRoster();
   }
 });
@@ -491,6 +651,7 @@ restartBtn.addEventListener("click", () => restartMatch(false));
 menuBtn.addEventListener("click", openGameMenu);
 modeSelect.addEventListener("change", () => {
   syncGateModeButtons();
+  syncMpPanel();
   restartMatch(true);
 });
 for (const btn of gateModeBtns) {
@@ -610,7 +771,14 @@ async function dispatchOrder(
   );
 
   const beforeEvents = world.events.length;
-  await sendOrder(world, cleaned, llmCtx);
+  // Guest sends orders to host for authoritative apply
+  if (isMpOnline(world.gameMode) && localTeam === "red" && net.info.connected) {
+    net.sendOrder(cleaned);
+    pushEvent(world, `Order sent to host: ${cleaned}`, "sys");
+    flushLogs();
+    return;
+  }
+  await sendOrder(world, cleaned, llmCtx, localTeam);
   const fresh = world.events.slice(beforeEvents);
   const llmFail = fresh.find((e) => e.text.startsWith("LLM unavailable"));
   if (llmFail && key) {
@@ -686,17 +854,19 @@ document.querySelectorAll<HTMLButtonElement>("#phrases [data-order]").forEach(
 );
 
 function refreshRoster(): void {
-  const blues = world.tanks
-    .filter((t) => t.team === "blue")
+  const activeId =
+    localTeam === "red" ? world.remoteControlledId : world.controlledId;
+  const mine = world.tanks
+    .filter((t) => t.team === localTeam)
     .sort((a, b) => a.number - b.number);
-  rosterEl.innerHTML = blues
+  rosterEl.innerHTML = mine
     .map((t) => {
       const carrier =
         world.gameMode === "ctf" && t.isCodeCarrier ? " ★" : "";
-      const goal = t.alive ? t.goal.kind : "wreck";
+      const goal = t.alive ? t.goal.kind : "down";
       const roleClass = t.role === "scout" ? "scout" : "shooter";
       const roleLabel = t.role === "scout" ? "S scout" : "G gunner";
-      return `<li class="${t.id === world.controlledId ? "active" : ""} ${
+      return `<li class="${t.id === activeId ? "active" : ""} ${
         t.alive ? "" : "dead"
       }" data-id="${t.id}">
         <span>#${t.number}${carrier} <span class="role ${roleClass}">${roleLabel}</span></span>
@@ -709,7 +879,9 @@ function refreshRoster(): void {
     li.addEventListener("click", () => {
       const id = li.getAttribute("data-id");
       if (id) {
-        switchToTank(world, id);
+        const t = world.tanks.find((x) => x.id === id);
+        if (t && localTeam === "red") guestControlledNumber = t.number;
+        switchToTank(world, id, localTeam);
         refreshRoster();
       }
     });
@@ -740,19 +912,54 @@ function frame(ts: number): void {
   const dt = Math.min(0.05, (ts - lastTs) / 1000);
   lastTs = ts;
 
-  stepWorld(world, dt, { keys, mouseX, mouseY, shooting });
+  const online = isMpOnline(world.gameMode) && net.info.connected;
+  const isGuest = online && localTeam === "red";
+  const isHost = online && localTeam === "blue";
+
+  if (isGuest && world.outcome === "playing") {
+    // Guest does not simulate — send input, render host snapshots
+    const payload: NetInput = {
+      keys: [...keys],
+      mouseX,
+      mouseY,
+      shooting,
+      controlledNumber: guestControlledNumber,
+    };
+    net.sendInput(payload);
+  } else {
+    stepWorld(
+      world,
+      dt,
+      { keys, mouseX, mouseY, shooting },
+      isHost ? latestPeerInput : null,
+    );
+    if (isHost && world.outcome === "playing") {
+      snapAcc += dt;
+      const period = 1 / CONFIG.net.snapshotHz;
+      if (snapAcc >= period) {
+        snapAcc = 0;
+        net.sendState(worldToSnap(world));
+      }
+    }
+  }
+
   renderWorld(ctx, world, mouseX, mouseY);
 
   timerEl.textContent = formatTime(world.matchLeft);
-  const me = controlledTank(world);
+  const me =
+    localTeam === "red"
+      ? world.tanks.find((t) => t.id === world.remoteControlledId)
+      : controlledTank(world);
   const modeLabel =
     world.gameMode === "ctf"
       ? "CTF"
-      : world.gameMode === "mp-offline"
-        ? "MP Offline"
-        : world.shareMode === "clear"
-          ? "TDM No Fog"
-          : "TDM";
+      : world.gameMode === "mp-online"
+        ? `MP Online (${localTeam})`
+        : world.gameMode === "mp-offline"
+          ? "MP Offline"
+          : world.shareMode === "clear"
+            ? "TDM No Fog"
+            : "TDM";
   if (world.outcome === "ready") {
     matchStateEl.textContent = `${modeLabel} · MENU`;
   } else if (world.outcome === "countdown") {
@@ -771,6 +978,7 @@ function frame(ts: number): void {
   requestAnimationFrame(frame);
 }
 
+syncMpPanel();
 refreshRoster();
 flushLogs();
 showRoundGate();

@@ -177,6 +177,46 @@ body {
   border-color: var(--accent);
 }
 
+.mp-net-panel {
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  background: #10141c;
+}
+
+.mp-net-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mp-net-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mp-net-actions button {
+  font-size: 0.75rem;
+}
+
+.mp-net-status {
+  margin-top: 8px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.mp-net-status.ok {
+  color: #9ecf6a;
+}
+
+.mp-net-status.err {
+  color: #e07070;
+}
+
 .gate-llm-row {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr);

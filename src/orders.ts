@@ -7,6 +7,7 @@ import type {
   LlmBackend,
   OrderResult,
   Tank,
+  TeamId,
   WorldState,
 } from "./types";
 
@@ -22,12 +23,14 @@ export async function interpretOrder(
   tanks: Tank[],
   worldState: WorldState,
   ctx: InterpretContext = {},
+  team: TeamId = "blue",
 ): Promise<InterpretBundle> {
   const text = orderText.trim();
   const t0 = performance.now();
   if (!text) return { results: [], source: "mock", ms: 0 };
 
-  if (ctx.apiKey) {
+  // LLM path is blue-host only for now; red guest uses offline keyword parse.
+  if (ctx.apiKey && team === "blue") {
     try {
       const llm = await interpretWithLlm(text, tanks, worldState, ctx);
       if (llm.length) {
@@ -42,7 +45,7 @@ export async function interpretOrder(
       const msg = /401|invalid.?api.?key|incorrect api key/i.test(raw)
         ? `invalid API key (${raw})`
         : raw;
-      const fallback = interpretOffline(text, tanks, worldState);
+      const fallback = interpretOffline(text, tanks, worldState, team);
       return {
         results: fallback,
         source: "mock",
@@ -53,14 +56,18 @@ export async function interpretOrder(
   }
 
   return {
-    results: interpretOffline(text, tanks, worldState),
+    results: interpretOffline(text, tanks, worldState, team),
     source: "mock",
     ms: Math.round(performance.now() - t0),
   };
 }
 
-function friendlies(tanks: Tank[]): Tank[] {
-  return tanks.filter((t) => t.team === "blue" && t.alive);
+function friendlies(tanks: Tank[], team: TeamId = "blue"): Tank[] {
+  return tanks.filter((t) => t.team === team && t.alive);
+}
+
+function foes(tanks: Tank[], team: TeamId): Tank[] {
+  return tanks.filter((t) => t.team !== team && t.alive);
 }
 
 /** VIP to escort/cover — "me" = commander, or "cover #N" / "escort tank N". */
@@ -68,8 +75,9 @@ function resolveEscortVip(
   text: string,
   tanks: Tank[],
   controlledId: string,
+  team: TeamId = "blue",
 ): Tank | undefined {
-  const alive = friendlies(tanks);
+  const alive = friendlies(tanks, team);
   const lower = text.toLowerCase();
   const controlled = alive.find((t) => t.id === controlledId);
 
@@ -127,8 +135,9 @@ function resolveTargetsWithControl(
   text: string,
   tanks: Tank[],
   controlledId: string,
+  team: TeamId = "blue",
 ): Tank[] {
-  const alive = friendlies(tanks);
+  const alive = friendlies(tanks, team);
   const lower = text.toLowerCase();
 
   const targeted = parseTargetedEnemyAttack(text);
@@ -136,7 +145,7 @@ function resolveTargetsWithControl(
     if (targeted.allyNumbers.length) {
       return alive.filter((t) => targeted.allyNumbers.includes(t.number));
     }
-    // No blue addressee (or "all …") → company focus-fire
+    // No addressee (or "all …") → company focus-fire
     return alive;
   }
 
@@ -296,16 +305,30 @@ function landmark(
   return null;
 }
 
+function commanderId(world: WorldState, team: TeamId): string {
+  if (team === "red") {
+    return (
+      world.remoteControlledId ??
+      world.tanks.find((t) => t.team === "red" && t.alive)?.id ??
+      "red-1"
+    );
+  }
+  return world.controlledId;
+}
+
 export function interpretOffline(
   orderText: string,
   tanks: Tank[],
   worldState: WorldState,
+  team: TeamId = "blue",
 ): OrderResult[] {
   const lower = orderText.toLowerCase();
+  const cmdId = commanderId(worldState, team);
   let targets = resolveTargetsWithControl(
     orderText,
     tanks,
-    worldState.controlledId,
+    cmdId,
+    team,
   );
   if (!targets.length) {
     return [
@@ -356,40 +379,39 @@ export function interpretOffline(
   } else if (/\b(escort|cover|protect|follow|guard)\b/.test(lower)) {
     kind = "escort";
     const vip =
-      resolveEscortVip(orderText, tanks, worldState.controlledId) ??
-      friendlies(tanks).find((t) => t.id === worldState.controlledId);
+      resolveEscortVip(orderText, tanks, cmdId, team) ??
+      friendlies(tanks, team).find((t) => t.id === cmdId);
     // Bodyguards must not be the VIP (bug: "4, cover me" used to self-escort)
     const bodyguards = vip
       ? targets.filter((t) => t.id !== vip.id)
       : targets;
     if (bodyguards.length) targets = bodyguards;
     else if (vip) {
-      targets = friendlies(tanks).filter((t) => t.id !== vip.id);
+      targets = friendlies(tanks, team).filter((t) => t.id !== vip.id);
     }
     params = { targetTankId: vip?.id };
     verb =
-      vip?.id === worldState.controlledId
+      vip?.id === cmdId
         ? "covering you — facing the threat"
         : `escorting #${vip?.number ?? "?"}`;
   } else if (/\b(attack|engage|hunt|push)\b/.test(lower)) {
     kind = "attackNearest";
     const targeted = parseTargetedEnemyAttack(orderText);
     if (targeted) {
-      const red = worldState.tanks.find(
-        (t) =>
-          t.team === "red" && t.alive && t.number === targeted.enemyNumber,
+      const foe = foes(tanks, team).find(
+        (t) => t.alive && t.number === targeted.enemyNumber,
       );
-      params = red ? { targetTankId: red.id } : {};
-      verb = red
+      params = foe ? { targetTankId: foe.id } : {};
+      verb = foe
         ? `engaging enemy #${targeted.enemyNumber}`
         : `hunting enemy #${targeted.enemyNumber}`;
       perTankParams = false;
       if (targeted.allyNumbers.length) {
-        targets = friendlies(tanks).filter((t) =>
+        targets = friendlies(tanks, team).filter((t) =>
           targeted.allyNumbers.includes(t.number),
         );
       } else if (targeted.allAllies || targets.length === 0) {
-        targets = friendlies(tanks);
+        targets = friendlies(tanks, team);
       }
     } else {
       verb = "hunting / attacking";
@@ -695,20 +717,18 @@ export function sanitizeOrders(
   tanks: Tank[],
   orderText?: string,
   world?: WorldState,
+  team: TeamId = "blue",
 ): OrderResult[] {
-  const living = new Set(friendlies(tanks).map((t) => t.id));
+  const living = new Set(friendlies(tanks, team).map((t) => t.id));
   const spot =
     orderText && world ? landmark(orderText, world) : null;
-  const controlledId = world?.controlledId;
+  const controlledId = world ? commanderId(world, team) : undefined;
   const targeted =
     orderText && world ? parseTargetedEnemyAttack(orderText) : null;
-  const redTarget =
+  const foeTarget =
     targeted && world
-      ? world.tanks.find(
-          (t) =>
-            t.team === "red" &&
-            t.alive &&
-            t.number === targeted.enemyNumber,
+      ? foes(tanks, team).find(
+          (t) => t.alive && t.number === targeted.enemyNumber,
         )
       : undefined;
   return orders
@@ -726,7 +746,12 @@ export function sanitizeOrders(
       }
       // Escort must name a VIP other than the bodyguard; "cover me" → commander
       if (o.goal === "escort" && world && orderText) {
-        const vip = resolveEscortVip(orderText, tanks, world.controlledId);
+        const vip = resolveEscortVip(
+          orderText,
+          tanks,
+          controlledId ?? world.controlledId,
+          team,
+        );
         if (vip && (params.targetTankId == null || params.targetTankId === o.tankId)) {
           params.targetTankId = vip.id;
         }
@@ -734,17 +759,16 @@ export function sanitizeOrders(
           params.targetTankId = controlledId;
         }
       }
-      // Targeted enemy attack — fill / correct red targetTankId
-      if (o.goal === "attackNearest" && redTarget) {
-        params.targetTankId = redTarget.id;
+      // Targeted enemy attack — fill / correct foe targetTankId
+      if (o.goal === "attackNearest" && foeTarget) {
+        params.targetTankId = foeTarget.id;
       } else if (
         o.goal === "attackNearest" &&
         params.targetTankId &&
         world
       ) {
-        // Accept LLM red-* ids; drop invalid / dead / blue targets
         const t = world.tanks.find((x) => x.id === params.targetTankId);
-        if (!t || !t.alive || t.team !== "red") {
+        if (!t || !t.alive || t.team === team) {
           delete params.targetTankId;
         }
       }

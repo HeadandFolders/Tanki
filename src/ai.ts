@@ -1,4 +1,10 @@
-import { CONFIG, homeTerritoryBounds, isMpOffline } from "./config";
+import {
+  CONFIG,
+  homeTerritoryBounds,
+  isMpOffline,
+  isMpOnline,
+  isMpRules,
+} from "./config";
 import {
   angleTo,
   circleHitsWall,
@@ -40,7 +46,13 @@ export function updateTankAi(
     return { moveX: 0, moveY: 0, wantShoot: false, aimAngle: tank.angle };
   }
 
-  if (tank.team === "red") return enemyBrain(world, tank, dt);
+  // Online: guest's red bots use the same hold-until-ordered brain as blue.
+  if (tank.team === "red") {
+    if (isMpOnline(world.gameMode)) {
+      return mpOfflineFriendlyBrain(world, tank, dt);
+    }
+    return enemyBrain(world, tank, dt);
+  }
   return friendlyBrain(world, tank, dt);
 }
 
@@ -767,14 +779,14 @@ function mpOfflineFriendlyBrain(
     const specific =
       specificId != null
         ? world.tanks.find(
-            (t) => t.id === specificId && t.alive && t.team === "red",
+            (t) => t.id === specificId && t.alive && t.team !== tank.team,
           )
         : null;
     const hunt =
       specific ??
       nearestLive ??
       nearest(
-        world.tanks.filter((t) => t.team === "red" && t.alive),
+        world.tanks.filter((t) => t.team !== tank.team && t.alive),
         tank.x,
         tank.y,
       );
@@ -814,7 +826,7 @@ function mpOfflineFriendlyBrain(
       }
     }
   } else if (activeGoal === "retreat") {
-    const home = homeTerritoryBounds("blue");
+    const home = homeTerritoryBounds(tank.team);
     const homeX = CONFIG.canvasWidth * (0.15 + (tank.number % 5) * 0.15);
     const homeY = (home.y0 + home.y1) / 2;
     if (dist(tank.x, tank.y, homeX, homeY) < 45) {
@@ -850,7 +862,8 @@ function friendlyBrain(
   tank: Tank,
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
-  if (isMpOffline(world.gameMode)) {
+  // Online: both teams use hold-until-ordered brains for non-human tanks.
+  if (isMpRules(world.gameMode)) {
     return mpOfflineFriendlyBrain(world, tank, dt);
   }
 

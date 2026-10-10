@@ -72,12 +72,19 @@ export const CONFIG = {
     deathBlinkCount: 2,
     /** Half-period of one blink (visible or hidden), seconds. */
     deathBlinkHalfPeriodSec: 0.14,
-    /** Close-threat radius that triggers panic escape without waiting for orders. */
-    panicRadius: 72,
+    /**
+     * True melee / “under close attack” enter radius for panic.
+     * Must stay well below fightRange so ordered attackers don’t thrash.
+     */
+    meleePanicRadius: 36,
     /** Enemies inside this range count toward "surrounded". */
     surroundRadius: 115,
-    /** Need this many nearby enemies (or one in panicRadius) to panic. */
+    /** Need this many nearby enemies to count as surrounded. */
     surroundEnemyCount: 2,
+    /** Keep panicking until threats are beyond this (hysteresis exit). */
+    panicClearRadius: 105,
+    /** Minimum panic commitment so flee isn’t frame-flipped. */
+    panicCommitSec: 0.55,
     /** How far to flee when panicking. */
     escapeDistance: 130,
     /** Use denser choke geometry for this mode's arena. */

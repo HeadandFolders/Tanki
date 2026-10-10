@@ -229,14 +229,33 @@ function steerTo(
   opts: { separate?: boolean } = {},
 ): { moveX: number; moveY: number; aimAngle: number } {
   const r = CONFIG.tankRadius;
-  const waypoint = nextWaypointAroundWalls(
-    tank.x,
-    tank.y,
-    tx,
-    ty,
-    world.walls,
-    r,
-  );
+  // Reuse a recent waypoint when the goal hasn’t moved much — stops BFS flicker.
+  const cached = steerWpCache.get(tank.id);
+  let waypoint: { x: number; y: number };
+  if (
+    cached &&
+    cached.until > world.time &&
+    dist(cached.gx, cached.gy, tx, ty) < 28 &&
+    dist(tank.x, tank.y, cached.x, cached.y) > 10
+  ) {
+    waypoint = { x: cached.x, y: cached.y };
+  } else {
+    waypoint = nextWaypointAroundWalls(
+      tank.x,
+      tank.y,
+      tx,
+      ty,
+      world.walls,
+      r,
+    );
+    steerWpCache.set(tank.id, {
+      x: waypoint.x,
+      y: waypoint.y,
+      gx: tx,
+      gy: ty,
+      until: world.time + 0.22,
+    });
+  }
   const ang = angleTo(tank.x, tank.y, waypoint.x, waypoint.y);
   tank.angle = rotateToward(tank.angle, ang, CONFIG.tankTurnRate * 1.8 * dt);
   const d = dist(tank.x, tank.y, tx, ty);
@@ -369,8 +388,8 @@ function spreadSlot(tank: Tank): { x: number; y: number } {
 }
 
 /**
- * Combat overlay: close to fight range, kite if too close, always shoot when
- * an enemy is visible.
+ * Combat overlay: close to fight range, soft kite if too close, stand-and-shoot
+ * in the fight band (no orbit strafe — stops 1-target pile-on jitter).
  */
 function combatManeuver(
   world: WorldState,
@@ -386,34 +405,30 @@ function combatManeuver(
 
   let moveX = 0;
   let moveY = 0;
-  if (d < CONFIG.ai.kiteRange) {
+  if (d < CONFIG.ai.kiteRange * 0.75) {
+    // Only kite when truly on top of the target — softer step, no separation tug
     const away = angleTo(enemy.x, enemy.y, tank.x, tank.y);
     const s = steerTo(
       tank,
-      tank.x + Math.cos(away) * 80,
-      tank.y + Math.sin(away) * 80,
-      speed * 1.05,
+      tank.x + Math.cos(away) * 55,
+      tank.y + Math.sin(away) * 55,
+      speed * 0.85,
       dt,
       world,
+      { separate: false },
     );
     moveX = s.moveX;
     moveY = s.moveY;
   } else if (d > fightRange) {
-    const s = steerTo(tank, enemy.x, enemy.y, speed, dt, world);
+    const s = steerTo(tank, enemy.x, enemy.y, speed, dt, world, {
+      separate: false,
+    });
     moveX = s.moveX;
     moveY = s.moveY;
   } else {
-    const side = tank.number % 2 === 0 ? 1 : -1;
-    const s = steerTo(
-      tank,
-      tank.x + Math.cos(aimAngle + side * 1.2) * 40,
-      tank.y + Math.sin(aimAngle + side * 1.2) * 40,
-      speed * 0.55,
-      dt,
-      world,
-    );
-    moveX = s.moveX;
-    moveY = s.moveY;
+    // In fight band: hold station and shoot — no lateral orbit dance
+    moveX = 0;
+    moveY = 0;
   }
 
   return { moveX, moveY, wantShoot: true, aimAngle };
@@ -508,16 +523,63 @@ function escortCoverSlot(
   return { x: clamped.x, y: clamped.y, faceAngle };
 }
 
-/** Close/surrounded threat → panic escape without waiting for orders. */
-function shouldPanicEscape(tank: Tank, liveEnemies: Tank[]): boolean {
-  const { panicRadius, surroundRadius, surroundEnemyCount } = CONFIG.mpOffline;
+/** Panic commitment clock — prevents frame-flip flee/approach thrash. */
+const panicUntil = new Map<string, number>();
+/** Red AI sticky focus so nearest-of-many blues doesn’t flip every tick. */
+const redFocusUntil = new Map<string, { id: string; until: number }>();
+/** Short-lived steer waypoint cache to calm BFS cell flicker. */
+const steerWpCache = new Map<
+  string,
+  { x: number; y: number; gx: number; gy: number; until: number }
+>();
+
+/**
+ * Panic when surrounded (2+ nearby) or under true melee pressure.
+ * Player attack/escort only panics when surrounded — otherwise they can’t fight
+ * inside fightRange. Hysteresis + commit time stop 1-red thrash.
+ */
+function shouldPanicEscape(
+  world: WorldState,
+  tank: Tank,
+  liveEnemies: Tank[],
+): boolean {
+  const {
+    meleePanicRadius,
+    surroundRadius,
+    surroundEnemyCount,
+    panicClearRadius,
+    panicCommitSec,
+  } = CONFIG.mpOffline;
+  const now = world.time;
+  const committed = panicUntil.get(tank.id) ?? 0;
+
   let near = 0;
+  let melee = false;
+  let anyInsideClear = false;
   for (const e of liveEnemies) {
     const d = dist(tank.x, tank.y, e.x, e.y);
-    if (d <= panicRadius) return true;
+    if (d <= meleePanicRadius) melee = true;
     if (d <= surroundRadius) near++;
+    if (d <= panicClearRadius) anyInsideClear = true;
   }
-  return near >= surroundEnemyCount;
+  const surrounded = near >= surroundEnemyCount;
+
+  if (committed > now) {
+    if (anyInsideClear || surrounded || melee) return true;
+    panicUntil.delete(tank.id);
+    return false;
+  }
+
+  // Any player order: only peel when surrounded (2+). A single last red in
+  // melee must not cancel spread/hold/attack — that caused the 1-red freeze.
+  if (isPlayerOrder(tank)) {
+    if (!surrounded) return false;
+  } else if (!surrounded && !melee) {
+    return false;
+  }
+
+  panicUntil.set(tank.id, now + panicCommitSec);
+  return true;
 }
 
 function fleePoint(tank: Tank, threats: Tank[]): { x: number; y: number } {
@@ -534,6 +596,26 @@ function fleePoint(tank: Tank, threats: Tank[]): { x: number; y: number } {
     tank.x + (ax / mag) * distFlee,
     tank.y + (ay / mag) * distFlee,
   );
+}
+
+function stickyFocus(
+  map: Map<string, { id: string; until: number }>,
+  tankId: string,
+  now: number,
+  candidates: Tank[],
+  x: number,
+  y: number,
+  stickSec: number,
+): Tank | null {
+  const cur = map.get(tankId);
+  if (cur && now < cur.until) {
+    const still = candidates.find((c) => c.id === cur.id && c.alive);
+    if (still) return still;
+  }
+  const n = nearest(candidates, x, y);
+  if (n) map.set(tankId, { id: n.id, until: now + stickSec });
+  else map.delete(tankId);
+  return n;
 }
 
 /**
@@ -573,14 +655,17 @@ function mpOfflineFriendlyBrain(
   let moveY = 0;
 
   // Panic escape: flee without waiting for orders, then resume last goal.
-  if (nearestLive && shouldPanicEscape(tank, liveEnemies)) {
+  // Hysteresis + surround/melee gates stop 1-red fight-range thrash.
+  if (nearestLive && shouldPanicEscape(world, tank, liveEnemies)) {
     const resume: Goal = {
       kind: tank.goal.kind,
       params: { ...tank.goal.params },
       source: tank.goal.source,
     };
     const flee = fleePoint(tank, liveEnemies);
-    const s = steerTo(tank, flee.x, flee.y, speed * 1.15, dt, world);
+    const s = steerTo(tank, flee.x, flee.y, speed * 1.15, dt, world, {
+      separate: false,
+    });
     moveX = s.moveX;
     moveY = s.moveY;
     aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
@@ -695,20 +780,30 @@ function mpOfflineFriendlyBrain(
       );
     if (hunt) {
       const seesHunt = canSeeTank(tank, hunt, world.walls);
-      const inFight =
-        seesHunt &&
-        dist(tank.x, tank.y, hunt.x, hunt.y) <=
-          CONFIG.roles[tank.role].fightRange + 30;
-      if (inFight) {
+      const dHunt = dist(tank.x, tank.y, hunt.x, hunt.y);
+      const fightRange = CONFIG.roles[tank.role].fightRange;
+      // Distance-gated (not LOS-gated) so wall-corner LOS flicker can’t
+      // flip approach ↔ combat every frame when one red remains.
+      if (dHunt <= fightRange + 36) {
         const fight = combatManeuver(world, tank, hunt, speed, dt);
         moveX = fight.moveX;
         moveY = fight.moveY;
-        wantShoot = fight.wantShoot;
-        aimAngle = fight.aimAngle;
+        wantShoot = seesHunt;
+        aimAngle = seesHunt
+          ? fight.aimAngle
+          : angleTo(tank.x, tank.y, hunt.x, hunt.y);
       } else {
-        // No LOS / out of range — path toward last known / true position
-        const s = steerTo(tank, hunt.x, hunt.y, speed, dt, world, {
-          separate: true,
+        // Approach on a clear per-tank ring slot (fallback to hunt pos)
+        const slotAng = ((tank.number - 1) / 6) * Math.PI * 2;
+        const slotR = Math.min(fightRange * 0.8, 64);
+        let ax = hunt.x + Math.cos(slotAng) * slotR;
+        let ay = hunt.y + Math.sin(slotAng) * slotR;
+        if (circleHitsWall(ax, ay, CONFIG.tankRadius, world.walls)) {
+          ax = hunt.x;
+          ay = hunt.y;
+        }
+        const s = steerTo(tank, ax, ay, speed, dt, world, {
+          separate: dHunt > 180,
         });
         moveX = s.moveX;
         moveY = s.moveY;
@@ -1119,7 +1214,16 @@ function enemyBrain(
   const players = world.tanks.filter(
     (t) => t.team === "blue" && t.alive && canSeeTank(tank, t, world.walls),
   );
-  const nearestPlayer = nearest(players, tank.x, tank.y);
+  // Sticky focus — with one red left, nearest-blue flipping caused perpetual spin.
+  const focusPlayer = stickyFocus(
+    redFocusUntil,
+    tank.id,
+    world.time,
+    players,
+    tank.x,
+    tank.y,
+    1.25,
+  );
   const engageMul = tier.engageRangeMul;
 
   let moveX = 0;
@@ -1127,7 +1231,7 @@ function enemyBrain(
   let wantShoot = false;
   let aimAngle = tank.angle;
 
-  if (tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction && nearestPlayer) {
+  if (tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction && focusPlayer) {
     const redHome = homeTerritoryBounds("red");
     const s = steerTo(
       tank,
@@ -1139,10 +1243,10 @@ function enemyBrain(
     );
     moveX = s.moveX;
     moveY = s.moveY;
-    aimAngle = angleTo(tank.x, tank.y, nearestPlayer.x, nearestPlayer.y);
+    aimAngle = angleTo(tank.x, tank.y, focusPlayer.x, focusPlayer.y);
     wantShoot = true;
-  } else if (nearestPlayer) {
-    const fight = combatManeuver(world, tank, nearestPlayer, speed, dt);
+  } else if (focusPlayer) {
+    const fight = combatManeuver(world, tank, focusPlayer, speed, dt);
     // Hard: stick closer; easy: hang back a bit
     const scale = tier.aggroMul;
     moveX = fight.moveX * Math.min(1.15, 0.85 + 0.15 * scale);

@@ -108,6 +108,11 @@ export const CONFIG = {
       path: "/llm/openai/v1/chat/completions",
       model: "gpt-4o-mini",
     },
+    /** OpenRouter (sk-or-v1…) — OpenAI-compatible chat completions. */
+    openrouter: {
+      path: "/llm/openrouter/api/v1/chat/completions",
+      model: "openai/gpt-4o-mini",
+    },
     gemini: {
       path: "/llm/gemini/v1beta/models",
       model: "gemini-3.8-flash",

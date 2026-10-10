@@ -7,6 +7,11 @@ const llmProxy = {
     changeOrigin: true,
     rewrite: (path: string) => path.replace(/^\/llm\/openai/, ""),
   },
+  "/llm/openrouter": {
+    target: "https://openrouter.ai",
+    changeOrigin: true,
+    rewrite: (path: string) => path.replace(/^\/llm\/openrouter/, ""),
+  },
   "/llm/gemini": {
     target: "https://generativelanguage.googleapis.com",
     changeOrigin: true,

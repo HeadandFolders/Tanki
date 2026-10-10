@@ -422,16 +422,47 @@ export function interpretOffline(
   return results;
 }
 
-type LlmProvider = "openai" | "gemini" | "anthropic";
+type LlmProvider = "openai" | "openrouter" | "gemini" | "anthropic";
 
-/** Pick provider from common key prefixes (Gemini / Anthropic / OpenAI). */
+/** Pick provider from common key prefixes. */
 export function detectLlmProvider(apiKey: string): LlmProvider {
   const k = apiKey.trim();
   // Gemini: classic AIza… and new AI Studio auth keys AQ.…
   if (k.startsWith("AIza") || k.startsWith("AQ.")) return "gemini";
   if (k.startsWith("sk-ant-")) return "anthropic";
-  // OpenAI (sk-…) and unknown → OpenAI-compatible path
+  // OpenRouter OpenAI-compatible keys
+  if (k.startsWith("sk-or-")) return "openrouter";
+  // OpenAI (sk-…) and unknown → OpenAI path
   return "openai";
+}
+
+async function fetchOpenAiCompatible(
+  provider: "openai" | "openrouter",
+  apiKey: string,
+  messages: { role: string; content: string }[],
+  opts: { temperature: number; maxTokens: number; signal: AbortSignal },
+): Promise<Response> {
+  const cfg =
+    provider === "openrouter" ? CONFIG.llm.openrouter : CONFIG.llm.openai;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+  if (provider === "openrouter") {
+    headers["HTTP-Referer"] = "https://localhost/fog-of-war-tank-hunt";
+    headers["X-OpenRouter-Title"] = "Fog of War Tank Hunt";
+  }
+  return fetch(cfg.path, {
+    method: "POST",
+    signal: opts.signal,
+    headers,
+    body: JSON.stringify({
+      model: cfg.model,
+      temperature: opts.temperature,
+      max_tokens: opts.maxTokens,
+      messages,
+    }),
+  });
 }
 
 function geminiGenerateUrl(apiKey: string, model: string): string {
@@ -512,30 +543,20 @@ export async function probeLlmConnection(
           `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
         );
       }
-    } else {
-      if (!key.startsWith("sk-")) {
+    } else if (provider === "openrouter" || provider === "openai") {
+      if (provider === "openai" && !key.startsWith("sk-")) {
         throw new Error(
-          `Key looks like ${key.startsWith("AQ.") ? "Gemini (AQ.…)" : "a non-OpenAI key"} — expected OpenAI sk-…, Gemini AIza…/AQ.…, or Anthropic sk-ant-…`,
+          "Unrecognized key — expected OpenAI sk-…, OpenRouter sk-or-…, Gemini AIza…/AQ.…, or Anthropic sk-ant-…",
         );
       }
-      const res = await fetch(CONFIG.llm.openai.path, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: CONFIG.llm.openai.model,
-          temperature: 0,
-          max_tokens: 16,
-          messages: [{ role: "user", content: 'Reply with JSON: {"ok":true}' }],
-        }),
-      });
+      const res = await fetchOpenAiCompatible(provider, key, [
+        { role: "user", content: 'Reply with JSON: {"ok":true}' },
+      ], { temperature: 0, maxTokens: 16, signal: controller.signal });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
+        const label = provider === "openrouter" ? "OpenRouter" : "OpenAI";
         throw new Error(
-          `OpenAI HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+          `${label} HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
         );
       }
     }
@@ -773,28 +794,22 @@ async function fetchLlmJson(
       return text;
     }
 
-    // OpenAI + OpenAI-compatible keys (sk-…) via Vite proxy
-    const res = await fetch(CONFIG.llm.openai.path, {
-      method: "POST",
+    // OpenAI / OpenRouter (OpenAI-compatible) via Vite proxy
+    const chatProvider = provider === "openrouter" ? "openrouter" : "openai";
+    const messages = [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ];
+    const res = await fetchOpenAiCompatible(chatProvider, apiKey, messages, {
+      temperature: 0.2,
+      maxTokens: 1024,
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: CONFIG.llm.openai.model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
+      const label = chatProvider === "openrouter" ? "OpenRouter" : "OpenAI";
       throw new Error(
-        `OpenAI HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
+        `${label} HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
       );
     }
     const data = (await res.json()) as {

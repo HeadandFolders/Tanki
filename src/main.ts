@@ -111,6 +111,7 @@ function syncKeyFields(from: "gate" | "sidebar"): void {
 function providerLabel(p: string): string {
   if (p === "gemini") return "Gemini";
   if (p === "anthropic") return "Anthropic";
+  if (p === "openrouter") return "OpenRouter";
   return "OpenAI";
 }
 

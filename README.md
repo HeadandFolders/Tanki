@@ -27,8 +27,10 @@ Paste your key in:
 export const LOCAL_API_KEY = "AIza..."; // Gemini — or sk-... for OpenAI
 ```
 
-Gemini (`AIza…`) and OpenAI (`sk-…`) both work; provider is auto-detected.  
+Gemini (`AIza…`), OpenAI (`sk-…`), and Anthropic (`sk-ant-…`) work; provider is auto-detected from the key prefix.  
 Or set `VITE_OPENAI_API_KEY` in `.env` / the side-panel field (same auto-detect).
+
+Browser calls go through Vite `/llm/*` proxies (see `vite.config.ts`) so they are not blocked by CORS.
 
 Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, else keyword mock) → bot goals**. LLM runs **only on each order**, never every tick.
 

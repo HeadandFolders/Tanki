@@ -89,12 +89,20 @@ export const CONFIG = {
   },
 
   llm: {
-    /** "auto" picks Gemini for AIza… keys, OpenAI for sk-… */
-    provider: "auto" as "auto" | "gemini" | "openai",
-    openaiEndpoint: "https://api.openai.com/v1/chat/completions",
-    openaiModel: "gpt-4o-mini",
-    geminiModel: "gemini-2.0-flash",
     timeoutMs: 12000,
+    /** Paths go through Vite `/llm/*` proxies (see vite.config.ts) to avoid CORS. */
+    openai: {
+      path: "/llm/openai/v1/chat/completions",
+      model: "gpt-4o-mini",
+    },
+    gemini: {
+      path: "/llm/gemini/v1beta/models",
+      model: "gemini-2.0-flash",
+    },
+    anthropic: {
+      path: "/llm/anthropic/v1/messages",
+      model: "claude-haiku-4-5-20251001",
+    },
   },
 
   colors: {

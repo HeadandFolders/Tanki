@@ -251,12 +251,13 @@ export function interpretOffline(
   return results;
 }
 
-function detectLlmProvider(apiKey: string): "gemini" | "openai" {
-  if (CONFIG.llm.provider === "gemini" || CONFIG.llm.provider === "openai") {
-    return CONFIG.llm.provider;
-  }
-  // Gemini keys typically start with AIza…
-  if (apiKey.startsWith("AIza")) return "gemini";
+type LlmProvider = "openai" | "gemini" | "anthropic";
+
+/** Pick provider from common key prefixes (Gemini / Anthropic / OpenAI). */
+export function detectLlmProvider(apiKey: string): LlmProvider {
+  const k = apiKey.trim();
+  if (k.startsWith("AIza")) return "gemini";
+  if (k.startsWith("sk-ant-")) return "anthropic";
   return "openai";
 }
 
@@ -288,7 +289,7 @@ function sanitizeOrders(orders: OrderResult[], tanks: Tank[]): OrderResult[] {
 }
 
 function extractJsonObject(text: string): { orders?: OrderResult[] } {
-  const trimmed = text.trim();
+  const trimmed = stripJsonFence(text);
   try {
     return JSON.parse(trimmed) as { orders?: OrderResult[] };
   } catch {
@@ -301,6 +302,12 @@ function extractJsonObject(text: string): { orders?: OrderResult[] } {
     }
     throw new Error("LLM returned non-JSON");
   }
+}
+
+function stripJsonFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
 }
 
 async function interpretWithLlm(
@@ -335,80 +342,120 @@ async function interpretWithLlm(
   });
 
   const provider = detectLlmProvider(apiKey);
+  const content = await fetchLlmJson(provider, apiKey.trim(), ORDER_SYSTEM, user);
+  const parsed = extractJsonObject(content);
+  return sanitizeOrders(parsed.orders ?? [], tanks);
+}
+
+async function fetchLlmJson(
+  provider: LlmProvider,
+  apiKey: string,
+  system: string,
+  user: string,
+): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.llm.timeoutMs);
   try {
-    let content = "{}";
     if (provider === "gemini") {
-      content = await callGemini(apiKey, ORDER_SYSTEM, user, controller.signal);
-    } else {
-      content = await callOpenAi(apiKey, ORDER_SYSTEM, user, controller.signal);
+      const model = CONFIG.llm.gemini.model;
+      const url = `${CONFIG.llm.gemini.path}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: "user", parts: [{ text: user }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `Gemini HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
+        );
+      }
+      const data = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
+      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
     }
-    const parsed = extractJsonObject(content);
-    return sanitizeOrders(parsed.orders ?? [], tanks);
+
+    if (provider === "anthropic") {
+      const res = await fetch(CONFIG.llm.anthropic.path, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: CONFIG.llm.anthropic.model,
+          max_tokens: 1024,
+          temperature: 0.2,
+          system,
+          messages: [{ role: "user", content: user }],
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `Anthropic HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
+        );
+      }
+      const data = (await res.json()) as {
+        content?: { type?: string; text?: string }[];
+      };
+      const text =
+        data.content?.find((c) => c.type === "text")?.text ??
+        data.content?.[0]?.text ??
+        "{}";
+      return text;
+    }
+
+    // OpenAI + OpenAI-compatible keys (sk-…) via Vite proxy
+    const res = await fetch(CONFIG.llm.openai.path, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: CONFIG.llm.openai.model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `OpenAI HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
+      );
+    }
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return data.choices?.[0]?.message?.content ?? "{}";
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("LLM timed out");
+    }
+    if (err instanceof TypeError) {
+      // Typical browser CORS / network failure before the proxy existed
+      throw new Error(`LLM network error (${err.message})`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function callOpenAi(
-  apiKey: string,
-  system: string,
-  user: string,
-  signal: AbortSignal,
-): Promise<string> {
-  const res = await fetch(CONFIG.llm.openaiEndpoint, {
-    method: "POST",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: CONFIG.llm.openaiModel,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
-  const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  return data.choices?.[0]?.message?.content ?? "{}";
-}
-
-async function callGemini(
-  apiKey: string,
-  system: string,
-  user: string,
-  signal: AbortSignal,
-): Promise<string> {
-  const model = CONFIG.llm.geminiModel;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: user }] }],
-      generationConfig: {
-        temperature: 0.2,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Gemini HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`);
-  }
-  const data = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-  };
-  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 }
 

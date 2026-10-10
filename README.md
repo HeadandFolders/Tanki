@@ -2,7 +2,7 @@
 
 Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no game engine). Battle City–inspired pixel art; voice radio orders.
 
-**Default mode: Team Deathmatch.** Optional: Capture the Code (CTF).
+**Default mode: Team Deathmatch No Fog.** Also in the Mode menu: Team Deathmatch (fog) and Capture the Code (CTF).
 
 ## Run locally
 
@@ -42,19 +42,20 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 | `1`–`6` / click friendly | Switch tank |
 | Radio LIVE | Voice orders (Chrome/Edge + mic) |
 | Phrase buttons / text box | Same order path without mic |
-| Mode select | Team Deathmatch (default) / Capture the Code |
-| Share select | `auto` / `report` / `none` |
+| Mode select | Team Deathmatch No Fog (default) / Team Deathmatch / Capture the Code |
+| Share select | `clear` (no fog) / `report` / `auto` / `none` |
 
 ## Modes
 
-- **Team Deathmatch (default)** — wipe the enemy company. Timeout = draw.
+- **Team Deathmatch No Fog (default)** — wipe the enemy company; full terrain visible, enemies hidden until spotted.
+- **Team Deathmatch** — same rules with fog share (`report` by default).
 - **Capture the Code** — debug the enemy code-carrier wreck to win (old CTF rules).
 
 ## Rules (short)
 
 - 5-minute matches, no respawns.
 - 2 scouts (slower, long vision) + 4 gunners (faster, short vision); all shoot.
-- Southern ~20% home strip starts revealed; fog elsewhere.
+- No Fog (`clear`): whole map visible; fogged modes keep the southern ~20% home strip pre-revealed.
 - Tunables in `src/config.ts`.
 
 ## Roadmap / stretch

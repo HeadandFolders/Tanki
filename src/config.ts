@@ -54,9 +54,12 @@ export const CONFIG = {
   bulletRadius: 3,
   friendlyFire: false,
 
-  shareModeDefault: "report" as ShareMode,
-  /** Team Deathmatch is the playtest default; CTF = Capture the Code. */
+  /** No-fog TDM is the playtest default (full terrain; enemies still vision-gated). */
+  shareModeDefault: "clear" as ShareMode,
+  /** Team Deathmatch is the rules default; CTF = Capture the Code. */
   gameModeDefault: "tdm" as GameMode,
+  /** Top-bar Mode menu preset (bundles rules + fog share). */
+  menuModeDefault: "tdm-nofog" as MenuMode,
 
   ai: {
     thinkInterval: 0.25,
@@ -134,6 +137,24 @@ export function homeTerritoryBounds(team: "blue" | "red"): {
   return { y0: 0, y1: h };
 }
 
-export type ShareMode = "auto" | "report" | "none";
+/** Vision/share modes. `clear` = no fog overlay; enemies still vision-gated. */
+export type ShareMode = "auto" | "report" | "none" | "clear";
 export type GameMode = "tdm" | "ctf";
+/** Mode menu presets shown in the top bar. */
+export type MenuMode = "tdm-nofog" | "tdm" | "ctf";
 export type Role = keyof typeof CONFIG.roles;
+
+/** Resolve a Mode-menu preset into game rules + fog share. */
+export function modesFromMenu(menu: MenuMode): {
+  share: ShareMode;
+  mode: GameMode;
+} {
+  switch (menu) {
+    case "tdm-nofog":
+      return { share: "clear", mode: "tdm" };
+    case "tdm":
+      return { share: "report", mode: "tdm" };
+    case "ctf":
+      return { share: "report", mode: "ctf" };
+  }
+}

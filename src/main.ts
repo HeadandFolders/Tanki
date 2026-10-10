@@ -1,4 +1,10 @@
-import { CONFIG, type GameMode, type ShareMode } from "./config";
+import {
+  CONFIG,
+  modesFromMenu,
+  type GameMode,
+  type MenuMode,
+  type ShareMode,
+} from "./config";
 import { apiKeySource, resolveApiKey } from "./api-key";
 import {
   controlledTank,
@@ -31,17 +37,23 @@ const restartBtn = document.querySelector<HTMLButtonElement>("#restart")!;
 const voiceBtn = document.querySelector<HTMLButtonElement>("#voice-btn")!;
 const voiceStatusEl = document.querySelector("#voice-status")!;
 
+/** Apply Mode-menu preset to the Share select, then return resolved modes. */
+function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
+  const menu = modeSelect.value as MenuMode;
+  const resolved = modesFromMenu(menu);
+  shareSelect.value = resolved.share;
+  return resolved;
+}
+
 function currentModes(): { share: ShareMode; mode: GameMode } {
   return {
     share: shareSelect.value as ShareMode,
-    mode: modeSelect.value as GameMode,
+    mode: modesFromMenu(modeSelect.value as MenuMode).mode,
   };
 }
 
-let world: WorldState = createWorld(
-  currentModes().share,
-  currentModes().mode,
-);
+const boot = applyMenuPreset();
+let world: WorldState = createWorld(boot.share, boot.mode);
 
 // Prefill UI from file/env (password field stays empty for security; status shows source)
 const bootKey = resolveApiKey("");
@@ -136,8 +148,8 @@ shareSelect.addEventListener("change", () => {
   world.shareMode = shareSelect.value as ShareMode;
 });
 
-function restartMatch(): void {
-  const { share, mode } = currentModes();
+function restartMatch(fromMenu = false): void {
+  const { share, mode } = fromMenu ? applyMenuPreset() : currentModes();
   world = createWorld(share, mode);
   chatCursor = 0;
   eventCursor = 0;
@@ -147,8 +159,8 @@ function restartMatch(): void {
   flushLogs();
 }
 
-restartBtn.addEventListener("click", restartMatch);
-modeSelect.addEventListener("change", restartMatch);
+restartBtn.addEventListener("click", () => restartMatch(false));
+modeSelect.addEventListener("change", () => restartMatch(true));
 
 async function dispatchOrder(
   text: string,
@@ -297,7 +309,12 @@ function frame(ts: number): void {
 
   timerEl.textContent = formatTime(world.matchLeft);
   const me = controlledTank(world);
-  const modeLabel = world.gameMode === "tdm" ? "TDM" : "CTF";
+  const modeLabel =
+    world.gameMode === "ctf"
+      ? "CTF"
+      : world.shareMode === "clear"
+        ? "TDM No Fog"
+        : "TDM";
   matchStateEl.textContent =
     world.outcome === "playing"
       ? me

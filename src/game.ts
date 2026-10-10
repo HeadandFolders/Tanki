@@ -65,12 +65,22 @@ export function createWorld(
 
   revealHomeTerritory(world);
   if (gameMode === "tdm") {
+    const fogNote =
+      shareMode === "clear"
+        ? "Map clear (no fog); enemies hidden until spotted."
+        : "Home strip mapped; push north.";
     pushEvent(
       world,
-      "Team Deathmatch — wipe the enemy company. Home strip mapped; push north.",
+      `Team Deathmatch — wipe the enemy company. ${fogNote}`,
       "sys",
     );
-    pushChat(world, "Net open. TDM rules. Radio LIVE for voice orders.", "sys");
+    pushChat(
+      world,
+      shareMode === "clear"
+        ? "Net open. TDM No Fog. Radio LIVE for voice orders."
+        : "Net open. TDM rules. Radio LIVE for voice orders.",
+      "sys",
+    );
   } else {
     pushEvent(
       world,
@@ -457,7 +467,7 @@ function addMarker(
 
 function handleReportIn(world: WorldState, tank: Tank): void {
   if (tank.team !== "blue" || !tank.alive) return;
-  if (world.shareMode !== "report") return;
+  if (world.shareMode !== "report" && world.shareMode !== "clear") return;
   if (tank.id === world.controlledId) return; // controlled already live
   if (tank.goal.kind !== "reportIn" && tank.standStillTimer < 0.5) return;
 
@@ -629,8 +639,12 @@ function updateSightings(world: WorldState): void {
     }
   }
 
-  // In "none", others are chat-only — occasional contact lines when AI sees enemies
-  if (world.shareMode === "none" || world.shareMode === "report") {
+  // In none/report/clear, others are chat-only — occasional contact lines when AI sees enemies
+  if (
+    world.shareMode === "none" ||
+    world.shareMode === "report" ||
+    world.shareMode === "clear"
+  ) {
     for (const t of world.tanks) {
       if (t.team !== "blue" || !t.alive || t.id === world.controlledId) continue;
       for (const e of world.tanks) {

@@ -32,11 +32,11 @@ export function renderWorld(
   }
 
   for (const p of world.projectiles) {
-    if (!shouldShowWorldPos(world, p.x, p.y) && p.team === "red") continue;
+    if (p.team === "red" && !shouldShowHostile(world, p.x, p.y)) continue;
     drawBullet(ctx, p.x, p.y);
   }
 
-  drawFog(ctx, world);
+  if (world.shareMode !== "clear") drawFog(ctx, world);
   drawFrontline(ctx);
   drawMarkers(ctx, world);
 
@@ -354,12 +354,7 @@ function drawWreck(
 function drawFog(ctx: CanvasRenderingContext2D, world: WorldState): void {
   const cell = CONFIG.fog.cellSize;
   const live = new Set<number>();
-  const viewers =
-    world.shareMode === "auto"
-      ? world.tanks.filter((t) => t.team === "blue" && t.alive)
-      : world.tanks.filter(
-          (t) => t.team === "blue" && t.alive && t.id === world.controlledId,
-        );
+  const viewers = liveVisionViewers(world);
 
   for (const v of viewers) {
     const rad = CONFIG.roles[v.role].visionRadius;
@@ -411,6 +406,8 @@ function drawMarkers(ctx: CanvasRenderingContext2D, world: WorldState): void {
 }
 
 function shouldShowWorldPos(world: WorldState, x: number, y: number): boolean {
+  // Clear / no-fog: whole map/terrain visible; hostiles still use vision checks.
+  if (world.shareMode === "clear") return true;
   const cell = CONFIG.fog.cellSize;
   const c = Math.floor(x / cell);
   const r = Math.floor(y / cell);
@@ -419,25 +416,30 @@ function shouldShowWorldPos(world: WorldState, x: number, y: number): boolean {
   return isUnderLiveVision(world, x, y);
 }
 
+/** Enemy tanks/bullets — never free in clear mode; still need live eyes. */
+function shouldShowHostile(world: WorldState, x: number, y: number): boolean {
+  return isUnderLiveVision(world, x, y);
+}
+
 function isUnderLiveVision(world: WorldState, x: number, y: number): boolean {
-  const viewers =
-    world.shareMode === "auto"
-      ? world.tanks.filter((t) => t.team === "blue" && t.alive)
-      : world.tanks.filter(
-          (t) => t.team === "blue" && t.alive && t.id === world.controlledId,
-        );
-  for (const v of viewers) {
+  for (const v of liveVisionViewers(world)) {
     if (dist(v.x, v.y, x, y) <= CONFIG.roles[v.role].visionRadius) return true;
   }
   return false;
 }
 
+function liveVisionViewers(world: WorldState): Tank[] {
+  // clear uses report-style eyes: only the controlled tank for live enemy reveal
+  if (world.shareMode === "auto") {
+    return world.tanks.filter((t) => t.team === "blue" && t.alive);
+  }
+  return world.tanks.filter(
+    (t) => t.team === "blue" && t.alive && t.id === world.controlledId,
+  );
+}
+
 function isEnemyLiveVisible(world: WorldState, enemy: Tank): boolean {
-  const viewers =
-    world.shareMode === "auto"
-      ? world.tanks.filter((t) => t.team === "blue" && t.alive)
-      : world.tanks.filter(
-          (t) => t.team === "blue" && t.alive && t.id === world.controlledId,
-        );
-  return viewers.some((v) => canSeeTank(v, enemy, world.walls));
+  return liveVisionViewers(world).some((v) =>
+    canSeeTank(v, enemy, world.walls),
+  );
 }

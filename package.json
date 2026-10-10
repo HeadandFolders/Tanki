@@ -1,0 +1,15 @@
+{
+  "name": "fog-of-war-tank-hunt",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 4731",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4732"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}

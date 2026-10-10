@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fog of War — Tank Hunt</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Fog of War</h1>
+        <div id="timer">5:00</div>
+        <div id="status">Control #– · report</div>
+        <label>Share
+          <select id="share">
+            <option value="auto">auto</option>
+            <option value="report" selected>report</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+        <button id="restart" type="button">Restart</button>
+      </header>
+      <div id="layout">
+        <div id="stage">
+          <canvas id="view" width="960" height="640"></canvas>
+        </div>
+        <aside>
+          <section>
+            <h2>Team roster</h2>
+            <ul id="roster"></ul>
+          </section>
+          <section>
+            <h2>Orders</h2>
+            <p class="hint">Arrows move · mouse aim · Space / click shoot (guns only) · 1–6 / click friendly to switch</p>
+            <p class="hint">S scout — fast eyes, no gun, quick debug. G gunner — armor, cannon, slow debug.</p>
+            <p class="hint">Try: scouts recon north · gunners hold choke · everyone attack · #2 debug wreck A · report in</p>
+            <form id="order-form">
+              <input id="order" type="text" maxlength="240" placeholder="Order the company…" autocomplete="off" />
+              <button type="submit">Send</button>
+            </form>
+            <button id="radio" type="button">Radio: off</button>
+            <p id="radio-hint" class="hint"></p>
+            <input id="apikey" type="password" placeholder="offline mock if empty" autocomplete="off" />
+            <p class="hint">LLM API key (optional). One call per order. Empty uses the keyword mock.</p>
+          </section>
+          <section>
+            <h2>Team chat</h2>
+            <div id="chat"></div>
+          </section>
+          <section>
+            <h2>Event log</h2>
+            <div id="log"></div>
+          </section>
+        </aside>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

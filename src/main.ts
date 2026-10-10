@@ -19,10 +19,17 @@ import {
   switchToNumber,
   switchToTank,
 } from "./game";
-import { probeLlmConnection, type LlmProbeResult } from "./orders";
+import {
+  defaultModelFor,
+  detectLlmProvider,
+  probeLlmConnection,
+  resolveLlmBackend,
+  type LlmProbeResult,
+  type LlmProviderChoice,
+} from "./orders";
 import { renderWorld } from "./render";
 import { createVoiceRadio } from "./voice";
-import type { WorldState } from "./types";
+import type { LlmBackend, WorldState } from "./types";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
@@ -48,6 +55,8 @@ const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!
 const startOfflineBtn = document.querySelector<HTMLButtonElement>("#start-offline")!;
 const recheckLlmBtn = document.querySelector<HTMLButtonElement>("#recheck-llm")!;
 const gateApiKeyInput = document.querySelector<HTMLInputElement>("#gate-api-key")!;
+const gateProviderSelect = document.querySelector<HTMLSelectElement>("#gate-llm-provider")!;
+const gateModelInput = document.querySelector<HTMLInputElement>("#gate-llm-model")!;
 const menuBtn = document.querySelector<HTMLButtonElement>("#menu-btn")!;
 const gateModeBtns = [
   ...document.querySelectorAll<HTMLButtonElement>("#gate-modes .gate-mode"),
@@ -88,16 +97,22 @@ type GateProbeState =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "need_key" }
-  | { kind: "ok"; provider: string; ms: number }
-  | { kind: "fail"; provider?: string; error: string; ms: number }
+  | { kind: "ok"; provider: string; model: string; backend: LlmBackend; ms: number }
+  | { kind: "fail"; provider?: string; model?: string; error: string; ms: number }
   | { kind: "offline_chosen" };
 
 let gateProbe: GateProbeState = { kind: "idle" };
 let probeSeq = 0;
+/** Last successful LLM settings — used for in-match radio orders. */
+let liveLlm: { backend: LlmBackend; model: string } | null = null;
 
 /** Prefer gate field, then sidebar, then file/env. */
 function gateResolvedKey(): string | undefined {
   return resolveApiKey(gateApiKeyInput.value || apiKeyInput.value);
+}
+
+function gateProviderChoice(): LlmProviderChoice {
+  return gateProviderSelect.value as LlmProviderChoice;
 }
 
 function syncKeyFields(from: "gate" | "sidebar"): void {
@@ -113,6 +128,18 @@ function providerLabel(p: string): string {
   if (p === "anthropic") return "Anthropic";
   if (p === "openrouter") return "OpenRouter";
   return "OpenAI";
+}
+
+function syncModelPlaceholder(): void {
+  const choice = gateProviderChoice();
+  if (choice !== "auto") {
+    gateModelInput.placeholder = defaultModelFor(choice);
+    return;
+  }
+  const key = gateResolvedKey();
+  gateModelInput.placeholder = key
+    ? defaultModelFor(detectLlmProvider(key))
+    : "auto from key (OpenRouter / OpenAI / Gemini / Anthropic)";
 }
 
 function renderGateStatus(): void {
@@ -136,7 +163,7 @@ function renderGateStatus(): void {
     llmStatusEl.classList.add("llm-off");
     llmStatusEl.innerHTML =
       `<strong>Enter an API key</strong>` +
-      `<span>Paste OpenAI / Gemini / Anthropic key above, then Test connection. Or Play offline for keyword orders.</span>`;
+      `<span>Pick Provider (or Auto), optional Model, paste any supported key, then Test. Or Play offline.</span>`;
     startRoundBtn.textContent = "Start";
     return;
   }
@@ -144,8 +171,8 @@ function renderGateStatus(): void {
   if (gateProbe.kind === "ok") {
     llmStatusEl.classList.add("llm-ok");
     llmStatusEl.innerHTML =
-      `<strong>LLM confirmed (${gateProbe.provider} · ${gateProbe.ms}ms)</strong>` +
-      `<span>Dummy call succeeded. You can Start — radio orders will use this key.</span>`;
+      `<strong>LLM confirmed (${gateProbe.provider} · ${gateProbe.model} · ${gateProbe.ms}ms)</strong>` +
+      `<span>Dummy call succeeded. Start — radio orders use this provider/model/key.</span>`;
     startRoundBtn.textContent = "Start match";
     startRoundBtn.focus();
     return;
@@ -153,10 +180,12 @@ function renderGateStatus(): void {
 
   if (gateProbe.kind === "fail") {
     llmStatusEl.classList.add("llm-off");
-    const who = gateProbe.provider ? ` · ${gateProbe.provider}` : "";
+    const who = gateProbe.provider
+      ? ` · ${gateProbe.provider}${gateProbe.model ? ` / ${gateProbe.model}` : ""}`
+      : "";
     llmStatusEl.innerHTML =
       `<strong>LLM failed${who} (${gateProbe.ms}ms)</strong>` +
-      `<span>${gateProbe.error}. Fix the key and Test again, or Play offline.</span>`;
+      `<span>${gateProbe.error}. Try Provider=OpenRouter for sk-or-… keys, or change Model. Or Play offline.</span>`;
     startRoundBtn.textContent = "Start";
     return;
   }
@@ -180,6 +209,7 @@ async function runLlmProbe(): Promise<void> {
   syncKeyFields("gate");
   const key = gateResolvedKey();
   if (!key) {
+    liveLlm = null;
     gateProbe = { kind: "need_key" };
     renderGateStatus();
     gateApiKeyInput.focus();
@@ -189,19 +219,27 @@ async function runLlmProbe(): Promise<void> {
   gateProbe = { kind: "checking" };
   renderGateStatus();
 
-  const result: LlmProbeResult = await probeLlmConnection(key);
+  const result: LlmProbeResult = await probeLlmConnection(key, {
+    provider: gateProviderChoice(),
+    model: gateModelInput.value,
+  });
   if (seq !== probeSeq) return; // stale
 
   if (result.ok) {
+    liveLlm = { backend: result.provider, model: result.model };
     gateProbe = {
       kind: "ok",
       provider: providerLabel(result.provider),
+      model: result.model,
+      backend: result.provider,
       ms: result.ms,
     };
   } else {
+    liveLlm = null;
     gateProbe = {
       kind: "fail",
       provider: result.provider ? providerLabel(result.provider) : undefined,
+      model: result.model,
       error: result.error,
       ms: result.ms,
     };
@@ -251,6 +289,8 @@ function showRoundGate(): void {
   countdownOverlay.hidden = true;
   roundGate.hidden = false;
   syncGateModeButtons();
+  syncModelPlaceholder();
+  liveLlm = null;
   gateProbe = { kind: "idle" };
   renderGateStatus();
   // If file/env already has a key, auto-run the dummy call; else wait for input
@@ -467,12 +507,39 @@ recheckLlmBtn.addEventListener("click", () => {
 });
 gateApiKeyInput.addEventListener("input", () => {
   syncKeyFields("gate");
+  syncModelPlaceholder();
+  liveLlm = null;
   if (gateProbe.kind === "ok" || gateProbe.kind === "fail") {
     gateProbe = { kind: "need_key" };
     renderGateStatus();
   }
 });
 gateApiKeyInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    void runLlmProbe();
+  }
+});
+gateProviderSelect.addEventListener("change", () => {
+  syncModelPlaceholder();
+  // Prefill empty model field with the provider default
+  if (!gateModelInput.value.trim() && gateProviderChoice() !== "auto") {
+    gateModelInput.placeholder = defaultModelFor(gateProviderChoice() as LlmBackend);
+  }
+  liveLlm = null;
+  if (gateProbe.kind === "ok" || gateProbe.kind === "fail") {
+    gateProbe = { kind: "idle" };
+    renderGateStatus();
+  }
+});
+gateModelInput.addEventListener("input", () => {
+  liveLlm = null;
+  if (gateProbe.kind === "ok" || gateProbe.kind === "fail") {
+    gateProbe = { kind: "idle" };
+    renderGateStatus();
+  }
+});
+gateModelInput.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") {
     ev.preventDefault();
     void runLlmProbe();
@@ -513,6 +580,16 @@ async function dispatchOrder(
 
   // Cloud LLM only after a successful pre-Start probe — never retry a known-bad key
   const key = gateProbe.kind === "ok" ? gateResolvedKey() : undefined;
+  const llmCtx =
+    key && liveLlm
+      ? { apiKey: key, provider: liveLlm.backend, model: liveLlm.model }
+      : key
+        ? {
+            apiKey: key,
+            provider: resolveLlmBackend(key, gateProviderChoice()),
+            model: gateModelInput.value.trim() || undefined,
+          }
+        : {};
   const src = apiKeySource(gateApiKeyInput.value || apiKeyInput.value);
 
   if (via === "voice") {
@@ -524,14 +601,16 @@ async function dispatchOrder(
 
   pushEvent(
     world,
-    key
-      ? `Radio pipeline: ${via} → LLM (${src}) → bots`
-      : `Radio pipeline: ${via} → keyword mock → bots`,
+    key && liveLlm
+      ? `Radio pipeline: ${via} → ${providerLabel(liveLlm.backend)}/${liveLlm.model} (${src}) → bots`
+      : key
+        ? `Radio pipeline: ${via} → LLM (${src}) → bots`
+        : `Radio pipeline: ${via} → keyword mock → bots`,
     "sys",
   );
 
   const beforeEvents = world.events.length;
-  await sendOrder(world, cleaned, key);
+  await sendOrder(world, cleaned, llmCtx);
   const fresh = world.events.slice(beforeEvents);
   const llmFail = fresh.find((e) => e.text.startsWith("LLM unavailable"));
   if (llmFail && key) {

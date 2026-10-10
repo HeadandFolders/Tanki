@@ -3,10 +3,13 @@ import type {
   GoalKind,
   InterpretBundle,
   InterpretContext,
+  LlmBackend,
   OrderResult,
   Tank,
   WorldState,
 } from "./types";
+
+export type { LlmBackend };
 
 /**
  * Radio path: transcript/text → (optional LLM) → goals for bots.
@@ -24,7 +27,7 @@ export async function interpretOrder(
 
   if (ctx.apiKey) {
     try {
-      const llm = await interpretWithLlm(text, tanks, worldState, ctx.apiKey);
+      const llm = await interpretWithLlm(text, tanks, worldState, ctx);
       if (llm.length) {
         return {
           results: llm,
@@ -422,34 +425,50 @@ export function interpretOffline(
   return results;
 }
 
-type LlmProvider = "openai" | "openrouter" | "gemini" | "anthropic";
+export type LlmProviderChoice = "auto" | LlmBackend;
 
-/** Pick provider from common key prefixes. */
-export function detectLlmProvider(apiKey: string): LlmProvider {
+/** Guess backend from key shape (convenience only — UI can override). */
+export function detectLlmProvider(apiKey: string): LlmBackend {
   const k = apiKey.trim();
-  // Gemini: classic AIza… and new AI Studio auth keys AQ.…
   if (k.startsWith("AIza") || k.startsWith("AQ.")) return "gemini";
   if (k.startsWith("sk-ant-")) return "anthropic";
-  // OpenRouter OpenAI-compatible keys
   if (k.startsWith("sk-or-")) return "openrouter";
-  // OpenAI (sk-…) and unknown → OpenAI path
   return "openai";
 }
 
-async function fetchOpenAiCompatible(
-  provider: "openai" | "openrouter",
+/** Resolve Auto → concrete backend; honor explicit provider picks. */
+export function resolveLlmBackend(
   apiKey: string,
+  choice: LlmProviderChoice = "auto",
+): LlmBackend {
+  if (choice !== "auto") return choice;
+  return detectLlmProvider(apiKey);
+}
+
+export function defaultModelFor(backend: LlmBackend): string {
+  return CONFIG.llm[backend].model;
+}
+
+function modelFor(backend: LlmBackend, override?: string): string {
+  const m = override?.trim();
+  return m || defaultModelFor(backend);
+}
+
+async function fetchOpenAiCompatible(
+  backend: "openai" | "openrouter",
+  apiKey: string,
+  model: string,
   messages: { role: string; content: string }[],
   opts: { temperature: number; maxTokens: number; signal: AbortSignal },
 ): Promise<Response> {
-  const cfg =
-    provider === "openrouter" ? CONFIG.llm.openrouter : CONFIG.llm.openai;
+  const cfg = CONFIG.llm[backend];
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
   };
-  if (provider === "openrouter") {
+  if (backend === "openrouter") {
     headers["HTTP-Referer"] = "https://localhost/fog-of-war-tank-hunt";
+    headers["X-Title"] = "Fog of War Tank Hunt";
     headers["X-OpenRouter-Title"] = "Fog of War Tank Hunt";
   }
   return fetch(cfg.path, {
@@ -457,7 +476,7 @@ async function fetchOpenAiCompatible(
     signal: opts.signal,
     headers,
     body: JSON.stringify({
-      model: cfg.model,
+      model,
       temperature: opts.temperature,
       max_tokens: opts.maxTokens,
       messages,
@@ -469,7 +488,6 @@ function geminiGenerateUrl(apiKey: string, model: string): string {
   return `${CONFIG.llm.gemini.path}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 }
 
-/** Gemini accepts classic AIza… and new AQ.… auth keys via query and/or header. */
 function geminiHeaders(apiKey: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
@@ -478,21 +496,30 @@ function geminiHeaders(apiKey: string): Record<string, string> {
 }
 
 export type LlmProbeResult =
-  | { ok: true; provider: LlmProvider; ms: number }
-  | { ok: false; provider?: LlmProvider; ms: number; error: string };
+  | { ok: true; provider: LlmBackend; model: string; ms: number }
+  | { ok: false; provider?: LlmBackend; model?: string; ms: number; error: string };
+
+export interface LlmProbeOptions {
+  /** auto | openrouter | openai | gemini | anthropic */
+  provider?: LlmProviderChoice;
+  /** Optional model id override (any OpenRouter/OpenAI/Gemini/Anthropic model string). */
+  model?: string;
+}
 
 /**
- * Live check that the key can reach the provider via Vite `/llm/*` proxies.
- * Call from the round gate before Start — not on every order.
+ * Live check that the key can reach the chosen backend via Vite `/llm/*` proxies.
+ * Provider + model are selectable — not locked to OpenAI.
  */
 export async function probeLlmConnection(
   apiKey: string,
+  opts: LlmProbeOptions = {},
 ): Promise<LlmProbeResult> {
   const key = apiKey.trim();
   if (!key) {
     return { ok: false, ms: 0, error: "no API key" };
   }
-  const provider = detectLlmProvider(key);
+  const provider = resolveLlmBackend(key, opts.provider ?? "auto");
+  const model = modelFor(provider, opts.model);
   const t0 = performance.now();
   const controller = new AbortController();
   const timer = setTimeout(
@@ -501,7 +528,6 @@ export async function probeLlmConnection(
   );
   try {
     if (provider === "gemini") {
-      const model = CONFIG.llm.gemini.model;
       const res = await fetch(geminiGenerateUrl(key, model), {
         method: "POST",
         signal: controller.signal,
@@ -531,7 +557,7 @@ export async function probeLlmConnection(
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: CONFIG.llm.anthropic.model,
+          model,
           max_tokens: 16,
           temperature: 0,
           messages: [{ role: "user", content: 'Reply with only: {"ok":true}' }],
@@ -540,18 +566,18 @@ export async function probeLlmConnection(
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new Error(
-          `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+          `Anthropic HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
         );
       }
-    } else if (provider === "openrouter" || provider === "openai") {
-      if (provider === "openai" && !key.startsWith("sk-")) {
-        throw new Error(
-          "Unrecognized key — expected OpenAI sk-…, OpenRouter sk-or-…, Gemini AIza…/AQ.…, or Anthropic sk-ant-…",
-        );
-      }
-      const res = await fetchOpenAiCompatible(provider, key, [
-        { role: "user", content: 'Reply with JSON: {"ok":true}' },
-      ], { temperature: 0, maxTokens: 16, signal: controller.signal });
+    } else {
+      // OpenAI-compatible (OpenAI host or OpenRouter) — any Bearer key shape accepted
+      const res = await fetchOpenAiCompatible(
+        provider,
+        key,
+        model,
+        [{ role: "user", content: 'Reply with JSON: {"ok":true}' }],
+        { temperature: 0, maxTokens: 16, signal: controller.signal },
+      );
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         const label = provider === "openrouter" ? "OpenRouter" : "OpenAI";
@@ -563,6 +589,7 @@ export async function probeLlmConnection(
     return {
       ok: true,
       provider,
+      model,
       ms: Math.round(performance.now() - t0),
     };
   } catch (err) {
@@ -573,6 +600,7 @@ export async function probeLlmConnection(
     return {
       ok: false,
       provider,
+      model,
       ms: Math.round(performance.now() - t0),
       error,
     };
@@ -666,8 +694,11 @@ async function interpretWithLlm(
   orderText: string,
   tanks: Tank[],
   worldState: WorldState,
-  apiKey: string,
+  ctx: InterpretContext,
 ): Promise<OrderResult[]> {
+  const apiKey = ctx.apiKey?.trim();
+  if (!apiKey) return interpretOffline(orderText, tanks, worldState);
+
   const alive = friendlies(tanks).map((t) => ({
     id: t.id,
     number: t.number,
@@ -705,11 +736,17 @@ async function interpretWithLlm(
     },
   });
 
-  const provider = detectLlmProvider(apiKey);
-  const content = await fetchLlmJson(provider, apiKey.trim(), ORDER_SYSTEM, user);
+  const provider = ctx.provider ?? detectLlmProvider(apiKey);
+  const model = modelFor(provider, ctx.model);
+  const content = await fetchLlmJson(
+    provider,
+    apiKey,
+    model,
+    ORDER_SYSTEM,
+    user,
+  );
   const parsed = extractJsonObject(content);
   let orders = sanitizeOrders(parsed.orders ?? [], tanks, orderText, worldState);
-  // Empty / useless LLM result → fall back to offline so corners still work
   if (!orders.length) return interpretOffline(orderText, tanks, worldState);
   const movedWithoutCoords = orders.every(
     (o) =>
@@ -726,8 +763,9 @@ async function interpretWithLlm(
 }
 
 async function fetchLlmJson(
-  provider: LlmProvider,
+  provider: LlmBackend,
   apiKey: string,
+  model: string,
   system: string,
   user: string,
 ): Promise<string> {
@@ -735,7 +773,6 @@ async function fetchLlmJson(
   const timer = setTimeout(() => controller.abort(), CONFIG.llm.timeoutMs);
   try {
     if (provider === "gemini") {
-      const model = CONFIG.llm.gemini.model;
       const res = await fetch(geminiGenerateUrl(apiKey, model), {
         method: "POST",
         signal: controller.signal,
@@ -771,7 +808,7 @@ async function fetchLlmJson(
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: CONFIG.llm.anthropic.model,
+          model,
           max_tokens: 1024,
           temperature: 0.2,
           system,
@@ -794,17 +831,22 @@ async function fetchLlmJson(
       return text;
     }
 
-    // OpenAI / OpenRouter (OpenAI-compatible) via Vite proxy
     const chatProvider = provider === "openrouter" ? "openrouter" : "openai";
     const messages = [
       { role: "system", content: system },
       { role: "user", content: user },
     ];
-    const res = await fetchOpenAiCompatible(chatProvider, apiKey, messages, {
-      temperature: 0.2,
-      maxTokens: 1024,
-      signal: controller.signal,
-    });
+    const res = await fetchOpenAiCompatible(
+      chatProvider,
+      apiKey,
+      model,
+      messages,
+      {
+        temperature: 0.2,
+        maxTokens: 1024,
+        signal: controller.signal,
+      },
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       const label = chatProvider === "openrouter" ? "OpenRouter" : "OpenAI";
@@ -821,7 +863,6 @@ async function fetchLlmJson(
       throw new Error("LLM timed out");
     }
     if (err instanceof TypeError) {
-      // Typical browser CORS / network failure before the proxy existed
       throw new Error(`LLM network error (${err.message})`);
     }
     throw err;

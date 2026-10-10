@@ -177,6 +177,41 @@ body {
   border-color: var(--accent);
 }
 
+.gate-llm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr);
+  gap: 8px;
+}
+
+.gate-llm-field {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gate-llm-field select,
+.gate-llm-field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: #12161e;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.gate-llm-field select:focus,
+.gate-llm-field input:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
 .gate-key-row {
   display: grid;
   gap: 6px;

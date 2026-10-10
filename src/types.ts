@@ -132,8 +132,15 @@ export interface WorldState {
   rngSeed: number;
 }
 
+/** Resolved LLM backend for radio orders (provider is never "auto" here). */
+export type LlmBackend = "openrouter" | "openai" | "gemini" | "anthropic";
+
 export interface InterpretContext {
   apiKey?: string;
+  /** Override auto key-prefix detection. */
+  provider?: LlmBackend;
+  /** Override default model id for that provider. */
+  model?: string;
 }
 
 export interface InterpretBundle {

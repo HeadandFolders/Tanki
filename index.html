@@ -71,16 +71,39 @@
               </div>
 
               <div class="gate-section">
+                <span class="gate-key-label">LLM (model-agnostic)</span>
+                <div class="gate-llm-row">
+                  <label class="gate-llm-field">
+                    <span>Provider</span>
+                    <select id="gate-llm-provider" title="Which API to call">
+                      <option value="auto" selected>Auto from key</option>
+                      <option value="openrouter">OpenRouter (OpenAI-compatible)</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="gemini">Gemini</option>
+                      <option value="anthropic">Anthropic</option>
+                    </select>
+                  </label>
+                  <label class="gate-llm-field gate-llm-model">
+                    <span>Model</span>
+                    <input
+                      id="gate-llm-model"
+                      type="text"
+                      placeholder="provider default"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </label>
+                </div>
                 <label class="gate-key-row">
-                  <span class="gate-key-label">LLM API key</span>
+                  <span class="gate-key-label">API key</span>
                   <input
                     id="gate-api-key"
                     type="password"
-                    placeholder="OpenRouter sk-or-… · OpenAI sk-… · Gemini AQ.…/AIza… · Anthropic sk-ant-…"
+                    placeholder="Any provider key — pick Provider above if Auto is wrong"
                     autocomplete="off"
                     spellcheck="false"
                   />
-                  <span class="hint gate-key-hint">OpenRouter sk-or-v1…, OpenAI sk-…, Gemini AQ.…/AIza…, Anthropic sk-ant-…. Optional: src/api-key.local.ts</span>
+                  <span class="hint gate-key-hint">Not OpenAI-only: OpenRouter sk-or-…, OpenAI sk-…, Gemini AQ.…/AIza…, Anthropic sk-ant-…. Set Provider + Model explicitly anytime.</span>
                 </label>
                 <div id="llm-status" class="llm-status" role="status" aria-live="polite"></div>
               </div>

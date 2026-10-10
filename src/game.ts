@@ -21,6 +21,7 @@ import { interpretOrder } from "./orders";
 import { createTeams } from "./spawn";
 import type {
   ChatLine,
+  InterpretContext,
   Projectile,
   Tank,
   WorldState,
@@ -175,13 +176,11 @@ export function markWreckAt(world: WorldState, x: number, y: number): boolean {
 export async function sendOrder(
   world: WorldState,
   orderText: string,
-  apiKey?: string,
+  ctx: InterpretContext = {},
 ): Promise<void> {
   if (world.outcome !== "playing") return;
   pushEvent(world, `Order: ${orderText}`, "sys");
-  const bundle = await interpretOrder(orderText, world.tanks, world, {
-    apiKey,
-  });
+  const bundle = await interpretOrder(orderText, world.tanks, world, ctx);
   if (bundle.llmError) {
     // Event log only — keep team chat free of API noise
     pushEvent(

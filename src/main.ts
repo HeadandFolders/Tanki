@@ -318,8 +318,8 @@ async function dispatchOrder(
   }
   if (world.outcome !== "playing") return;
 
-  // Use cloud LLM only when the pre-Start probe verified the key
-  const key =
+  // Cloud LLM only after a successful pre-Start probe — never retry a known-bad key
+  let key =
     gateProbe.kind === "ok" ? resolveApiKey(apiKeyInput.value) : undefined;
   const src = apiKeySource(apiKeyInput.value);
 
@@ -338,7 +338,21 @@ async function dispatchOrder(
     "sys",
   );
 
+  const beforeEvents = world.events.length;
   await sendOrder(world, cleaned, key);
+  const fresh = world.events.slice(beforeEvents);
+  const llmFail = fresh.find((e) => e.text.startsWith("LLM unavailable"));
+  if (llmFail && key) {
+    // Probe was stale/wrong — lock to keyword mock for the rest of the match
+    const detail = llmFail.text
+      .replace(/^LLM unavailable \(/, "")
+      .replace(/\) — keyword parse\.$/, "");
+    gateProbe = {
+      kind: "fail",
+      error: detail,
+      ms: 0,
+    };
+  }
   if (via === "voice") orderInput.value = "";
   flushLogs();
   refreshRoster();

@@ -278,9 +278,9 @@ export function interpretOffline(
       params = { x: spot.x, y: spot.y };
       verb = `moving to ${spot.name}`;
     } else {
-      // Unclear → keep them mobile rather than freezing
-      kind = "patrol";
-      verb = "patrolling (unclear order — staying mobile)";
+      // Unclear → keep pushing (attack/patrol), not a stuck hold
+      kind = "attackNearest";
+      verb = "pushing up (best-effort parse)";
       perTankParams = true;
     }
   }

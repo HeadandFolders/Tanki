@@ -174,15 +174,11 @@ export async function sendOrder(
     apiKey,
   });
   if (bundle.llmError) {
+    // Event log only — keep team chat free of API noise
     pushEvent(
       world,
-      `LLM failed: ${bundle.llmError} — using keyword parse.`,
+      `LLM unavailable (${bundle.llmError}) — keyword parse.`,
       "warn",
-    );
-    pushChat(
-      world,
-      `Command net: LLM failed (${bundle.llmError}). Falling back to keyword parse.`,
-      "sys",
     );
   }
   pushEvent(
@@ -190,12 +186,25 @@ export async function sendOrder(
     `Radio parse: ${bundle.source.toUpperCase()} (${bundle.ms}ms) → ${bundle.results.length} tank(s)`,
     "sys",
   );
-  for (const r of bundle.results) {
+
+  // One company ack in chat; per-tank detail stays in the event log
+  const living = bundle.results.filter((r) => {
     const tank = world.tanks.find((t) => t.id === r.tankId);
-    if (!tank || !tank.alive) continue;
+    return tank && tank.alive;
+  });
+  if (living.length) {
+    const sample = living[0];
+    const sameGoal = living.every((r) => r.goal === sample.goal);
+    const ack = sameGoal
+      ? `Company: ${living.length} tank(s) — ${sample.chatLine.replace(/^#\d+:\s*/, "")}`
+      : `Company: ${living.length} tank(s) ack.`;
+    pushChat(world, ack, "ally");
+  }
+
+  for (const r of living) {
+    const tank = world.tanks.find((t) => t.id === r.tankId)!;
     tank.goal = { kind: r.goal, params: r.params ?? {} };
     tank.lastOrderChat = r.chatLine;
-    pushChat(world, r.chatLine, "ally");
     const px = r.params?.x;
     const py = r.params?.y;
     pushEvent(
@@ -428,7 +437,7 @@ function applyDamage(
       "warn",
     );
     if (tank.team === "blue") {
-      pushChat(world, `#${tank.number}: …signal lost.`, "warn");
+      // Deaths stay in the event log — don't flood team chat
       if (tank.id === world.controlledId) autoSwitchNearest(world, tank);
     }
   }
@@ -504,24 +513,23 @@ function handleReportIn(world: WorldState, tank: Tank): void {
   tank.standStillTimer = 0;
   tank.goal = { kind: "holdPosition", params: { x: tank.x, y: tank.y } };
 
-  // Skip useless "0 cells logged" chat noise
-  if (n > 0) {
-    const line = `#${tank.number}: report in — ${n} cells logged.`;
-    pushChat(world, line, "ally");
-    pushEvent(world, line, "ally");
-  } else {
-    pushEvent(world, `#${tank.number}: report in — nothing new.`, "sys");
-  }
+  pushEvent(
+    world,
+    n > 0
+      ? `#${tank.number}: report in — ${n} cells logged.`
+      : `#${tank.number}: report in — nothing new.`,
+    "sys",
+  );
 
-  // Also report enemy sightings currently visible
+  // Sightings → markers + event log only (no chat spam)
   for (const e of world.tanks) {
     if (e.team !== "red" || !e.alive) continue;
     if (canSeeTank(tank, e, world.walls)) {
       addMarker(world, "enemy", e.x, e.y, `Enemy #${e.number}?`);
-      pushChat(
+      pushEvent(
         world,
         `#${tank.number}: contact near (${Math.round(e.x)},${Math.round(e.y)}).`,
-        "ally",
+        "sys",
       );
     }
   }

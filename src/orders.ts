@@ -84,28 +84,88 @@ function resolveTargetsWithControl(
   return controlled ? [controlled] : alive.slice(0, 1);
 }
 
+/** Map edge inset so moveTo goals sit inside the arena, not in the wall. */
+function mapCorner(fx: number, fy: number, name: string): {
+  x: number;
+  y: number;
+  name: string;
+} {
+  const pad = CONFIG.arenaPadding + CONFIG.tankRadius + 8;
+  const W = CONFIG.canvasWidth;
+  const H = CONFIG.canvasHeight;
+  return {
+    x: pad + (W - 2 * pad) * fx,
+    y: pad + (H - 2 * pad) * fy,
+    name,
+  };
+}
+
+/**
+ * Resolve a place name / corner / direction from free text.
+ * Corners first ("bottom left"), then named spots with word boundaries.
+ */
 function landmark(
   text: string,
   world: WorldState,
 ): { x: number; y: number; name: string } | null {
   const W = CONFIG.canvasWidth;
   const H = CONFIG.canvasHeight;
-  const lower = text.toLowerCase();
+  const lower = text.toLowerCase().replace(/-/g, " ");
+
+  // Corners / compass compounds (must beat single-word north/south/etc.)
+  const corners: [RegExp, { x: number; y: number; name: string }][] = [
+    [
+      /\b(bottom|lower|south)\s*(left|west)\b|\b(left|west)\s*(bottom|lower|south)\b|\bsouth\s*west\b|\bsw\b/,
+      mapCorner(0.08, 0.92, "bottom-left"),
+    ],
+    [
+      /\b(bottom|lower|south)\s*(right|east)\b|\b(right|east)\s*(bottom|lower|south)\b|\bsouth\s*east\b|\bse\b/,
+      mapCorner(0.92, 0.92, "bottom-right"),
+    ],
+    [
+      /\b(top|upper|north)\s*(left|west)\b|\b(left|west)\s*(top|upper|north)\b|\bnorth\s*west\b|\bnw\b/,
+      mapCorner(0.08, 0.08, "top-left"),
+    ],
+    [
+      /\b(top|upper|north)\s*(right|east)\b|\b(right|east)\s*(top|upper|north)\b|\bnorth\s*east\b|\bne\b/,
+      mapCorner(0.92, 0.08, "top-right"),
+    ],
+  ];
+  for (const [re, spot] of corners) {
+    if (re.test(lower)) return spot;
+  }
+
+  // Single-axis edges when no corner matched
+  if (/\b(bottom|lower)\b/.test(lower) && !/\b(left|right|west|east)\b/.test(lower)) {
+    return mapCorner(0.5, 0.92, "bottom");
+  }
+  if (/\b(top|upper)\b/.test(lower) && !/\b(left|right|west|east)\b/.test(lower)) {
+    return mapCorner(0.5, 0.08, "top");
+  }
+  if (/\bleft\b/.test(lower) && !/\b(top|bottom|upper|lower|north|south)\b/.test(lower)) {
+    return mapCorner(0.08, 0.5, "left");
+  }
+  if (/\bright\b/.test(lower) && !/\b(top|bottom|upper|lower|north|south)\b/.test(lower)) {
+    return mapCorner(0.92, 0.5, "right");
+  }
+
   const spots: Record<string, { x: number; y: number; name: string }> = {
+    "north choke": { x: W * 0.48, y: H * 0.32, name: "north choke" },
     north: { x: W * 0.5, y: H * 0.2, name: "north" },
     south: { x: W * 0.5, y: H * 0.8, name: "south" },
     east: { x: W * 0.8, y: H * 0.5, name: "east" },
     west: { x: W * 0.2, y: H * 0.5, name: "west" },
     center: { x: W * 0.5, y: H * 0.5, name: "center" },
+    middle: { x: W * 0.5, y: H * 0.5, name: "center" },
     choke: { x: W * 0.5, y: H * 0.45, name: "choke" },
-    "north choke": { x: W * 0.48, y: H * 0.32, name: "north choke" },
     bunker: { x: W * 0.25, y: H * 0.28, name: "bunker" },
     eagle: { x: W * 0.5, y: H - 72, name: "eagle" },
     base: { x: W * 0.5, y: H - 72, name: "base" },
     home: { x: W * 0.5, y: H * 0.88, name: "home" },
   };
   for (const key of Object.keys(spots).sort((a, b) => b.length - a.length)) {
-    if (lower.includes(key)) return spots[key];
+    const re = new RegExp(`\\b${key.replace(/\s+/g, "\\s+")}\\b`);
+    if (re.test(lower)) return spots[key];
   }
 
   // marked wreck
@@ -193,7 +253,7 @@ export function interpretOffline(
     } else {
       perTankParams = true;
     }
-  } else if (/\b(move|go|advance|recon)\b/.test(lower)) {
+  } else if (/\b(move|go|advance|recon|head|get)\b/.test(lower)) {
     kind = "moveTo";
     verb = "moving";
     const spot = landmark(orderText, worldState);
@@ -201,9 +261,10 @@ export function interpretOffline(
       params = { x: spot.x, y: spot.y };
       verb = `moving to ${spot.name}`;
     } else {
-      kind = "patrol";
-      verb = "advancing on patrol";
-      perTankParams = true;
+      // Still a move order — advance on the named axis if any, else center push
+      kind = "moveTo";
+      params = { x: CONFIG.canvasWidth * 0.5, y: CONFIG.canvasHeight * 0.55 };
+      verb = "advancing (no clear landmark — pushing center)";
     }
   } else {
     const spot = landmark(orderText, worldState);
@@ -236,6 +297,19 @@ export function interpretOffline(
           y: homeY - 40 - (t.number % 3) * 50,
         };
       }
+    } else if (
+      kind === "moveTo" &&
+      p.x != null &&
+      p.y != null &&
+      targets.length > 1
+    ) {
+      // Fan out so the company doesn't stack on one corner pixel
+      const col = (t.number - 1) % 3;
+      const row = Math.floor((t.number - 1) / 3);
+      p = {
+        x: p.x + (col - 1) * 36,
+        y: p.y + (row - 0.5) * 36,
+      };
     }
     let chatLine = `#${t.number}: ack, ${verb}.`;
     if (Math.random() < CONFIG.ai.pushbackChance && kind === "attackNearest") {
@@ -262,9 +336,15 @@ export function detectLlmProvider(apiKey: string): LlmProvider {
 }
 
 const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
-Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.`;
+Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.
+Map is top-down: x right, y down; origin top-left. When the order names a place (corner, side, north/south/east/west), set goal moveTo with numeric x,y inside the map for EVERY addressed tank. Example corners: bottom-left ≈ (0.1*W, 0.9*H), top-right ≈ (0.9*W, 0.1*H). Always include x and y for moveTo/holdPosition.`;
 
-function sanitizeOrders(orders: OrderResult[], tanks: Tank[]): OrderResult[] {
+function sanitizeOrders(
+  orders: OrderResult[],
+  tanks: Tank[],
+  orderText?: string,
+  world?: WorldState,
+): OrderResult[] {
   const living = new Set(friendlies(tanks).map((t) => t.id));
   const goals = new Set<GoalKind>([
     "moveTo",
@@ -278,14 +358,28 @@ function sanitizeOrders(orders: OrderResult[], tanks: Tank[]): OrderResult[] {
     "spreadOut",
     "idle",
   ]);
+  const spot =
+    orderText && world ? landmark(orderText, world) : null;
   return orders
     .filter((o) => living.has(o.tankId) && goals.has(o.goal))
-    .map((o) => ({
-      tankId: o.tankId,
-      goal: o.goal,
-      params: o.params ?? {},
-      chatLine: o.chatLine || `#?: ack.`,
-    }));
+    .map((o) => {
+      const params = { ...(o.params ?? {}) };
+      // If LLM chose moveTo/hold without coords, fill from parsed landmark.
+      if (
+        (o.goal === "moveTo" || o.goal === "holdPosition") &&
+        (params.x == null || params.y == null) &&
+        spot
+      ) {
+        params.x = spot.x;
+        params.y = spot.y;
+      }
+      return {
+        tankId: o.tankId,
+        goal: o.goal,
+        params,
+        chatLine: o.chatLine || `#?: ack.`,
+      };
+    });
 }
 
 function extractJsonObject(text: string): { orders?: OrderResult[] } {
@@ -339,12 +433,38 @@ async function interpretWithLlm(
     shareMode: worldState.shareMode,
     gameMode: worldState.gameMode,
     matchLeft: Math.round(worldState.matchLeft),
+    map: {
+      width: CONFIG.canvasWidth,
+      height: CONFIG.canvasHeight,
+      origin: "top-left",
+      yDown: true,
+      corners: {
+        topLeft: mapCorner(0.08, 0.08, "top-left"),
+        topRight: mapCorner(0.92, 0.08, "top-right"),
+        bottomLeft: mapCorner(0.08, 0.92, "bottom-left"),
+        bottomRight: mapCorner(0.92, 0.92, "bottom-right"),
+      },
+    },
   });
 
   const provider = detectLlmProvider(apiKey);
   const content = await fetchLlmJson(provider, apiKey.trim(), ORDER_SYSTEM, user);
   const parsed = extractJsonObject(content);
-  return sanitizeOrders(parsed.orders ?? [], tanks);
+  let orders = sanitizeOrders(parsed.orders ?? [], tanks, orderText, worldState);
+  // Empty / useless LLM result → fall back to offline so corners still work
+  if (!orders.length) return interpretOffline(orderText, tanks, worldState);
+  const movedWithoutCoords = orders.every(
+    (o) =>
+      (o.goal !== "moveTo" && o.goal !== "holdPosition") ||
+      (o.params?.x != null && o.params?.y != null),
+  );
+  if (!movedWithoutCoords) {
+    const offline = interpretOffline(orderText, tanks, worldState);
+    if (offline.some((o) => o.goal === "moveTo" && o.params?.x != null)) {
+      return offline;
+    }
+  }
+  return orders;
 }
 
 async function fetchLlmJson(

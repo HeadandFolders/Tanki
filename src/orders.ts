@@ -92,6 +92,37 @@ function resolveEscortVip(
   return controlled;
 }
 
+/**
+ * "3, attack enemy tank #2" / "all attack enemy #5" / "4 attack #1" (with enemy/#).
+ * Ally numbers are taken only from the prefix before the attack verb so the
+ * enemy tank number is not treated as a blue addressee.
+ */
+export function parseTargetedEnemyAttack(text: string): {
+  allyNumbers: number[];
+  enemyNumber: number;
+  allAllies: boolean;
+} | null {
+  const lower = text.toLowerCase();
+  const attackAt = lower.search(/\b(?:attack|engage|hunt)\b/);
+  if (attackAt < 0) return null;
+  const after = lower.slice(attackAt);
+  // Require "enemy" and/or "#" so bare "all attack" stays untargeted.
+  const m = after.match(
+    /\b(?:attack|engage|hunt)\s+(?:the\s+)?(?:enemy\s+)?(?:tank\s*)?(#)?([1-6])\b/,
+  );
+  if (!m) return null;
+  const hasEnemyWord = /\benemy\b/.test(after);
+  const hasHash = m[1] === "#";
+  if (!hasEnemyWord && !hasHash) return null;
+  const enemyNumber = Number(m[2]);
+  const before = lower.slice(0, attackAt);
+  const allAllies = /\b(all|everyone|team)\b/.test(lower);
+  const allyNumbers = [
+    ...before.matchAll(/\b(?:tank\s*)?#?([1-6])\b/g),
+  ].map((x) => Number(x[1]));
+  return { allyNumbers, enemyNumber, allAllies };
+}
+
 function resolveTargetsWithControl(
   text: string,
   tanks: Tank[],
@@ -99,6 +130,16 @@ function resolveTargetsWithControl(
 ): Tank[] {
   const alive = friendlies(tanks);
   const lower = text.toLowerCase();
+
+  const targeted = parseTargetedEnemyAttack(text);
+  if (targeted) {
+    if (targeted.allyNumbers.length) {
+      return alive.filter((t) => targeted.allyNumbers.includes(t.number));
+    }
+    // No blue addressee (or "all …") → company focus-fire
+    return alive;
+  }
+
   if (/\b(all|everyone|team)\b/.test(lower)) return alive;
 
   const coverVerb = /\b(escort|cover|protect|follow|guard)\b/.test(lower);
@@ -332,8 +373,28 @@ export function interpretOffline(
         : `escorting #${vip?.number ?? "?"}`;
   } else if (/\b(attack|engage|hunt|push)\b/.test(lower)) {
     kind = "attackNearest";
-    verb = "hunting / attacking";
-    perTankParams = true;
+    const targeted = parseTargetedEnemyAttack(orderText);
+    if (targeted) {
+      const red = worldState.tanks.find(
+        (t) =>
+          t.team === "red" && t.alive && t.number === targeted.enemyNumber,
+      );
+      params = red ? { targetTankId: red.id } : {};
+      verb = red
+        ? `engaging enemy #${targeted.enemyNumber}`
+        : `hunting enemy #${targeted.enemyNumber}`;
+      perTankParams = false;
+      if (targeted.allyNumbers.length) {
+        targets = friendlies(tanks).filter((t) =>
+          targeted.allyNumbers.includes(t.number),
+        );
+      } else if (targeted.allAllies || targets.length === 0) {
+        targets = friendlies(tanks);
+      }
+    } else {
+      verb = "hunting / attacking";
+      perTankParams = true;
+    }
   } else if (/\b(hold|stay|wait|defend)\b/.test(lower)) {
     kind = "holdPosition";
     verb = "holding (soft — will still fight)";
@@ -625,7 +686,8 @@ export async function probeLlmConnection(
 const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"${goalKindsForPrompt()}","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
 Goals only from that list. Prefer patrol/scout/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.
 Map is top-down: x right, y down; origin top-left. When the order names a place (corner, side, north/south/east/west), set goal moveTo with numeric x,y inside the map for EVERY addressed tank. Example corners: bottom-left ≈ (0.1*W, 0.9*H), top-right ≈ (0.9*W, 0.1*H). Always include x and y for moveTo/holdPosition.
-Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3. Scout/recon → goal scout with northward x,y.`;
+Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3. Scout/recon → goal scout with northward x,y.
+Targeted attack: "3, attack enemy tank #2" / "all attack enemy #5" → goal attackNearest for the named blue(s), params.targetTankId = the living red tank id (red-N).`;
 
 /** Exported for the order eval suite (roadmap P0). */
 export function sanitizeOrders(
@@ -638,6 +700,17 @@ export function sanitizeOrders(
   const spot =
     orderText && world ? landmark(orderText, world) : null;
   const controlledId = world?.controlledId;
+  const targeted =
+    orderText && world ? parseTargetedEnemyAttack(orderText) : null;
+  const redTarget =
+    targeted && world
+      ? world.tanks.find(
+          (t) =>
+            t.team === "red" &&
+            t.alive &&
+            t.number === targeted.enemyNumber,
+        )
+      : undefined;
   return orders
     .filter((o) => living.has(o.tankId) && isGoalKind(o.goal))
     .map((o) => {
@@ -659,6 +732,20 @@ export function sanitizeOrders(
         }
         if (params.targetTankId === o.tankId && controlledId) {
           params.targetTankId = controlledId;
+        }
+      }
+      // Targeted enemy attack — fill / correct red targetTankId
+      if (o.goal === "attackNearest" && redTarget) {
+        params.targetTankId = redTarget.id;
+      } else if (
+        o.goal === "attackNearest" &&
+        params.targetTankId &&
+        world
+      ) {
+        // Accept LLM red-* ids; drop invalid / dead / blue targets
+        const t = world.tanks.find((x) => x.id === params.targetTankId);
+        if (!t || !t.alive || t.team !== "red") {
+          delete params.targetTankId;
         }
       }
       return {

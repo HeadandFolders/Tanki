@@ -113,6 +113,32 @@ console.log("Offline interpret gold cases");
     expectGoal(r, "attackNearest", 2);
   });
 
+  check("3, attack enemy tank #2 → blue #3 targets red #2", () => {
+    const r = interpretOffline("3, attack enemy tank #2", tanks, world);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].goal, "attackNearest");
+    const body = livingBlues(world).find((t) => t.id === r[0].tankId);
+    assert.ok(body);
+    assert.equal(body!.number, 3);
+    const red2 = world.tanks.find(
+      (t) => t.team === "red" && t.number === 2 && t.alive,
+    );
+    assert.ok(red2);
+    assert.equal(r[0].params?.targetTankId, red2!.id);
+  });
+
+  check("all attack enemy #5 → company focus-fires red #5", () => {
+    const r = interpretOffline("all attack enemy #5", tanks, world);
+    expectGoal(r, "attackNearest", 2);
+    const red5 = world.tanks.find(
+      (t) => t.team === "red" && t.number === 5 && t.alive,
+    );
+    assert.ok(red5);
+    for (const o of r) {
+      assert.equal(o.params?.targetTankId, red5!.id);
+    }
+  });
+
   check("retreat → retreat", () => {
     const r = interpretOffline("fall back", tanks, world);
     expectGoal(r, "retreat", 1);
@@ -172,6 +198,28 @@ console.log("sanitizeOrders");
     );
     assert.equal(clean.length, 1);
     assert.equal(clean[0].params?.targetTankId, controlled);
+  });
+
+  check("sanitize fills red target for enemy attack order", () => {
+    const body = livingBlues(world).find((t) => t.number === 4)!;
+    const red2 = world.tanks.find(
+      (t) => t.team === "red" && t.number === 2 && t.alive,
+    )!;
+    const clean = sanitizeOrders(
+      [
+        {
+          tankId: body.id,
+          goal: "attackNearest",
+          params: {},
+          chatLine: `#4: ack`,
+        },
+      ],
+      tanks,
+      "4, attack enemy tank #2",
+      world,
+    );
+    assert.equal(clean.length, 1);
+    assert.equal(clean[0].params?.targetTankId, red2.id);
   });
 }
 

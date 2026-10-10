@@ -4,6 +4,19 @@ Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no g
 
 **Default mode: Team Deathmatch No Fog.** Also in the Mode menu: Team Deathmatch (fog), Capture the Code (CTF), **Multiplayer · Offline** (local/bot), and **Multiplayer · Online** (two-device LAN).
 
+## Branch (required for multiplayer)
+
+`dev:mp` and Online Host/Join live on **`cursor/mp-offline-mode-1e16`** (PR #5), not `main`. If you see `Missing script: "dev:mp"`, check out that branch first:
+
+```bash
+git fetch origin
+git checkout cursor/mp-offline-mode-1e16
+npm install
+npm run
+# confirm "dev:mp" is listed, then:
+npm run dev:mp
+```
+
 ## Run locally
 
 ```bash
@@ -13,7 +26,7 @@ npm run dev
 
 Open [http://127.0.0.1:4847](http://127.0.0.1:4847).
 
-For **two-device multiplayer** (Vite + WebSocket relay):
+For **two-device multiplayer** (Vite + WebSocket relay) — must be on `cursor/mp-offline-mode-1e16`:
 
 ```bash
 npm run dev:mp

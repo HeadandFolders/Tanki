@@ -1,12 +1,15 @@
-# Put this project on your PC Desktop
+# Put this project on your PC Desktop (no WSL)
 
-This zip was built for local play. After download:
+You do **not** need WSL or the Origin CLI to play locally. Use the zip.
 
-## macOS / Linux
+## Windows (PowerShell)
 
-```bash
-cd ~/Desktop
-unzip fog-of-war-tank-hunt.zip -d fog-of-war-tank-hunt
+1. Download `fog-of-war-tank-hunt.zip` (from this agent’s Try Live URL path `/fog-of-war-tank-hunt.zip`, or the artifact attached in the agent).
+2. Then:
+
+```powershell
+cd $env:USERPROFILE\Desktop
+Expand-Archive .\fog-of-war-tank-hunt.zip -DestinationPath fog-of-war-tank-hunt
 cd fog-of-war-tank-hunt
 npm install
 npm run dev
@@ -14,11 +17,11 @@ npm run dev
 
 Open http://127.0.0.1:4731
 
-## Windows (PowerShell)
+## macOS / Linux
 
-```powershell
-cd $env:USERPROFILE\Desktop
-Expand-Archive .\fog-of-war-tank-hunt.zip -DestinationPath fog-of-war-tank-hunt
+```bash
+cd ~/Desktop
+unzip fog-of-war-tank-hunt.zip -d fog-of-war-tank-hunt
 cd fog-of-war-tank-hunt
 npm install
 npm run dev
@@ -33,3 +36,7 @@ export const LOCAL_API_KEY = "AIza..."; // Gemini, or sk-... for OpenAI
 ```
 
 Then restart `npm run dev` if it was already running.
+
+## Optional: Origin git (needs WSL on Windows)
+
+The Origin CLI is macOS/Linux/WSL only. Skip it unless you specifically want `git clone` of https://cursor.com/codebase/janaaa-dev/Tanki.

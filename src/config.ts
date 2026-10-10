@@ -5,6 +5,8 @@ export const CONFIG = {
   /** Battle City–style tile grid */
   tileSize: 16,
   matchDurationSec: 5 * 60,
+  /** Seconds of 3-2-1 after Start before the match goes live. */
+  startCountdownSec: 3,
 
   arenaPadding: 32, // ~2 tiles (border)
   wallThickness: 16,

@@ -7,6 +7,7 @@ import {
 } from "./config";
 import { apiKeySource, resolveApiKey } from "./api-key";
 import {
+  beginCountdown,
   controlledTank,
   createWorld,
   formatTime,
@@ -39,6 +40,9 @@ const restartBtn = document.querySelector<HTMLButtonElement>("#restart")!;
 const voiceBtn = document.querySelector<HTMLButtonElement>("#voice-btn")!;
 const voiceStatusEl = document.querySelector("#voice-status")!;
 const roundGate = document.querySelector<HTMLElement>("#round-gate")!;
+const countdownOverlay = document.querySelector<HTMLElement>("#countdown-overlay")!;
+const countdownNumEl = document.querySelector<HTMLElement>("#countdown-num")!;
+const countdownCaptionEl = document.querySelector<HTMLElement>(".countdown-caption")!;
 const llmStatusEl = document.querySelector<HTMLElement>("#llm-status")!;
 const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!;
 const startOfflineBtn = document.querySelector<HTMLButtonElement>("#start-offline")!;
@@ -64,8 +68,12 @@ function currentModes(): { share: ShareMode; mode: GameMode } {
   };
 }
 
+/** Hard-refresh always lands on TDM No Fog unless the user already changed the select. */
+modeSelect.value = CONFIG.menuModeDefault;
 const boot = applyMenuPreset();
 let world: WorldState = createWorld(boot.share, boot.mode);
+let countdownTimer: number | null = null;
+let countdownLeft = 0;
 
 // Prefill placeholders from file/env (password fields stay empty unless user types)
 const bootKey = resolveApiKey("");
@@ -225,7 +233,21 @@ function selectMenuMode(menu: MenuMode, rebuild: boolean): void {
   }
 }
 
+function cancelCountdown(): void {
+  if (countdownTimer != null) {
+    window.clearTimeout(countdownTimer);
+    countdownTimer = null;
+  }
+  countdownLeft = 0;
+  countdownOverlay.hidden = true;
+}
+
 function showRoundGate(): void {
+  cancelCountdown();
+  if (world.outcome === "countdown") {
+    world.outcome = "ready";
+  }
+  countdownOverlay.hidden = true;
   roundGate.hidden = false;
   syncGateModeButtons();
   gateProbe = { kind: "idle" };
@@ -243,6 +265,52 @@ function showRoundGate(): void {
 function hideRoundGate(): void {
   roundGate.hidden = true;
   canvas.focus();
+}
+
+function finishCountdown(): void {
+  countdownTimer = null;
+  countdownOverlay.hidden = true;
+  startMatch(world);
+  const modeNote =
+    gateProbe.kind === "ok"
+      ? `LLM live (${gateProbe.provider}).`
+      : "Keyword mock orders (offline).";
+  pushEvent(world, `Match started — ${modeNote}`, "warn");
+  flushLogs();
+  refreshRoster();
+  canvas.focus();
+}
+
+function tickCountdown(): void {
+  if (world.outcome !== "countdown") {
+    cancelCountdown();
+    return;
+  }
+  if (countdownLeft <= 0) {
+    countdownNumEl.textContent = "GO";
+    countdownCaptionEl.textContent = "Match live";
+    countdownTimer = window.setTimeout(finishCountdown, 450);
+    return;
+  }
+  countdownNumEl.textContent = String(countdownLeft);
+  countdownCaptionEl.textContent =
+    countdownLeft === CONFIG.startCountdownSec ? "Get ready" : "Stand by";
+  countdownLeft -= 1;
+  countdownTimer = window.setTimeout(tickCountdown, 1000);
+}
+
+function startPreMatchCountdown(): void {
+  cancelCountdown();
+  beginCountdown(world);
+  hideRoundGate();
+  countdownOverlay.hidden = false;
+  countdownLeft = CONFIG.startCountdownSec;
+  countdownNumEl.textContent = String(countdownLeft);
+  countdownCaptionEl.textContent = "Get ready";
+  flushLogs();
+  // First tick advances after one second so "3" is visible immediately
+  countdownLeft -= 1;
+  countdownTimer = window.setTimeout(tickCountdown, 1000);
 }
 
 function beginRound(forceOffline = false): void {
@@ -263,15 +331,7 @@ function beginRound(forceOffline = false): void {
   }
 
   syncKeyFields("gate");
-  startMatch(world);
-  const modeNote =
-    gateProbe.kind === "ok"
-      ? `LLM live (${gateProbe.provider}).`
-      : "Keyword mock orders (offline).";
-  pushEvent(world, `Match started — ${modeNote}`, "warn");
-  hideRoundGate();
-  flushLogs();
-  refreshRoster();
+  startPreMatchCountdown();
 }
 
 const keys = new Set<string>();
@@ -374,8 +434,9 @@ function restartMatch(fromMenu = false): void {
 }
 
 function openGameMenu(): void {
-  // Pause live match back to ready so mode/key can be changed
-  if (world.outcome === "playing") {
+  cancelCountdown();
+  // Pause live / countdown back to ready so mode/key can be changed
+  if (world.outcome === "playing" || world.outcome === "countdown") {
     world.outcome = "ready";
   }
   if (world.outcome === "win" || world.outcome === "lose" || world.outcome === "draw") {
@@ -436,8 +497,14 @@ async function dispatchOrder(
 ): Promise<void> {
   const cleaned = text.trim();
   if (!cleaned) return;
-  if (world.outcome === "ready") {
-    pushEvent(world, "Match paused — press Start on the overlay first.", "warn");
+  if (world.outcome === "ready" || world.outcome === "countdown") {
+    pushEvent(
+      world,
+      world.outcome === "countdown"
+        ? "Countdown in progress — wait for GO."
+        : "Match paused — press Start on the overlay first.",
+      "warn",
+    );
     flushLogs();
     return;
   }
@@ -605,7 +672,9 @@ function frame(ts: number): void {
         ? "TDM No Fog"
         : "TDM";
   if (world.outcome === "ready") {
-    matchStateEl.textContent = `${modeLabel} · PAUSED — START`;
+    matchStateEl.textContent = `${modeLabel} · MENU`;
+  } else if (world.outcome === "countdown") {
+    matchStateEl.textContent = `${modeLabel} · COUNTDOWN`;
   } else if (world.outcome === "playing") {
     matchStateEl.textContent = me
       ? `${modeLabel} · #${me.number} · ${world.shareMode}`

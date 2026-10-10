@@ -93,10 +93,19 @@ export function createWorld(
   return world;
 }
 
-/** Begin the live match from the ready gate. */
-export function startMatch(world: WorldState): void {
+/** Enter the pre-match countdown (from the game menu). */
+export function beginCountdown(world: WorldState): void {
   if (world.outcome !== "ready") return;
+  world.outcome = "countdown";
+  pushEvent(world, "Countdown…", "sys");
+}
+
+/** Begin the live match after countdown finishes. */
+export function startMatch(world: WorldState): void {
+  if (world.outcome !== "ready" && world.outcome !== "countdown") return;
   world.outcome = "playing";
+  world.time = 0;
+  world.matchLeft = CONFIG.matchDurationSec;
   pushEvent(world, "Match started.", "warn");
   pushChat(world, "Net live. Give orders.", "sys");
 }

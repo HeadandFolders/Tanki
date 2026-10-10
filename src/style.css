@@ -82,12 +82,45 @@ body {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.72);
+  background: rgba(0, 0, 0, 0.78);
   z-index: 2;
 }
 
 .round-gate[hidden] {
   display: none !important;
+}
+
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 3;
+}
+
+.countdown-overlay[hidden] {
+  display: none !important;
+}
+
+.countdown-num {
+  font-size: clamp(4rem, 18vw, 7rem);
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 24px rgba(240, 208, 48, 0.35);
+}
+
+.countdown-caption {
+  margin: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.85rem;
 }
 
 .round-gate-card {

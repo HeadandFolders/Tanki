@@ -38,10 +38,14 @@
       <main class="layout">
         <div class="canvas-wrap">
           <canvas id="game" width="1280" height="800" tabindex="0"></canvas>
-          <div id="round-gate" class="round-gate" hidden>
+          <div id="countdown-overlay" class="countdown-overlay" hidden>
+            <div id="countdown-num" class="countdown-num">3</div>
+            <p class="countdown-caption">Get ready</p>
+          </div>
+          <div id="round-gate" class="round-gate">
             <div class="round-gate-card">
               <h2>Game menu</h2>
-              <p class="hint">Pick a mode, verify your LLM key, then Start.</p>
+              <p class="hint">Default: Team Deathmatch No Fog. Verify LLM, then Start for the countdown.</p>
 
               <div class="gate-section">
                 <span class="gate-key-label">Mode</span>

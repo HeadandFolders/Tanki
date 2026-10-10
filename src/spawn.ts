@@ -77,9 +77,6 @@ function spawnTeam(
     [roles[i], roles[j]] = [roles[j], roles[i]];
   }
 
-  const frontY =
-    team === "blue" ? y0 + (y1 - y0) * 0.35 : y1 - (y1 - y0) * 0.35;
-
   const out: Tank[] = [];
   for (let i = 0; i < 6; i++) {
     const role = roles[i];
@@ -101,14 +98,16 @@ function spawnTeam(
     );
     const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
 
-    // Friendlies start mobile (patrol); enemy hunts south.
+    // Friendlies push toward midfield immediately (not a near-spawn dither).
     const goal =
       team === "blue"
         ? {
             kind: "patrol" as const,
             params: {
-              x: preferX,
-              y: frontY - (role === "scout" ? 40 : 10),
+              x: preferX + (rng() - 0.5) * 80,
+              y:
+                CONFIG.canvasHeight * (0.52 + (i % 3) * 0.06) -
+                (role === "scout" ? 30 : 0),
             },
           }
         : { kind: "attackNearest" as const };

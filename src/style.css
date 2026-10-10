@@ -144,8 +144,23 @@ body {
   color: #f0d060;
 }
 
+.llm-status.llm-checking strong {
+  color: #9ec0ff;
+}
+
+.gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+#recheck-llm {
+  padding: 8px 12px;
+  background: #1a1a20;
+}
+
 #start-round {
-  justify-self: start;
   min-width: 7rem;
   padding: 10px 16px;
   font-weight: 700;
@@ -156,8 +171,13 @@ body {
   color: var(--accent);
 }
 
-#start-round:hover {
+#start-round:hover:not(:disabled) {
   background: #4a3a18;
+}
+
+#start-round:disabled {
+  opacity: 0.45;
+  cursor: wait;
 }
 
 .layout {

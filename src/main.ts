@@ -18,7 +18,7 @@ import {
   switchToNumber,
   switchToTank,
 } from "./game";
-import { detectLlmProvider } from "./orders";
+import { probeLlmConnection, type LlmProbeResult } from "./orders";
 import { renderWorld } from "./render";
 import { createVoiceRadio } from "./voice";
 import type { WorldState } from "./types";
@@ -41,6 +41,7 @@ const voiceStatusEl = document.querySelector("#voice-status")!;
 const roundGate = document.querySelector<HTMLElement>("#round-gate")!;
 const llmStatusEl = document.querySelector<HTMLElement>("#llm-status")!;
 const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!;
+const recheckLlmBtn = document.querySelector<HTMLButtonElement>("#recheck-llm")!;
 
 /** Apply Mode-menu preset to the Share select, then return resolved modes. */
 function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
@@ -66,66 +67,108 @@ if (bootKey) {
   apiKeyInput.placeholder = `key loaded from ${apiKeySource("")}`;
 }
 
-/** Last rejected key fingerprint (401) — gate shows invalid until key changes. */
-let llmAuthFailedFor: string | null = null;
+type GateProbeState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "offline" }
+  | { kind: "ok"; provider: string; ms: number }
+  | { kind: "fail"; provider?: string; error: string; ms: number };
 
-function describeLlmStatus(): {
-  ready: boolean;
-  title: string;
-  detail: string;
-  provider?: string;
-} {
+let gateProbe: GateProbeState = { kind: "idle" };
+let probeSeq = 0;
+
+function providerLabel(p: string): string {
+  if (p === "gemini") return "Gemini";
+  if (p === "anthropic") return "Anthropic";
+  return "OpenAI";
+}
+
+function renderGateStatus(): void {
+  llmStatusEl.classList.remove("llm-ok", "llm-off", "llm-checking");
+  startRoundBtn.disabled = gateProbe.kind === "checking";
+
+  if (gateProbe.kind === "checking") {
+    llmStatusEl.classList.add("llm-checking");
+    llmStatusEl.innerHTML =
+      `<strong>LLM: checking…</strong>` +
+      `<span>Live probe via /llm/* proxy. Start unlocks when this finishes.</span>`;
+    startRoundBtn.textContent = "Wait…";
+    return;
+  }
+
+  if (gateProbe.kind === "offline") {
+    llmStatusEl.classList.add("llm-off");
+    llmStatusEl.innerHTML =
+      `<strong>LLM: offline (keyword mock)</strong>` +
+      `<span>No API key. Orders use the local parser. Paste a key then Recheck, or Start with mock orders.</span>`;
+    startRoundBtn.textContent = "Start (offline)";
+    startRoundBtn.disabled = false;
+    return;
+  }
+
+  if (gateProbe.kind === "ok") {
+    llmStatusEl.classList.add("llm-ok");
+    llmStatusEl.innerHTML =
+      `<strong>LLM: verified (${gateProbe.provider} · ${gateProbe.ms}ms)</strong>` +
+      `<span>Key works. Radio/typed orders will call the cloud model, then set bot goals.</span>`;
+    startRoundBtn.textContent = "Start";
+    startRoundBtn.disabled = false;
+    return;
+  }
+
+  if (gateProbe.kind === "fail") {
+    llmStatusEl.classList.add("llm-off");
+    const who = gateProbe.provider ? ` · ${gateProbe.provider}` : "";
+    llmStatusEl.innerHTML =
+      `<strong>LLM: failed${who} (${gateProbe.ms}ms)</strong>` +
+      `<span>${gateProbe.error}. Start anyway to use keyword parse, or fix the key and Recheck.</span>`;
+    startRoundBtn.textContent = "Start (offline)";
+    startRoundBtn.disabled = false;
+    return;
+  }
+
+  llmStatusEl.innerHTML = `<strong>LLM: …</strong><span>Preparing probe.</span>`;
+  startRoundBtn.disabled = true;
+  startRoundBtn.textContent = "Start";
+}
+
+async function runLlmProbe(): Promise<void> {
+  const seq = ++probeSeq;
   const key = resolveApiKey(apiKeyInput.value);
-  const src = apiKeySource(apiKeyInput.value);
   if (!key) {
-    return {
-      ready: false,
-      title: "LLM: offline (keyword mock)",
-      detail:
-        "No API key. Orders use the local keyword parser. Paste a key in the sidebar or src/api-key.local.ts to enable cloud LLM calls.",
+    gateProbe = { kind: "offline" };
+    renderGateStatus();
+    return;
+  }
+
+  gateProbe = { kind: "checking" };
+  renderGateStatus();
+  recheckLlmBtn.disabled = true;
+
+  const result: LlmProbeResult = await probeLlmConnection(key);
+  if (seq !== probeSeq) return; // stale
+
+  if (result.ok) {
+    gateProbe = {
+      kind: "ok",
+      provider: providerLabel(result.provider),
+      ms: result.ms,
+    };
+  } else {
+    gateProbe = {
+      kind: "fail",
+      provider: result.provider ? providerLabel(result.provider) : undefined,
+      error: result.error,
+      ms: result.ms,
     };
   }
-  const provider = detectLlmProvider(key);
-  const label =
-    provider === "gemini"
-      ? "Gemini"
-      : provider === "anthropic"
-        ? "Anthropic"
-        : "OpenAI";
-  const srcLabel =
-    src === "ui" ? "sidebar field" : src === "file" ? "api-key.local.ts" : "env";
-  if (llmAuthFailedFor === key) {
-    return {
-      ready: false,
-      title: `LLM: key rejected (401 · ${label})`,
-      detail: `The ${label} key from ${srcLabel} was rejected. Fix/replace it, or Start anyway — orders will use the keyword parser until the key works.`,
-      provider: label,
-    };
-  }
-  return {
-    ready: true,
-    title: `LLM: ready (${label})`,
-    detail: `Key loaded from ${srcLabel}. Radio/typed orders will call ${label} via /llm/* proxy, then set bot goals.`,
-    provider: label,
-  };
-}
-
-function refreshLlmStatusUi(): void {
-  const st = describeLlmStatus();
-  llmStatusEl.classList.toggle("llm-ok", st.ready);
-  llmStatusEl.classList.toggle("llm-off", !st.ready);
-  llmStatusEl.innerHTML = `<strong>${st.title}</strong><span>${st.detail}</span>`;
-}
-
-function noteLlmAuthFailure(err: string, key?: string): void {
-  if (!key || !/401|invalid.?api.?key|incorrect api key/i.test(err)) return;
-  llmAuthFailedFor = key;
+  recheckLlmBtn.disabled = false;
+  renderGateStatus();
 }
 
 function showRoundGate(): void {
-  refreshLlmStatusUi();
   roundGate.hidden = false;
-  startRoundBtn.focus();
+  void runLlmProbe();
 }
 
 function hideRoundGate(): void {
@@ -135,7 +178,13 @@ function hideRoundGate(): void {
 
 function beginRound(): void {
   if (world.outcome !== "ready") return;
+  if (gateProbe.kind === "checking") return;
   startMatch(world);
+  const modeNote =
+    gateProbe.kind === "ok"
+      ? `LLM live (${gateProbe.provider}).`
+      : "Keyword mock orders (no working LLM key).";
+  pushEvent(world, `Match started — ${modeNote}`, "warn");
   hideRoundGate();
   flushLogs();
   refreshRoster();
@@ -243,12 +292,14 @@ function restartMatch(fromMenu = false): void {
 restartBtn.addEventListener("click", () => restartMatch(false));
 modeSelect.addEventListener("change", () => restartMatch(true));
 startRoundBtn.addEventListener("click", beginRound);
-apiKeyInput.addEventListener("input", () => {
-  llmAuthFailedFor = null;
-  if (world.outcome === "ready") refreshLlmStatusUi();
+recheckLlmBtn.addEventListener("click", () => {
+  void runLlmProbe();
+});
+apiKeyInput.addEventListener("change", () => {
+  if (world.outcome === "ready") void runLlmProbe();
 });
 roundGate.addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" || ev.key === " ") {
+  if (ev.key === "Enter" && gateProbe.kind !== "checking") {
     ev.preventDefault();
     beginRound();
   }
@@ -259,9 +310,17 @@ async function dispatchOrder(
   via: "typed" | "voice" | "phrase",
 ): Promise<void> {
   const cleaned = text.trim();
-  if (!cleaned || world.outcome !== "playing") return;
+  if (!cleaned) return;
+  if (world.outcome === "ready") {
+    pushEvent(world, "Match paused — press Start on the overlay first.", "warn");
+    flushLogs();
+    return;
+  }
+  if (world.outcome !== "playing") return;
 
-  const key = resolveApiKey(apiKeyInput.value);
+  // Use cloud LLM only when the pre-Start probe verified the key
+  const key =
+    gateProbe.kind === "ok" ? resolveApiKey(apiKeyInput.value) : undefined;
   const src = apiKeySource(apiKeyInput.value);
 
   if (via === "voice") {
@@ -275,17 +334,11 @@ async function dispatchOrder(
     world,
     key
       ? `Radio pipeline: ${via} → LLM (${src}) → bots`
-      : `Radio pipeline: ${via} → keyword mock → bots (no API key)`,
+      : `Radio pipeline: ${via} → keyword mock → bots`,
     "sys",
   );
 
-  // Capture LLM auth failures from the interpret path via a one-shot probe:
-  // sendOrder already falls back offline; we re-check status after for the gate.
-  const beforeEvents = world.events.length;
   await sendOrder(world, cleaned, key);
-  const newEvents = world.events.slice(beforeEvents);
-  const failLine = newEvents.find((e) => e.text.startsWith("LLM failed:"));
-  if (failLine && key) noteLlmAuthFailure(failLine.text, key);
   if (via === "voice") orderInput.value = "";
   flushLogs();
   refreshRoster();
@@ -414,7 +467,7 @@ function frame(ts: number): void {
         ? "TDM No Fog"
         : "TDM";
   if (world.outcome === "ready") {
-    matchStateEl.textContent = `${modeLabel} · READY`;
+    matchStateEl.textContent = `${modeLabel} · PAUSED — START`;
   } else if (world.outcome === "playing") {
     matchStateEl.textContent = me
       ? `${modeLabel} · #${me.number} · ${world.shareMode}`

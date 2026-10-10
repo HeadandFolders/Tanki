@@ -229,15 +229,6 @@ function friendlyBrain(
   const enemies = visibleEnemies(world, tank);
   const nearestEnemy = nearest(enemies, tank.x, tank.y);
 
-  // Low HP → break off and fall back (unless already retreating)
-  if (
-    tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction &&
-    tank.goal.kind !== "retreat" &&
-    tank.goal.kind !== "reportIn"
-  ) {
-    tank.goal = { kind: "retreat" };
-  }
-
   let wantShoot = false;
   let aimAngle = tank.angle;
   let moveX = 0;
@@ -245,6 +236,16 @@ function friendlyBrain(
   const goal = tank.goal.kind;
   const orderedMove =
     goal === "moveTo" || goal === "spreadOut" || goal === "holdPosition";
+
+  // Low HP → fall back, but don't cancel an explicit move/spread/hold order
+  if (
+    !orderedMove &&
+    tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction &&
+    tank.goal.kind !== "retreat" &&
+    tank.goal.kind !== "reportIn"
+  ) {
+    tank.goal = { kind: "retreat" };
+  }
 
   // Combat: only fully override ordered moves when the threat is on top of us
   const allowCombat =

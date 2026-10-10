@@ -96,6 +96,8 @@ export const CONFIG = {
 
   llm: {
     timeoutMs: 12000,
+    /** Pre-Start connectivity check (should fail fast on bad keys). */
+    probeTimeoutMs: 6000,
     /** Paths go through Vite `/llm/*` proxies (see vite.config.ts) to avoid CORS. */
     openai: {
       path: "/llm/openai/v1/chat/completions",

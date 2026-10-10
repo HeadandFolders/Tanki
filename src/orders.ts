@@ -355,6 +355,116 @@ export function detectLlmProvider(apiKey: string): LlmProvider {
   return "openai";
 }
 
+export type LlmProbeResult =
+  | { ok: true; provider: LlmProvider; ms: number }
+  | { ok: false; provider?: LlmProvider; ms: number; error: string };
+
+/**
+ * Live check that the key can reach the provider via Vite `/llm/*` proxies.
+ * Call from the round gate before Start — not on every order.
+ */
+export async function probeLlmConnection(
+  apiKey: string,
+): Promise<LlmProbeResult> {
+  const key = apiKey.trim();
+  if (!key) {
+    return { ok: false, ms: 0, error: "no API key" };
+  }
+  const provider = detectLlmProvider(key);
+  const t0 = performance.now();
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    CONFIG.llm.probeTimeoutMs,
+  );
+  try {
+    if (provider === "gemini") {
+      const model = CONFIG.llm.gemini.model;
+      const url = `${CONFIG.llm.gemini.path}/${model}:generateContent?key=${encodeURIComponent(key)}`;
+      const res = await fetch(url, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: 'Reply with JSON: {"ok":true}' }] }],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 16,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+        );
+      }
+    } else if (provider === "anthropic") {
+      const res = await fetch(CONFIG.llm.anthropic.path, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: CONFIG.llm.anthropic.model,
+          max_tokens: 16,
+          temperature: 0,
+          messages: [{ role: "user", content: 'Reply with only: {"ok":true}' }],
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+        );
+      }
+    } else {
+      const res = await fetch(CONFIG.llm.openai.path, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: CONFIG.llm.openai.model,
+          temperature: 0,
+          max_tokens: 16,
+          messages: [{ role: "user", content: 'Reply with JSON: {"ok":true}' }],
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+        );
+      }
+    }
+    return {
+      ok: true,
+      provider,
+      ms: Math.round(performance.now() - t0),
+    };
+  } catch (err) {
+    let error = err instanceof Error ? err.message : "probe failed";
+    if (err instanceof DOMException && err.name === "AbortError") {
+      error = "timed out";
+    }
+    return {
+      ok: false,
+      provider,
+      ms: Math.round(performance.now() - t0),
+      error,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
 Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.
 Map is top-down: x right, y down; origin top-left. When the order names a place (corner, side, north/south/east/west), set goal moveTo with numeric x,y inside the map for EVERY addressed tank. Example corners: bottom-left ≈ (0.1*W, 0.9*H), top-right ≈ (0.9*W, 0.1*H). Always include x and y for moveTo/holdPosition.`;

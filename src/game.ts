@@ -492,29 +492,26 @@ function addMarker(
 
 function handleReportIn(world: WorldState, tank: Tank): void {
   if (tank.team !== "blue" || !tank.alive) return;
-  if (world.shareMode !== "report") return;
+  // Only the explicit reportIn order dumps fog — never auto-spam while idle.
+  if (world.shareMode !== "report" && world.shareMode !== "clear") return;
+  if (tank.goal.kind !== "reportIn") return;
   if (tank.id === world.controlledId) return; // controlled already live
-  if (tank.goal.kind !== "reportIn" && tank.standStillTimer < 0.5) return;
-
-  // "exposed" = standing still
-  if (tank.standStillTimer < 0.05) return;
-
-  const need =
-    tank.goal.kind === "reportIn" ? CONFIG.reportInSeconds : CONFIG.reportInSeconds * 1.4;
-  tank.reportProgress += 1 / 60; // accumulated in step via stand timer check below
-  // Use standStillTimer directly
-  if (tank.standStillTimer < need) return;
+  if (tank.standStillTimer < CONFIG.reportInSeconds) return;
 
   const cells = captureVisibleCells(world, tank);
   const n = applyDiscoveryCells(world, cells);
   tank.reportProgress = 0;
   tank.standStillTimer = 0;
-  if (tank.goal.kind === "reportIn") {
-    tank.goal = { kind: "holdPosition", params: { x: tank.x, y: tank.y } };
+  tank.goal = { kind: "holdPosition", params: { x: tank.x, y: tank.y } };
+
+  // Skip useless "0 cells logged" chat noise
+  if (n > 0) {
+    const line = `#${tank.number}: report in — ${n} cells logged.`;
+    pushChat(world, line, "ally");
+    pushEvent(world, line, "ally");
+  } else {
+    pushEvent(world, `#${tank.number}: report in — nothing new.`, "sys");
   }
-  const line = `#${tank.number}: report in — ${n} cells logged.`;
-  pushChat(world, line, "ally");
-  pushEvent(world, line, "ally");
 
   // Also report enemy sightings currently visible
   for (const e of world.tanks) {

@@ -14,11 +14,14 @@ function rect(
   return { x: tx * s, y: ty * s, w: tw * s, h: th * s, kind };
 }
 
+export type ArenaDensity = "standard" | "dense";
+
 /**
  * Battle City–style tile arena: stone border, brick chokes, steel hardpoints,
- * eagle nest at southern home.
+ * eagle nest at southern home. `dense` adds extra walls / choke geometry
+ * (Multiplayer · Offline).
  */
-export function buildArena(): Wall[] {
+export function buildArena(density: ArenaDensity = "standard"): Wall[] {
   const s = T();
   const cols = Math.floor(CONFIG.canvasWidth / s);
   const rows = Math.floor(CONFIG.canvasHeight / s);
@@ -58,6 +61,29 @@ export function buildArena(): Wall[] {
     [14, 12, 3, 2],
     [32, 8, 3, 2],
   ];
+
+  if (density === "dense") {
+    bricks.push(
+      // extra mid chokes / corridors
+      [16, 18, 2, 5],
+      [30, 12, 2, 5],
+      [24, 10, 2, 3],
+      [20, 22, 6, 2],
+      [26, 26, 2, 3],
+      // tighter flanks
+      [8, 14, 2, 4],
+      [38, 20, 2, 4],
+      [12, 24, 4, 2],
+      [34, 6, 4, 2],
+      // pocket walls near spawn approaches
+      [18, 32, 3, 2],
+      [28, 32, 3, 2],
+      [22, 6, 2, 2],
+      [10, 10, 3, 2],
+      [35, 16, 3, 2],
+    );
+  }
+
   for (const [x, y, w, h] of bricks) {
     walls.push(rect(x, y, w, h, "brick"));
   }
@@ -70,6 +96,9 @@ export function buildArena(): Wall[] {
     [38, 12, 2, 2],
     [20, 18, 2, 2],
   ];
+  if (density === "dense") {
+    steel.push([16, 14, 2, 2], [32, 20, 2, 2], [24, 16, 2, 2], [12, 18, 2, 2]);
+  }
   for (const [x, y, w, h] of steel) {
     walls.push(rect(x, y, w, h, "steel"));
   }

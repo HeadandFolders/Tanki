@@ -1,7 +1,7 @@
 import { CONFIG, homeTerritoryBounds } from "./config";
 import { cardinalAngle, dist, eaglePosition } from "./arena";
 import { canSeeTank } from "./fog";
-import type { Tank, Wall, WorldState } from "./types";
+import type { DeathFx, Tank, Wall, WorldState } from "./types";
 
 export function renderWorld(
   ctx: CanvasRenderingContext2D,
@@ -30,6 +30,8 @@ export function renderWorld(
     if (t.team === "blue") drawTank(ctx, world, t, true);
     else if (isEnemyVisible(world, t)) drawTank(ctx, world, t, false);
   }
+
+  drawDeathFx(ctx, world);
 
   for (const p of world.projectiles) {
     if (p.team === "red" && !shouldShowHostile(world, p.x, p.y)) continue;
@@ -334,6 +336,69 @@ function drawTank(
   }
 
   ctx.textAlign = "left";
+}
+
+/** Blink husk twice then gone (mp-offline). Visible on even half-periods. */
+function drawDeathFx(ctx: CanvasRenderingContext2D, world: WorldState): void {
+  const half = CONFIG.mpOffline.deathBlinkHalfPeriodSec;
+  for (const fx of world.deathFx) {
+    const age = world.time - fx.startedAt;
+    const phase = Math.floor(age / half);
+    // Even phase = visible, odd = hidden → two full blinks
+    if (phase % 2 === 1) continue;
+    if (!shouldShowWorldPos(world, fx.x, fx.y)) continue;
+    drawDeathHusk(ctx, fx);
+  }
+}
+
+function drawDeathHusk(ctx: CanvasRenderingContext2D, fx: DeathFx): void {
+  const mock: Tank = {
+    id: fx.id,
+    team: fx.team,
+    number: fx.tankNumber,
+    role: fx.role,
+    x: fx.x,
+    y: fx.y,
+    angle: fx.angle,
+    hp: 0,
+    maxHp: 1,
+    alive: false,
+    cooldown: 0,
+    goal: { kind: "idle" },
+    standStillTimer: 0,
+    reportProgress: 0,
+    debugProgress: 0,
+    debugTargetId: null,
+    lastKnownPos: { x: fx.x, y: fx.y },
+    isCodeCarrier: false,
+    lastShotAt: -999,
+  };
+  const body = tankBodyColor(mock, fx.team === "blue");
+  const tread = fx.team === "blue" ? "#4a3810" : "#505058";
+  const facing = cardinalAngle(fx.angle);
+  const scale = CONFIG.spriteScale;
+  const n = TANK_PAT.length;
+  const size = n * scale;
+
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  ctx.translate(Math.round(fx.x), Math.round(fx.y));
+  ctx.rotate(facing + Math.PI / 2);
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      const cell = TANK_PAT[row]![col]!;
+      if (!cell) continue;
+      ctx.fillStyle = cell === 2 ? tread : body;
+      ctx.fillRect(
+        col * scale - size / 2,
+        row * scale - size / 2,
+        scale,
+        scale,
+      );
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 function drawWreck(

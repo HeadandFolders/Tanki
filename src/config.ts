@@ -63,6 +63,27 @@ export const CONFIG = {
   /** Top-bar Mode menu preset (bundles rules + fog share). */
   menuModeDefault: "tdm-nofog" as MenuMode,
 
+  /**
+   * Multiplayer · Offline — local/bot TDM, no fog, gunners only, hold-until-ordered.
+   * Tunables for death blink VFX, panic escape, denser arena.
+   */
+  mpOffline: {
+    /** Blink on/off cycles before the husk is removed (no wreck). */
+    deathBlinkCount: 2,
+    /** Half-period of one blink (visible or hidden), seconds. */
+    deathBlinkHalfPeriodSec: 0.14,
+    /** Close-threat radius that triggers panic escape without waiting for orders. */
+    panicRadius: 72,
+    /** Enemies inside this range count toward "surrounded". */
+    surroundRadius: 115,
+    /** Need this many nearby enemies (or one in panicRadius) to panic. */
+    surroundEnemyCount: 2,
+    /** How far to flee when panicking. */
+    escapeDistance: 130,
+    /** Use denser choke geometry for this mode's arena. */
+    denseArena: true,
+  },
+
   ai: {
     thinkInterval: 0.25,
     holdRadius: 36,
@@ -202,9 +223,9 @@ export function homeTerritoryBounds(team: "blue" | "red"): {
 
 /** Vision/share modes. `clear` = no fog; map and enemies always visible. */
 export type ShareMode = "auto" | "report" | "none" | "clear";
-export type GameMode = "tdm" | "ctf";
+export type GameMode = "tdm" | "ctf" | "mp-offline";
 /** Mode menu presets shown in the top bar. */
-export type MenuMode = "tdm-nofog" | "tdm" | "ctf";
+export type MenuMode = "tdm-nofog" | "tdm" | "ctf" | "mp-offline";
 export type Role = keyof typeof CONFIG.roles;
 export type RedDifficulty = "easy" | "normal" | "hard";
 
@@ -220,5 +241,12 @@ export function modesFromMenu(menu: MenuMode): {
       return { share: "report", mode: "tdm" };
     case "ctf":
       return { share: "report", mode: "ctf" };
+    case "mp-offline":
+      return { share: "clear", mode: "mp-offline" };
   }
+}
+
+/** Local/bot TDM slice: no fog, no wreck/debug, hold-until-ordered teammates. */
+export function isMpOffline(mode: GameMode): boolean {
+  return mode === "mp-offline";
 }

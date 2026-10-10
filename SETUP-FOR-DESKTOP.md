@@ -15,7 +15,7 @@ npm install
 npm run dev
 ```
 
-Open http://127.0.0.1:4731
+Open http://127.0.0.1:4847
 
 ## macOS / Linux
 

@@ -27,12 +27,12 @@ const llmProxy = {
 export default defineConfig({
   server: {
     host: "0.0.0.0",
-    port: 4731,
+    port: 4847,
     proxy: llmProxy,
   },
   preview: {
     host: "0.0.0.0",
-    port: 4732,
+    port: 4848,
     proxy: llmProxy,
   },
 });

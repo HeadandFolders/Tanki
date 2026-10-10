@@ -1,4 +1,4 @@
-import { CONFIG, homeTerritoryBounds } from "./config";
+import { CONFIG, homeTerritoryBounds, isMpOffline } from "./config";
 import {
   angleTo,
   dist,
@@ -13,7 +13,7 @@ import {
 } from "./belief";
 import { canSeeTank } from "./fog";
 import { COMBAT_LOCKED_GOALS, ORDERED_MOVE_GOALS } from "./goals";
-import type { Tank, WorldState, Wreck } from "./types";
+import type { Goal, Tank, WorldState, Wreck } from "./types";
 
 export function updateTankAi(
   world: WorldState,
@@ -337,11 +337,217 @@ function escortCoverSlot(
   return { x: clamped.x, y: clamped.y, faceAngle };
 }
 
+/** Close/surrounded threat → panic escape without waiting for orders. */
+function shouldPanicEscape(tank: Tank, liveEnemies: Tank[]): boolean {
+  const { panicRadius, surroundRadius, surroundEnemyCount } = CONFIG.mpOffline;
+  let near = 0;
+  for (const e of liveEnemies) {
+    const d = dist(tank.x, tank.y, e.x, e.y);
+    if (d <= panicRadius) return true;
+    if (d <= surroundRadius) near++;
+  }
+  return near >= surroundEnemyCount;
+}
+
+function fleePoint(tank: Tank, threats: Tank[]): { x: number; y: number } {
+  let ax = 0;
+  let ay = 0;
+  for (const e of threats) {
+    const d = dist(tank.x, tank.y, e.x, e.y) || 1;
+    ax += (tank.x - e.x) / d;
+    ay += (tank.y - e.y) / d;
+  }
+  const mag = Math.hypot(ax, ay) || 1;
+  const distFlee = CONFIG.mpOffline.escapeDistance;
+  return clampMap(
+    tank.x + (ax / mag) * distFlee,
+    tank.y + (ay / mag) * distFlee,
+  );
+}
+
+/**
+ * Multiplayer · Offline teammate AI:
+ * - Default hold until voice/text orders (no autonomous patrol/scout)
+ * - Shoot while holding if enemy in range + LOS
+ * - Panic escape when surrounded / under close attack, then resume hold/last order
+ */
+function mpOfflineFriendlyBrain(
+  world: WorldState,
+  tank: Tank,
+  dt: number,
+): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
+  const speed = CONFIG.roles[tank.role].speed;
+  const liveEnemies = liveVisibleEnemies(world, tank);
+  const nearestLive = nearest(liveEnemies, tank.x, tank.y);
+
+  // Never invent patrol/scout/idle wander — force system soft goals back to hold.
+  if (
+    !isPlayerOrder(tank) &&
+    (tank.goal.kind === "patrol" ||
+      tank.goal.kind === "scout" ||
+      tank.goal.kind === "idle" ||
+      tank.goal.kind === "attackNearest" ||
+      tank.goal.kind === "debug")
+  ) {
+    tank.goal = {
+      kind: "holdPosition",
+      source: "system",
+      params: { x: tank.x, y: tank.y },
+    };
+  }
+
+  let wantShoot = false;
+  let aimAngle = tank.angle;
+  let moveX = 0;
+  let moveY = 0;
+
+  // Panic escape: flee without waiting for orders, then resume last goal.
+  if (nearestLive && shouldPanicEscape(tank, liveEnemies)) {
+    const resume: Goal = {
+      kind: tank.goal.kind,
+      params: { ...tank.goal.params },
+      source: tank.goal.source,
+    };
+    const flee = fleePoint(tank, liveEnemies);
+    const s = steerTo(tank, flee.x, flee.y, speed * 1.15, dt, world);
+    moveX = s.moveX;
+    moveY = s.moveY;
+    aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
+    wantShoot = true;
+    applyMove(tank, moveX, moveY, world);
+    // Keep ordered goals; after clear, hold/move resumes naturally next frames.
+    if (!isPlayerOrder(tank) && resume.kind === "holdPosition") {
+      // Snap hold station to post-escape spot once threat clears (below).
+      tank.goal = {
+        kind: "holdPosition",
+        source: "system",
+        params: { x: flee.x, y: flee.y },
+      };
+    }
+    return { moveX, moveY, wantShoot, aimAngle };
+  }
+
+  // Shoot-while-holding (and while executing any order): fire if hittable.
+  if (nearestLive) {
+    aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
+    tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * 2 * dt);
+    wantShoot = true;
+  }
+
+  const activeGoal = tank.goal.kind;
+
+  if (activeGoal === "holdPosition") {
+    const hx = tank.goal.params?.x ?? tank.x;
+    const hy = tank.goal.params?.y ?? tank.y;
+    if (dist(tank.x, tank.y, hx, hy) > CONFIG.ai.holdRadius) {
+      const s = steerTo(tank, hx, hy, speed, dt, world, { separate: true });
+      moveX = s.moveX;
+      moveY = s.moveY;
+      if (!nearestLive) aimAngle = s.aimAngle;
+    }
+  } else if (activeGoal === "moveTo") {
+    const tx = tank.goal.params?.x ?? tank.x;
+    const ty = tank.goal.params?.y ?? tank.y;
+    if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
+      tank.goal = {
+        kind: "holdPosition",
+        params: { x: tx, y: ty },
+        source: tank.goal.source ?? "system",
+      };
+    } else {
+      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: true });
+      moveX = s.moveX;
+      moveY = s.moveY;
+      if (!nearestLive) aimAngle = s.aimAngle;
+    }
+  } else if (activeGoal === "spreadOut") {
+    const slot = spreadSlot(tank);
+    const tx = tank.goal.params?.x ?? slot.x;
+    const ty = tank.goal.params?.y ?? slot.y;
+    if (!tank.goal.params?.x) tank.goal.params = { x: tx, y: ty };
+    if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
+      tank.goal = {
+        kind: "holdPosition",
+        params: { x: tx, y: ty },
+        source: tank.goal.source ?? "system",
+      };
+    } else {
+      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: true });
+      moveX = s.moveX;
+      moveY = s.moveY;
+      if (!nearestLive) aimAngle = s.aimAngle;
+    }
+  } else if (activeGoal === "escort") {
+    const tid = tank.goal.params?.targetTankId;
+    const buddy = world.tanks.find((t) => t.id === tid && t.alive);
+    if (buddy && buddy.id !== tank.id) {
+      const slot = escortCoverSlot(world, tank, buddy);
+      const dSlot = dist(tank.x, tank.y, slot.x, slot.y);
+      if (dSlot > CONFIG.ai.escortSlotRadius) {
+        const s = steerTo(tank, slot.x, slot.y, speed, dt, world, {
+          separate: true,
+        });
+        moveX = s.moveX;
+        moveY = s.moveY;
+      }
+      if (!nearestLive) aimAngle = slot.faceAngle;
+    } else {
+      tank.goal = {
+        kind: "holdPosition",
+        source: "system",
+        params: { x: tank.x, y: tank.y },
+      };
+    }
+  } else if (activeGoal === "attackNearest" && isPlayerOrder(tank)) {
+    // Only when player ordered attack — no autonomous aggro.
+    if (nearestLive) {
+      const fight = combatManeuver(world, tank, nearestLive, speed, dt);
+      moveX = fight.moveX;
+      moveY = fight.moveY;
+      wantShoot = fight.wantShoot;
+      aimAngle = fight.aimAngle;
+    }
+  } else if (activeGoal === "retreat") {
+    const home = homeTerritoryBounds("blue");
+    const homeX = CONFIG.canvasWidth * (0.15 + (tank.number % 5) * 0.15);
+    const homeY = (home.y0 + home.y1) / 2;
+    if (dist(tank.x, tank.y, homeX, homeY) < 45) {
+      tank.goal = {
+        kind: "holdPosition",
+        source: "system",
+        params: { x: homeX, y: homeY },
+      };
+    } else {
+      const s = steerTo(tank, homeX, homeY, speed * 1.1, dt, world);
+      moveX = s.moveX;
+      moveY = s.moveY;
+      if (!nearestLive) aimAngle = s.aimAngle;
+    }
+  } else {
+    // Any other goal in this mode collapses to hold (no debug/scout/patrol).
+    tank.goal = {
+      kind: "holdPosition",
+      source: isPlayerOrder(tank) ? "player" : "system",
+      params: {
+        x: tank.goal.params?.x ?? tank.x,
+        y: tank.goal.params?.y ?? tank.y,
+      },
+    };
+  }
+
+  applyMove(tank, moveX, moveY, world);
+  return { moveX, moveY, wantShoot, aimAngle };
+}
+
 function friendlyBrain(
   world: WorldState,
   tank: Tank,
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
+  if (isMpOffline(world.gameMode)) {
+    return mpOfflineFriendlyBrain(world, tank, dt);
+  }
+
   const speed = CONFIG.roles[tank.role].speed;
   const liveEnemies = liveVisibleEnemies(world, tank);
   const known = knownEnemyTanks(world, tank);
@@ -721,19 +927,24 @@ function enemyBrain(
     wantShoot = fight.wantShoot;
     aimAngle = fight.aimAngle;
   } else {
-    const playerWrecks = world.wrecks.filter(
-      (w) => w.team === "blue" && !w.debugged,
-    );
-    const wreck = nearest(playerWrecks, tank.x, tank.y);
-    if (wreck && dist(tank.x, tank.y, wreck.x, wreck.y) < 280 * engageMul) {
-      tank.debugTargetId = wreck.id;
-      if (dist(tank.x, tank.y, wreck.x, wreck.y) > CONFIG.debugRange * 0.7) {
-        const s = steerTo(tank, wreck.x, wreck.y, speed, dt, world);
-        moveX = s.moveX;
-        moveY = s.moveY;
-        aimAngle = s.aimAngle;
+    let huntedWreck = false;
+    if (!isMpOffline(world.gameMode)) {
+      const playerWrecks = world.wrecks.filter(
+        (w) => w.team === "blue" && !w.debugged,
+      );
+      const wreck = nearest(playerWrecks, tank.x, tank.y);
+      if (wreck && dist(tank.x, tank.y, wreck.x, wreck.y) < 280 * engageMul) {
+        huntedWreck = true;
+        tank.debugTargetId = wreck.id;
+        if (dist(tank.x, tank.y, wreck.x, wreck.y) > CONFIG.debugRange * 0.7) {
+          const s = steerTo(tank, wreck.x, wreck.y, speed, dt, world);
+          moveX = s.moveX;
+          moveY = s.moveY;
+          aimAngle = s.aimAngle;
+        }
       }
-    } else {
+    }
+    if (!huntedWreck) {
       const home = homeTerritoryBounds("blue");
       const lane = 0.18 + (tank.number % 5) * 0.16;
       const push = 20 + 40 * tier.aggroMul;

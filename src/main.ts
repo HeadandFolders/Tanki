@@ -748,9 +748,11 @@ function frame(ts: number): void {
   const modeLabel =
     world.gameMode === "ctf"
       ? "CTF"
-      : world.shareMode === "clear"
-        ? "TDM No Fog"
-        : "TDM";
+      : world.gameMode === "mp-offline"
+        ? "MP Offline"
+        : world.shareMode === "clear"
+          ? "TDM No Fog"
+          : "TDM";
   if (world.outcome === "ready") {
     matchStateEl.textContent = `${modeLabel} · MENU`;
   } else if (world.outcome === "countdown") {

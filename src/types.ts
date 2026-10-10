@@ -95,6 +95,18 @@ export interface Wreck {
   debugResult: "clean" | "code" | null;
 }
 
+/** Brief blink-out husk (mp-offline); not a gameplay wreck. */
+export interface DeathFx {
+  id: string;
+  team: TeamId;
+  tankNumber: number;
+  role: Role;
+  x: number;
+  y: number;
+  angle: number;
+  startedAt: number;
+}
+
 export interface SightingMarker {
   id: string;
   kind: "enemy" | "wreck";
@@ -129,6 +141,8 @@ export interface WorldState {
   tanks: Tank[];
   projectiles: Projectile[];
   wrecks: Wreck[];
+  /** mp-offline death blink husks (removed after blinks; no wreck gameplay). */
+  deathFx: DeathFx[];
   markers: SightingMarker[];
   fogExplored: Uint8Array;
   fogCols: number;

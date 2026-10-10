@@ -2,7 +2,7 @@
 
 Playable 2D top-down fog-of-war tank hunt. Vite + TypeScript + HTML canvas (no game engine). Battle City–inspired pixel art; voice radio orders.
 
-**Default mode: Team Deathmatch No Fog.** Also in the Mode menu: Team Deathmatch (fog) and Capture the Code (CTF).
+**Default mode: Team Deathmatch No Fog.** Also in the Mode menu: Team Deathmatch (fog), Capture the Code (CTF), and **Multiplayer · Offline** (local/bot TDM, no fog, all gunners).
 
 ## Run locally
 
@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open [http://127.0.0.1:4731](http://127.0.0.1:4731).
+Open [http://127.0.0.1:4847](http://127.0.0.1:4847).
 
 ```bash
 npm run build
@@ -44,7 +44,7 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 | `1`–`6` / click friendly | Switch tank |
 | Radio LIVE | Voice orders (Chrome/Edge + mic) |
 | Phrase buttons / text box | Same order path without mic |
-| Mode select | Team Deathmatch No Fog (default) / Team Deathmatch / Capture the Code |
+| Mode select | TDM No Fog (default) / TDM Fog / Capture the Code / Multiplayer · Offline |
 | Share select | `clear` (no fog) / `report` / `auto` / `none` |
 | Start | After each Restart/mode change: review LLM status, then Start the clock |
 
@@ -53,13 +53,14 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 - **Team Deathmatch No Fog (default)** — wipe the enemy company; full map and enemies visible (no fog).
 - **Team Deathmatch** — same rules with fog share (`report` by default).
 - **Capture the Code** — debug the enemy code-carrier wreck to win (old CTF rules).
+- **Multiplayer · Offline** — local/bot TDM test: no fog, denser map, all standard gunners, win by wiping the enemy team. Teammates **hold until ordered** (voice/text/phrases); shoot while holding if a target is hittable; panic-escape when surrounded/under close attack. Eliminations blink twice then vanish (no wreck/debug / Capture-the-Code).
 
 ## Rules (short)
 
 - 5-minute matches, no respawns.
-- 2 scouts (slower, long vision) + 4 gunners (faster, short vision); all shoot.
+- Most modes: 2 scouts (slower, long vision) + 4 gunners (faster, short vision); all shoot. Multiplayer · Offline: six gunners.
 - No Fog (`clear`): whole map visible; fogged modes keep the southern ~20% home strip pre-revealed.
-- Tunables in `src/config.ts`.
+- Tunables in `src/config.ts` (see `CONFIG.mpOffline` for the offline mode).
 
 ## Committed roadmap
 

@@ -1,5 +1,6 @@
 import {
   CONFIG,
+  isMpOffline,
   type GameMode,
   type RedDifficulty,
   type ShareMode,
@@ -27,6 +28,7 @@ import { interpretOrder } from "./orders";
 import { createTeams } from "./spawn";
 import type {
   ChatLine,
+  DeathFx,
   InterpretContext,
   Projectile,
   Tank,
@@ -35,6 +37,7 @@ import type {
 } from "./types";
 
 let wreckSeq = 0;
+let deathFxSeq = 0;
 
 export function createWorld(
   shareMode: ShareMode = CONFIG.shareModeDefault,
@@ -43,22 +46,27 @@ export function createWorld(
 ): WorldState {
   const fog = createFogGrid();
   const seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
-  const tanks = createTeams(seed, gameMode === "ctf", shareMode);
+  const tanks = createTeams(seed, gameMode === "ctf", shareMode, gameMode);
   const controlled =
     tanks.find((t) => t.team === "blue" && t.role === "shooter") ??
     tanks.find((t) => t.team === "blue")!;
 
   wreckSeq = 0;
+  deathFxSeq = 0;
+
+  const density =
+    isMpOffline(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
 
   const world: WorldState = {
     time: 0,
     matchLeft: CONFIG.matchDurationSec,
     shareMode,
     gameMode,
-    walls: buildArena(),
+    walls: buildArena(density),
     tanks,
     projectiles: [],
     wrecks: [],
+    deathFx: [],
     markers: [],
     fogExplored: fog.explored,
     fogCols: fog.cols,
@@ -74,7 +82,18 @@ export function createWorld(
   };
 
   revealHomeTerritory(world);
-  if (gameMode === "tdm") {
+  if (isMpOffline(gameMode)) {
+    pushEvent(
+      world,
+      "Multiplayer · Offline — local/bot TDM. No fog. Wipe the enemy team. Allies hold until ordered.",
+      "sys",
+    );
+    pushChat(
+      world,
+      "Stand by. Multiplayer · Offline. Gunners only — hold until radio orders.",
+      "sys",
+    );
+  } else if (gameMode === "tdm") {
     const fogNote =
       shareMode === "clear"
         ? "No fog — full map and enemies visible."
@@ -172,6 +191,8 @@ function autoSwitchNearest(world: WorldState, from: Tank): void {
 }
 
 export function markWreckAt(world: WorldState, x: number, y: number): boolean {
+  // No wreck / Capture-the-Code debugging in Multiplayer · Offline.
+  if (isMpOffline(world.gameMode)) return false;
   const w = world.wrecks.find(
     (wr) => dist(wr.x, wr.y, x, y) <= CONFIG.wreckMarkClickRadius,
   );
@@ -180,6 +201,13 @@ export function markWreckAt(world: WorldState, x: number, y: number): boolean {
   pushEvent(world, `Marked wreck ${w.label} for debug.`, "sys");
   pushChat(world, `Command: mark wreck ${w.label}.`, "sys");
   return true;
+}
+
+/** Total blink-out duration for mp-offline death VFX. */
+function deathFxDurationSec(): number {
+  const { deathBlinkCount, deathBlinkHalfPeriodSec } = CONFIG.mpOffline;
+  // visible + hidden per blink → 2 half-periods each
+  return deathBlinkCount * 2 * deathBlinkHalfPeriodSec;
 }
 
 export async function sendOrder(
@@ -297,13 +325,21 @@ export function stepWorld(world: WorldState, dt: number, input: InputState): voi
     tank.lastKnownPos = { x: tank.x, y: tank.y };
 
     handleReportIn(world, tank);
-    handleDebug(world, tank, dt);
+    if (!isMpOffline(world.gameMode)) {
+      handleDebug(world, tank, dt);
+    }
   }
 
+  updateDeathFx(world);
   updateProjectiles(world, dt);
   updateVision(world);
   updateSightings(world);
   checkOutcome(world);
+}
+
+function updateDeathFx(world: WorldState): void {
+  const dur = deathFxDurationSec();
+  world.deathFx = world.deathFx.filter((fx) => world.time - fx.startedAt < dur);
 }
 
 function updatePlayer(
@@ -348,9 +384,8 @@ function updatePlayer(
     tank.angle = rotateToward(tank.angle, aim, CONFIG.tankTurnRate * 1.4 * dt);
   }
 
-  // Player can debug / report by standing near marked wreck or with report goal
-  // Also allow player to contribute to debug when near marked wreck standing still
-  if (tank.goal.kind !== "debug") {
+  // Player can debug / report by standing near marked wreck (not in mp-offline)
+  if (!isMpOffline(world.gameMode) && tank.goal.kind !== "debug") {
     const near = world.wrecks.find(
       (w) =>
         w.marked &&
@@ -454,7 +489,11 @@ function applyDamage(
   if (tank.hp <= 0) {
     tank.hp = 0;
     tank.alive = false;
-    spawnWreck(world, tank);
+    if (isMpOffline(world.gameMode)) {
+      spawnDeathFx(world, tank);
+    } else {
+      spawnWreck(world, tank);
+    }
     pushEvent(
       world,
       `${tank.team === "blue" ? "Friendly" : "Enemy"} #${tank.number} destroyed.`,
@@ -465,6 +504,22 @@ function applyDamage(
       if (tank.id === world.controlledId) autoSwitchNearest(world, tank);
     }
   }
+}
+
+/** Blink twice then vanish — no persistent wreck gameplay in mp-offline. */
+function spawnDeathFx(world: WorldState, tank: Tank): void {
+  deathFxSeq++;
+  const fx: DeathFx = {
+    id: `death-${deathFxSeq}`,
+    team: tank.team,
+    tankNumber: tank.number,
+    role: tank.role,
+    x: tank.x,
+    y: tank.y,
+    angle: tank.angle,
+    startedAt: world.time,
+  };
+  world.deathFx.push(fx);
 }
 
 function spawnWreck(world: WorldState, tank: Tank): void {
@@ -570,6 +625,7 @@ function handleReportIn(world: WorldState, tank: Tank): void {
 
 function handleDebug(world: WorldState, tank: Tank, dt: number): void {
   if (!tank.alive) return;
+  if (isMpOffline(world.gameMode)) return;
   if (tank.goal.kind !== "debug" && tank.team === "blue") return;
 
   let wreck: Wreck | undefined;
@@ -732,9 +788,15 @@ function checkOutcome(world: WorldState): void {
     return;
   }
   if (!redAlive) {
-    if (world.gameMode === "tdm") {
+    if (world.gameMode === "tdm" || isMpOffline(world.gameMode)) {
       world.outcome = "win";
-      pushEvent(world, "Enemy company wiped — Team Deathmatch victory.", "warn");
+      pushEvent(
+        world,
+        isMpOffline(world.gameMode)
+          ? "Enemy company wiped — Multiplayer · Offline victory."
+          : "Enemy company wiped — Team Deathmatch victory.",
+        "warn",
+      );
       pushChat(world, "All hostiles down. We win.", "ally");
       return;
     }

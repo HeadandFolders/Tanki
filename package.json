@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 4731",
+    "dev": "vite --host 0.0.0.0 --port 4847",
     "build": "tsc && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 4732",
+    "preview": "vite preview --host 0.0.0.0 --port 4848",
     "eval:orders": "tsx scripts/eval-orders.ts",
     "test": "npm run eval:orders"
   },

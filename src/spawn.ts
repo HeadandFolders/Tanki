@@ -1,10 +1,12 @@
 import {
   CONFIG,
   homeTerritoryBounds,
+  isMpOffline,
+  type GameMode,
   type Role,
   type ShareMode,
 } from "./config";
-import { buildArena, findClearPoint } from "./arena";
+import { buildArena, findClearPoint, type ArenaDensity } from "./arena";
 import type { Goal, Tank, TeamId } from "./types";
 
 function mulberry32(seed: number): () => number {
@@ -21,13 +23,17 @@ export function createTeams(
   seed = Date.now(),
   withCarriers = false,
   shareMode: ShareMode = CONFIG.shareModeDefault,
+  gameMode: GameMode = CONFIG.gameModeDefault,
 ): Tank[] {
   const rng = mulberry32(seed >>> 0);
-  const walls = buildArena();
+  const density: ArenaDensity =
+    isMpOffline(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
+  const walls = buildArena(density);
   const tanks: Tank[] = [];
   const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
   const W = CONFIG.canvasWidth;
   const fogged = shareMode !== "clear";
+  const mpOffline = isMpOffline(gameMode);
 
   const blueHome = homeTerritoryBounds("blue");
   const redHome = homeTerritoryBounds("red");
@@ -42,6 +48,7 @@ export function createTeams(
       rng,
       walls,
       fogged,
+      mpOffline,
     ),
   );
   tanks.push(
@@ -54,6 +61,7 @@ export function createTeams(
       rng,
       walls,
       fogged,
+      mpOffline,
     ),
   );
 
@@ -70,14 +78,23 @@ function defaultBlueGoal(
   preferX: number,
   fogged: boolean,
   rng: () => number,
+  mpOffline: boolean,
 ): Goal {
   const frontY =
     CONFIG.canvasHeight * (1 - CONFIG.homeTerritoryFraction) -
     30 -
     (i % 3) * 24;
 
+  // Multiplayer · Offline: hold spawn until voice/text orders; no patrol/scout.
+  if (mpOffline) {
+    return {
+      kind: "holdPosition",
+      source: "system",
+      params: { x: preferX + (rng() - 0.5) * 40, y: frontY },
+    };
+  }
+
   if (fogged && role === "scout") {
-    // Scouts probe north into fog; report-capable by default path.
     return {
       kind: "scout",
       source: "system",
@@ -88,14 +105,12 @@ function defaultBlueGoal(
     };
   }
   if (fogged && role === "shooter") {
-    // Gunners hold the line until team belief has contacts.
     return {
       kind: "holdPosition",
       source: "system",
       params: { x: preferX + (rng() - 0.5) * 40, y: frontY },
     };
   }
-  // No-fog / clear: push midfield
   return {
     kind: "patrol",
     source: "system",
@@ -117,23 +132,22 @@ function spawnTeam(
   rng: () => number,
   walls: ReturnType<typeof buildArena>,
   fogged: boolean,
+  mpOffline: boolean,
 ): Tank[] {
-  const roles: Role[] = [
-    "scout",
-    "scout",
-    "shooter",
-    "shooter",
-    "shooter",
-    "shooter",
-  ];
-  for (let i = roles.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [roles[i], roles[j]] = [roles[j], roles[i]];
+  // mp-offline: every tank is a standard gunner (no scout/gunner split).
+  const roles: Role[] = mpOffline
+    ? ["shooter", "shooter", "shooter", "shooter", "shooter", "shooter"]
+    : ["scout", "scout", "shooter", "shooter", "shooter", "shooter"];
+  if (!mpOffline) {
+    for (let i = roles.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [roles[i], roles[j]] = [roles[j], roles[i]];
+    }
   }
 
   const out: Tank[] = [];
   for (let i = 0; i < 6; i++) {
-    const role = roles[i];
+    const role = roles[i]!;
     const stats = CONFIG.roles[role];
     const col = i % 3;
     const row = Math.floor(i / 3);
@@ -154,7 +168,7 @@ function spawnTeam(
 
     const goal: Goal =
       team === "blue"
-        ? defaultBlueGoal(role, i, preferX, fogged, rng)
+        ? defaultBlueGoal(role, i, preferX, fogged, rng, mpOffline)
         : { kind: "attackNearest", source: "system" };
 
     out.push({
@@ -184,6 +198,6 @@ function spawnTeam(
 
 function pickCarrier(tanks: Tank[], team: TeamId, rng: () => number): void {
   const teamTanks = tanks.filter((t) => t.team === team);
-  const pick = teamTanks[Math.floor(rng() * teamTanks.length)];
+  const pick = teamTanks[Math.floor(rng() * teamTanks.length)]!;
   pick.isCodeCarrier = true;
 }

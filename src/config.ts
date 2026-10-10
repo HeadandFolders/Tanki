@@ -110,7 +110,7 @@ export const CONFIG = {
     },
     gemini: {
       path: "/llm/gemini/v1beta/models",
-      model: "gemini-2.0-flash",
+      model: "gemini-3.8-flash",
     },
     anthropic: {
       path: "/llm/anthropic/v1/messages",

@@ -69,7 +69,8 @@ export function visionTanksForReveal(
   const controlled = friendlies.find((t) => t.id === world.controlledId);
   if (world.shareMode === "auto") return friendlies;
   if (world.shareMode === "none") return controlled ? [controlled] : [];
-  // report + clear: only controlled lives; others dump on report-in
+  // clear: no fog to reveal. report: only controlled lives; others dump on report-in
+  if (world.shareMode === "clear") return [];
   return controlled ? [controlled] : [];
 }
 

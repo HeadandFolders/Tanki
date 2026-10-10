@@ -28,7 +28,7 @@ export function renderWorld(
   for (const t of world.tanks) {
     if (!t.alive) continue;
     if (t.team === "blue") drawTank(ctx, world, t, true);
-    else if (isEnemyLiveVisible(world, t)) drawTank(ctx, world, t, false);
+    else if (isEnemyVisible(world, t)) drawTank(ctx, world, t, false);
   }
 
   for (const p of world.projectiles) {
@@ -406,7 +406,7 @@ function drawMarkers(ctx: CanvasRenderingContext2D, world: WorldState): void {
 }
 
 function shouldShowWorldPos(world: WorldState, x: number, y: number): boolean {
-  // Clear / no-fog: whole map/terrain visible; hostiles still use vision checks.
+  // Clear / no-fog: everything on the map is visible.
   if (world.shareMode === "clear") return true;
   const cell = CONFIG.fog.cellSize;
   const c = Math.floor(x / cell);
@@ -416,8 +416,9 @@ function shouldShowWorldPos(world: WorldState, x: number, y: number): boolean {
   return isUnderLiveVision(world, x, y);
 }
 
-/** Enemy tanks/bullets — never free in clear mode; still need live eyes. */
+/** Enemy tanks/bullets — fully visible in clear; otherwise need live eyes. */
 function shouldShowHostile(world: WorldState, x: number, y: number): boolean {
+  if (world.shareMode === "clear") return true;
   return isUnderLiveVision(world, x, y);
 }
 
@@ -429,7 +430,6 @@ function isUnderLiveVision(world: WorldState, x: number, y: number): boolean {
 }
 
 function liveVisionViewers(world: WorldState): Tank[] {
-  // clear uses report-style eyes: only the controlled tank for live enemy reveal
   if (world.shareMode === "auto") {
     return world.tanks.filter((t) => t.team === "blue" && t.alive);
   }
@@ -438,7 +438,8 @@ function liveVisionViewers(world: WorldState): Tank[] {
   );
 }
 
-function isEnemyLiveVisible(world: WorldState, enemy: Tank): boolean {
+function isEnemyVisible(world: WorldState, enemy: Tank): boolean {
+  if (world.shareMode === "clear") return true;
   return liveVisionViewers(world).some((v) =>
     canSeeTank(v, enemy, world.walls),
   );

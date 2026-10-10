@@ -67,7 +67,7 @@ export function createWorld(
   if (gameMode === "tdm") {
     const fogNote =
       shareMode === "clear"
-        ? "Map clear (no fog); enemies hidden until spotted."
+        ? "No fog — full map and enemies visible."
         : "Home strip mapped; push north.";
     pushEvent(
       world,
@@ -284,11 +284,15 @@ function updatePlayer(
   }
 
   const aim = angleTo(tank.x, tank.y, input.mouseX, input.mouseY);
-  tank.angle = rotateToward(tank.angle, aim, CONFIG.tankTurnRate * 1.4 * dt);
-
   const wantShoot =
     input.shooting || input.keys.has(" ") || input.keys.has("spacebar");
-  if (wantShoot) tryShoot(world, tank, tank.angle, true);
+  // Snap aim when firing so shots track the cursor; otherwise turn smoothly.
+  if (wantShoot) {
+    tank.angle = aim;
+    tryShoot(world, tank, aim, true);
+  } else {
+    tank.angle = rotateToward(tank.angle, aim, CONFIG.tankTurnRate * 1.4 * dt);
+  }
 
   // Player can debug / report by standing near marked wreck or with report goal
   // Also allow player to contribute to debug when near marked wreck standing still
@@ -467,7 +471,7 @@ function addMarker(
 
 function handleReportIn(world: WorldState, tank: Tank): void {
   if (tank.team !== "blue" || !tank.alive) return;
-  if (world.shareMode !== "report" && world.shareMode !== "clear") return;
+  if (world.shareMode !== "report") return;
   if (tank.id === world.controlledId) return; // controlled already live
   if (tank.goal.kind !== "reportIn" && tank.standStillTimer < 0.5) return;
 
@@ -616,6 +620,9 @@ function updateVision(world: WorldState): void {
 }
 
 function updateSightings(world: WorldState): void {
+  // Clear / no-fog: units are drawn directly — skip drifting enemy markers.
+  if (world.shareMode === "clear") return;
+
   // Live sightings from tanks that contribute vision
   const viewers =
     world.shareMode === "auto"
@@ -639,12 +646,9 @@ function updateSightings(world: WorldState): void {
     }
   }
 
-  // In none/report/clear, others are chat-only — occasional contact lines when AI sees enemies
-  if (
-    world.shareMode === "none" ||
-    world.shareMode === "report" ||
-    world.shareMode === "clear"
-  ) {
+  // Skip contact spam in clear (everyone is already visible).
+  // In none/report, others are chat-only — occasional contact lines when AI sees enemies
+  if (world.shareMode === "none" || world.shareMode === "report") {
     for (const t of world.tanks) {
       if (t.team !== "blue" || !t.alive || t.id === world.controlledId) continue;
       for (const e of world.tanks) {

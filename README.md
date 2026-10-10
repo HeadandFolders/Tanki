@@ -47,7 +47,7 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 
 ## Modes
 
-- **Team Deathmatch No Fog (default)** — wipe the enemy company; full terrain visible, enemies hidden until spotted.
+- **Team Deathmatch No Fog (default)** — wipe the enemy company; full map and enemies visible (no fog).
 - **Team Deathmatch** — same rules with fog share (`report` by default).
 - **Capture the Code** — debug the enemy code-carrier wreck to win (old CTF rules).
 

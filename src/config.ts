@@ -24,8 +24,8 @@ export const CONFIG = {
       debugRate: 0.55,
       canShoot: true,
       damage: 16,
-      fireCooldown: 0.42,
-      projectileSpeed: 360,
+      fireCooldown: 0.22,
+      projectileSpeed: 420,
       projectileLife: 0.85,
       fightRange: 130,
     },
@@ -37,8 +37,8 @@ export const CONFIG = {
       debugRate: 0.18,
       canShoot: true,
       damage: 22,
-      fireCooldown: 0.38,
-      projectileSpeed: 420,
+      fireCooldown: 0.16,
+      projectileSpeed: 480,
       projectileLife: 0.9,
       fightRange: 95,
     },
@@ -54,7 +54,7 @@ export const CONFIG = {
   bulletRadius: 3,
   friendlyFire: false,
 
-  /** No-fog TDM is the playtest default (full terrain; enemies still vision-gated). */
+  /** No-fog TDM is the playtest default (full map + enemies always visible). */
   shareModeDefault: "clear" as ShareMode,
   /** Team Deathmatch is the rules default; CTF = Capture the Code. */
   gameModeDefault: "tdm" as GameMode,
@@ -137,7 +137,7 @@ export function homeTerritoryBounds(team: "blue" | "red"): {
   return { y0: 0, y1: h };
 }
 
-/** Vision/share modes. `clear` = no fog overlay; enemies still vision-gated. */
+/** Vision/share modes. `clear` = no fog; map and enemies always visible. */
 export type ShareMode = "auto" | "report" | "none" | "clear";
 export type GameMode = "tdm" | "ctf";
 /** Mode menu presets shown in the top bar. */

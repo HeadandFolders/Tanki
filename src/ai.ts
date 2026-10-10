@@ -122,23 +122,36 @@ function applyMove(
     CONFIG.tankRadius,
     world.walls,
   );
-  // If blocked straight on, try a sidestep so AI doesn't freeze on walls
-  if (pos.x === tank.x && pos.y === tank.y) {
-    const side = tank.number % 2 === 0 ? 1 : -1;
+  if (pos.x !== tank.x || pos.y !== tank.y) {
+    tank.x = pos.x;
+    tank.y = pos.y;
+    return;
+  }
+  // Blocked — try several slides so bots don't freeze / shiver on corners
+  const side = tank.number % 2 === 0 ? 1 : -1;
+  const attempts: [number, number][] = [
+    [-moveY * side, moveX * side],
+    [moveY * side, -moveX * side],
+    [-moveY * side * 1.2, moveX * side * 1.2],
+    [moveX * 0.35, moveY * 0.35],
+    [-moveX * 0.5, moveY * 0.8],
+    [moveX * 0.8, -moveY * 0.5],
+  ];
+  for (const [ax, ay] of attempts) {
     const alt = tryMove(
       tank.x,
       tank.y,
-      -moveY * side * 0.8,
-      moveX * side * 0.8,
+      ax,
+      ay,
       CONFIG.tankRadius,
       world.walls,
     );
-    tank.x = alt.x;
-    tank.y = alt.y;
-    return;
+    if (alt.x !== tank.x || alt.y !== tank.y) {
+      tank.x = alt.x;
+      tank.y = alt.y;
+      return;
+    }
   }
-  tank.x = pos.x;
-  tank.y = pos.y;
 }
 
 function clampMap(x: number, y: number): { x: number; y: number } {
@@ -256,6 +269,72 @@ function maybeEngageFromBelief(world: WorldState, tank: Tank): void {
     source: "system",
     params: { x: contact.x, y: contact.y },
   };
+}
+
+/**
+ * Cover-me slot: stand toward enemy fire (threat arc), spread across it.
+ * Falls back to a full circle around the VIP when no contacts are known.
+ */
+function escortCoverSlot(
+  world: WorldState,
+  tank: Tank,
+  vip: Tank,
+): { x: number; y: number; faceAngle: number } {
+  const guards = world.tanks
+    .filter(
+      (t) =>
+        t.alive &&
+        t.team === vip.team &&
+        t.id !== vip.id &&
+        t.goal.kind === "escort" &&
+        t.goal.params?.targetTankId === vip.id,
+    )
+    .sort((a, b) => a.number - b.number);
+  const n = Math.max(1, guards.length);
+  let index = guards.findIndex((g) => g.id === tank.id);
+  if (index < 0) index = Math.max(0, tank.number - 1) % n;
+
+  // Threat direction from VIP → enemy cluster (belief + live)
+  let threatX = 0;
+  let threatY = 0;
+  let threatCount = 0;
+  for (const e of knownEnemyTanks(world, vip)) {
+    threatX += e.x;
+    threatY += e.y;
+    threatCount++;
+  }
+  for (const c of world.teamBelief.contacts) {
+    // Weight markers even if tank ref missing
+    if (world.tanks.some((t) => t.id === c.enemyId && t.alive)) continue;
+    threatX += c.x;
+    threatY += c.y;
+    threatCount++;
+  }
+
+  const radius = CONFIG.ai.escortDistance;
+  let faceAngle: number;
+  let slotAngle: number;
+
+  if (threatCount > 0) {
+    const cx = threatX / threatCount;
+    const cy = threatY / threatCount;
+    faceAngle = angleTo(vip.x, vip.y, cx, cy);
+    // Spread bodyguards across an arc facing the threat (not all on one point)
+    const spread = CONFIG.ai.escortArcSpread;
+    const t = n === 1 ? 0.5 : index / (n - 1);
+    slotAngle = faceAngle - spread / 2 + t * spread;
+  } else {
+    // No contacts: ring around VIP so they don't pile south of facing
+    faceAngle = vip.angle;
+    slotAngle = faceAngle + (index / n) * Math.PI * 2 + Math.PI / n;
+  }
+
+  const raw = {
+    x: vip.x + Math.cos(slotAngle) * radius,
+    y: vip.y + Math.sin(slotAngle) * radius,
+  };
+  const clamped = clampMap(raw.x, raw.y);
+  return { x: clamped.x, y: clamped.y, faceAngle };
 }
 
 function friendlyBrain(
@@ -471,22 +550,37 @@ function friendlyBrain(
     const tid = tank.goal.params?.targetTankId;
     const buddy = world.tanks.find((t) => t.id === tid && t.alive);
     if (buddy && buddy.id !== tank.id) {
-      const trailAng = buddy.angle + Math.PI;
-      const slot = CONFIG.ai.escortDistance;
-      const tx = buddy.x + Math.cos(trailAng) * slot;
-      const ty = buddy.y + Math.sin(trailAng) * slot;
+      const slot = escortCoverSlot(world, tank, buddy);
+      const dSlot = dist(tank.x, tank.y, slot.x, slot.y);
       const dBuddy = dist(tank.x, tank.y, buddy.x, buddy.y);
-      const catchup = CONFIG.ai.escortCatchup ?? slot * 2;
-      const sprint = dBuddy > catchup ? 1.2 : dBuddy > slot * 1.35 ? 1.05 : 1;
-      const s = steerTo(tank, tx, ty, speed * sprint, dt, world, {
-        separate: true,
-      });
-      moveX = s.moveX;
-      moveY = s.moveY;
-      aimAngle = nearestLive
-        ? angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y)
-        : buddy.angle;
-      if (nearestLive) wantShoot = true;
+      const catchup = CONFIG.ai.escortCatchup;
+      // On station: hold still (no trail-orbit shiver / pile-up nudge)
+      if (dSlot <= CONFIG.ai.escortSlotRadius) {
+        moveX = 0;
+        moveY = 0;
+      } else {
+        const sprint =
+          dBuddy > catchup ? 1.25 : dSlot > CONFIG.ai.escortDistance ? 1.1 : 1;
+        const s = steerTo(tank, slot.x, slot.y, speed * sprint, dt, world, {
+          separate: true,
+        });
+        moveX = s.moveX;
+        moveY = s.moveY;
+      }
+      // Face threat / fire lane, not the VIP's rear
+      if (nearestLive) {
+        aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
+        wantShoot = true;
+      } else if (nearestKnown) {
+        aimAngle = angleTo(tank.x, tank.y, nearestKnown.x, nearestKnown.y);
+      } else {
+        aimAngle = slot.faceAngle;
+      }
+      tank.angle = rotateToward(
+        tank.angle,
+        aimAngle,
+        CONFIG.tankTurnRate * 2 * dt,
+      );
     } else {
       tank.goal = {
         kind: "patrol",

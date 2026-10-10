@@ -328,7 +328,7 @@ export function interpretOffline(
     params = { targetTankId: vip?.id };
     verb =
       vip?.id === worldState.controlledId
-        ? "covering you — on your six"
+        ? "covering you — facing the threat"
         : `escorting #${vip?.number ?? "?"}`;
   } else if (/\b(attack|engage|hunt|push)\b/.test(lower)) {
     kind = "attackNearest";

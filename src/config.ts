@@ -69,16 +69,20 @@ export const CONFIG = {
     attackAggro: 260,
     /** Only abandon move/spread/hold orders when an enemy is this close. */
     orderThreatRadius: 70,
-    /** Stay close on "cover me" / escort — trail slot behind the VIP. */
-    escortDistance: 44,
+    /** Ring radius for "cover me" / escort slots around the VIP. */
+    escortDistance: 56,
+    /** How wide the threat-facing cover arc is (radians). */
+    escortArcSpread: 1.6,
+    /** Arrival slack — stop micro-nudging once inside this of the cover slot. */
+    escortSlotRadius: 22,
     /** Sprint toward VIP when farther than this. */
-    escortCatchup: 90,
+    escortCatchup: 110,
     retreatHpFraction: 0.32,
     pathStep: 36,
     pushbackChance: 0.12,
     /** Soft separation; keep below seek speed to avoid corner-shiver. */
-    separation: 55,
-    separationRadius: 40,
+    separation: 70,
+    separationRadius: 48,
     patrolRadius: 160,
     kiteRange: 55,
     /** Spacing between tanks sharing one moveTo landmark. */
@@ -138,11 +142,30 @@ export const CONFIG = {
   },
 
   colors: {
-    // Battle City palette
-    playerTeam: "#f0d030",
-    playerScout: "#c8e060",
-    enemyTeam: "#c0c0c8",
-    enemyScout: "#a8b0b8",
+    // Battle City palette — darker friendlies so white # labels pop
+    playerTeam: "#c09010",
+    playerScout: "#6a9020",
+    /** Per-tank body tints (index 0 unused; 1–6) for readable numbers. */
+    playerTankByNumber: [
+      "#000000",
+      "#b8860b", // 1 gold
+      "#c45c12", // 2 burnt orange
+      "#8a6a10", // 3 olive gold
+      "#a04018", // 4 rust
+      "#706018", // 5 drab
+      "#984818", // 6 copper
+    ] as const,
+    playerScoutByNumber: [
+      "#000000",
+      "#5a8820",
+      "#4a7818",
+      "#688828",
+      "#3a6810",
+      "#789030",
+      "#486818",
+    ] as const,
+    enemyTeam: "#909098",
+    enemyScout: "#707078",
     brickLight: "#e07038",
     brickDark: "#a04020",
     brickMortar: "#602010",

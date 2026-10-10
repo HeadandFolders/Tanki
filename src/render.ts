@@ -232,6 +232,18 @@ const TANK_PAT: number[][] = [
   [2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 2, 2, 2],
 ];
 
+function tankBodyColor(t: Tank, friendly: boolean): string {
+  const isScout = t.role === "scout";
+  if (!friendly) {
+    return isScout ? CONFIG.colors.enemyScout : CONFIG.colors.enemyTeam;
+  }
+  const idx = Math.min(6, Math.max(1, t.number));
+  if (isScout) {
+    return CONFIG.colors.playerScoutByNumber[idx] ?? CONFIG.colors.playerScout;
+  }
+  return CONFIG.colors.playerTankByNumber[idx] ?? CONFIG.colors.playerTeam;
+}
+
 function drawTank(
   ctx: CanvasRenderingContext2D,
   world: WorldState,
@@ -239,16 +251,10 @@ function drawTank(
   friendly: boolean,
 ): void {
   const isScout = t.role === "scout";
-  const body = friendly
-    ? isScout
-      ? CONFIG.colors.playerScout
-      : CONFIG.colors.playerTeam
-    : isScout
-      ? CONFIG.colors.enemyScout
-      : CONFIG.colors.enemyTeam;
-  const tread = friendly ? "#a08020" : "#707078";
-  const cabin = friendly ? "#fff8a0" : "#e8e8f0";
-  const barrel = friendly ? "#e8c020" : "#d0d0d8";
+  const body = tankBodyColor(t, friendly);
+  const tread = friendly ? "#4a3810" : "#505058";
+  const cabin = friendly ? "#1a1408" : "#2a2a30";
+  const barrel = friendly ? "#f0e8c0" : "#d0d0d8";
 
   const facing = cardinalAngle(t.angle);
   const scale = CONFIG.spriteScale;
@@ -275,18 +281,25 @@ function drawTank(
   }
   ctx.restore();
 
-  // number
-  ctx.fillStyle = "#000";
-  ctx.font = "bold 10px monospace";
+  // Big high-contrast number on dark cabin (outline then fill)
+  const label = String(t.number);
   ctx.textAlign = "center";
-  ctx.fillText(String(t.number), t.x + 1, t.y + 4);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(String(t.number), t.x, t.y + 3);
+  ctx.textBaseline = "middle";
+  ctx.font = "bold 16px monospace";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#0a0804";
+  ctx.strokeText(label, t.x, t.y + 1);
+  ctx.fillStyle = "#fffef0";
+  ctx.fillText(label, t.x, t.y + 1);
 
   // role tag
-  ctx.fillStyle = isScout ? "#c8e060" : CONFIG.colors.accent;
-  ctx.font = "bold 9px monospace";
-  ctx.fillText(isScout ? "S" : "G", t.x + 14, t.y - 8);
+  ctx.fillStyle = isScout ? "#d8f080" : "#ffe060";
+  ctx.font = "bold 10px monospace";
+  ctx.textBaseline = "alphabetic";
+  ctx.strokeStyle = "#0a0804";
+  ctx.lineWidth = 2;
+  ctx.strokeText(isScout ? "S" : "G", t.x + 15, t.y - 10);
+  ctx.fillText(isScout ? "S" : "G", t.x + 15, t.y - 10);
 
   // HP bar
   const pct = t.hp / t.maxHp;

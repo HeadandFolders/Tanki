@@ -41,7 +41,9 @@ const voiceStatusEl = document.querySelector("#voice-status")!;
 const roundGate = document.querySelector<HTMLElement>("#round-gate")!;
 const llmStatusEl = document.querySelector<HTMLElement>("#llm-status")!;
 const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!;
+const startOfflineBtn = document.querySelector<HTMLButtonElement>("#start-offline")!;
 const recheckLlmBtn = document.querySelector<HTMLButtonElement>("#recheck-llm")!;
+const gateApiKeyInput = document.querySelector<HTMLInputElement>("#gate-api-key")!;
 
 /** Apply Mode-menu preset to the Share select, then return resolved modes. */
 function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
@@ -61,21 +63,38 @@ function currentModes(): { share: ShareMode; mode: GameMode } {
 const boot = applyMenuPreset();
 let world: WorldState = createWorld(boot.share, boot.mode);
 
-// Prefill UI from file/env (password field stays empty for security; status shows source)
+// Prefill placeholders from file/env (password fields stay empty unless user types)
 const bootKey = resolveApiKey("");
+const bootSrc = apiKeySource("");
 if (bootKey) {
-  apiKeyInput.placeholder = `key loaded from ${apiKeySource("")}`;
+  const hint = `key available from ${bootSrc} — paste to override, or Test connection`;
+  apiKeyInput.placeholder = hint;
+  gateApiKeyInput.placeholder = hint;
 }
 
 type GateProbeState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "offline" }
+  | { kind: "need_key" }
   | { kind: "ok"; provider: string; ms: number }
-  | { kind: "fail"; provider?: string; error: string; ms: number };
+  | { kind: "fail"; provider?: string; error: string; ms: number }
+  | { kind: "offline_chosen" };
 
 let gateProbe: GateProbeState = { kind: "idle" };
 let probeSeq = 0;
+
+/** Prefer gate field, then sidebar, then file/env. */
+function gateResolvedKey(): string | undefined {
+  return resolveApiKey(gateApiKeyInput.value || apiKeyInput.value);
+}
+
+function syncKeyFields(from: "gate" | "sidebar"): void {
+  if (from === "gate") {
+    apiKeyInput.value = gateApiKeyInput.value;
+  } else {
+    gateApiKeyInput.value = apiKeyInput.value;
+  }
+}
 
 function providerLabel(p: string): string {
   if (p === "gemini") return "Gemini";
@@ -85,34 +104,37 @@ function providerLabel(p: string): string {
 
 function renderGateStatus(): void {
   llmStatusEl.classList.remove("llm-ok", "llm-off", "llm-checking");
-  startRoundBtn.disabled = gateProbe.kind === "checking";
+  const busy = gateProbe.kind === "checking";
+  recheckLlmBtn.disabled = busy;
+  startOfflineBtn.disabled = busy;
+  // Primary Start only after a successful dummy call
+  startRoundBtn.disabled = gateProbe.kind !== "ok";
 
   if (gateProbe.kind === "checking") {
     llmStatusEl.classList.add("llm-checking");
     llmStatusEl.innerHTML =
-      `<strong>LLM: checking…</strong>` +
-      `<span>Live probe via /llm/* proxy. Start unlocks when this finishes.</span>`;
-    startRoundBtn.textContent = "Wait…";
+      `<strong>Testing connection…</strong>` +
+      `<span>Sending a tiny dummy request through the /llm/* proxy. Please wait.</span>`;
+    startRoundBtn.textContent = "Start";
     return;
   }
 
-  if (gateProbe.kind === "offline") {
+  if (gateProbe.kind === "need_key") {
     llmStatusEl.classList.add("llm-off");
     llmStatusEl.innerHTML =
-      `<strong>LLM: offline (keyword mock)</strong>` +
-      `<span>No API key. Orders use the local parser. Paste a key then Recheck, or Start with mock orders.</span>`;
-    startRoundBtn.textContent = "Start (offline)";
-    startRoundBtn.disabled = false;
+      `<strong>Enter an API key</strong>` +
+      `<span>Paste OpenAI / Gemini / Anthropic key above, then Test connection. Or Play offline for keyword orders.</span>`;
+    startRoundBtn.textContent = "Start";
     return;
   }
 
   if (gateProbe.kind === "ok") {
     llmStatusEl.classList.add("llm-ok");
     llmStatusEl.innerHTML =
-      `<strong>LLM: verified (${gateProbe.provider} · ${gateProbe.ms}ms)</strong>` +
-      `<span>Key works. Radio/typed orders will call the cloud model, then set bot goals.</span>`;
-    startRoundBtn.textContent = "Start";
-    startRoundBtn.disabled = false;
+      `<strong>LLM confirmed (${gateProbe.provider} · ${gateProbe.ms}ms)</strong>` +
+      `<span>Dummy call succeeded. You can Start — radio orders will use this key.</span>`;
+    startRoundBtn.textContent = "Start match";
+    startRoundBtn.focus();
     return;
   }
 
@@ -120,30 +142,39 @@ function renderGateStatus(): void {
     llmStatusEl.classList.add("llm-off");
     const who = gateProbe.provider ? ` · ${gateProbe.provider}` : "";
     llmStatusEl.innerHTML =
-      `<strong>LLM: failed${who} (${gateProbe.ms}ms)</strong>` +
-      `<span>${gateProbe.error}. Start anyway to use keyword parse, or fix the key and Recheck.</span>`;
-    startRoundBtn.textContent = "Start (offline)";
-    startRoundBtn.disabled = false;
+      `<strong>LLM failed${who} (${gateProbe.ms}ms)</strong>` +
+      `<span>${gateProbe.error}. Fix the key and Test again, or Play offline.</span>`;
+    startRoundBtn.textContent = "Start";
     return;
   }
 
-  llmStatusEl.innerHTML = `<strong>LLM: …</strong><span>Preparing probe.</span>`;
+  if (gateProbe.kind === "offline_chosen") {
+    llmStatusEl.classList.add("llm-off");
+    llmStatusEl.innerHTML =
+      `<strong>Offline mode</strong>` +
+      `<span>Keyword parser only — no cloud LLM this match.</span>`;
+    startRoundBtn.textContent = "Start";
+    return;
+  }
+
+  llmStatusEl.innerHTML = `<strong>LLM: …</strong><span>Waiting for a key test.</span>`;
   startRoundBtn.disabled = true;
   startRoundBtn.textContent = "Start";
 }
 
 async function runLlmProbe(): Promise<void> {
   const seq = ++probeSeq;
-  const key = resolveApiKey(apiKeyInput.value);
+  syncKeyFields("gate");
+  const key = gateResolvedKey();
   if (!key) {
-    gateProbe = { kind: "offline" };
+    gateProbe = { kind: "need_key" };
     renderGateStatus();
+    gateApiKeyInput.focus();
     return;
   }
 
   gateProbe = { kind: "checking" };
   renderGateStatus();
-  recheckLlmBtn.disabled = true;
 
   const result: LlmProbeResult = await probeLlmConnection(key);
   if (seq !== probeSeq) return; // stale
@@ -162,13 +193,21 @@ async function runLlmProbe(): Promise<void> {
       ms: result.ms,
     };
   }
-  recheckLlmBtn.disabled = false;
   renderGateStatus();
 }
 
 function showRoundGate(): void {
   roundGate.hidden = false;
-  void runLlmProbe();
+  gateProbe = { kind: "idle" };
+  renderGateStatus();
+  // If file/env already has a key, auto-run the dummy call; else wait for input
+  if (gateResolvedKey()) {
+    void runLlmProbe();
+  } else {
+    gateProbe = { kind: "need_key" };
+    renderGateStatus();
+    gateApiKeyInput.focus();
+  }
 }
 
 function hideRoundGate(): void {
@@ -176,14 +215,29 @@ function hideRoundGate(): void {
   canvas.focus();
 }
 
-function beginRound(): void {
+function beginRound(forceOffline = false): void {
   if (world.outcome !== "ready") return;
   if (gateProbe.kind === "checking") return;
+
+  if (forceOffline) {
+    gateProbe = { kind: "offline_chosen" };
+  }
+
+  // Require verified key unless explicitly playing offline
+  if (gateProbe.kind !== "ok" && gateProbe.kind !== "offline_chosen") {
+    renderGateStatus();
+    if (gateProbe.kind === "need_key" || gateProbe.kind === "idle") {
+      gateApiKeyInput.focus();
+    }
+    return;
+  }
+
+  syncKeyFields("gate");
   startMatch(world);
   const modeNote =
     gateProbe.kind === "ok"
       ? `LLM live (${gateProbe.provider}).`
-      : "Keyword mock orders (no working LLM key).";
+      : "Keyword mock orders (offline).";
   pushEvent(world, `Match started — ${modeNote}`, "warn");
   hideRoundGate();
   flushLogs();
@@ -291,17 +345,35 @@ function restartMatch(fromMenu = false): void {
 
 restartBtn.addEventListener("click", () => restartMatch(false));
 modeSelect.addEventListener("change", () => restartMatch(true));
-startRoundBtn.addEventListener("click", beginRound);
+startRoundBtn.addEventListener("click", () => beginRound(false));
+startOfflineBtn.addEventListener("click", () => beginRound(true));
 recheckLlmBtn.addEventListener("click", () => {
   void runLlmProbe();
 });
-apiKeyInput.addEventListener("change", () => {
-  if (world.outcome === "ready") void runLlmProbe();
+gateApiKeyInput.addEventListener("input", () => {
+  syncKeyFields("gate");
+  if (gateProbe.kind === "ok" || gateProbe.kind === "fail") {
+    gateProbe = { kind: "need_key" };
+    renderGateStatus();
+  }
+});
+gateApiKeyInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    void runLlmProbe();
+  }
+});
+apiKeyInput.addEventListener("input", () => {
+  if (world.outcome === "ready") syncKeyFields("sidebar");
 });
 roundGate.addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" && gateProbe.kind !== "checking") {
+  if (
+    ev.key === "Enter" &&
+    gateProbe.kind === "ok" &&
+    (ev.target as HTMLElement)?.id !== "gate-api-key"
+  ) {
     ev.preventDefault();
-    beginRound();
+    beginRound(false);
   }
 });
 
@@ -319,9 +391,8 @@ async function dispatchOrder(
   if (world.outcome !== "playing") return;
 
   // Cloud LLM only after a successful pre-Start probe — never retry a known-bad key
-  let key =
-    gateProbe.kind === "ok" ? resolveApiKey(apiKeyInput.value) : undefined;
-  const src = apiKeySource(apiKeyInput.value);
+  const key = gateProbe.kind === "ok" ? gateResolvedKey() : undefined;
+  const src = apiKeySource(gateApiKeyInput.value || apiKeyInput.value);
 
   if (via === "voice") {
     orderInput.value = cleaned;

@@ -39,12 +39,27 @@
           <canvas id="game" width="1280" height="800" tabindex="0"></canvas>
           <div id="round-gate" class="round-gate" hidden>
             <div class="round-gate-card">
-              <h2>Round ready</h2>
-              <p class="hint">Match is paused until Start. We verify the LLM key with a live probe first.</p>
+              <h2>Before you deploy</h2>
+              <p class="hint">
+                Enter an LLM API key and run a dummy call. Start unlocks only after the key is verified
+                (or choose offline keyword orders).
+              </p>
+              <label class="gate-key-row">
+                <span class="gate-key-label">LLM API key</span>
+                <input
+                  id="gate-api-key"
+                  type="password"
+                  placeholder="OpenAI sk-… / Gemini AIza… / Anthropic sk-ant-…"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <span class="hint gate-key-hint">Also syncs to the sidebar field. Optional file: src/api-key.local.ts</span>
+              </label>
               <div id="llm-status" class="llm-status" role="status" aria-live="polite"></div>
               <div class="gate-actions">
-                <button id="recheck-llm" type="button">Recheck LLM</button>
+                <button id="recheck-llm" type="button">Test connection</button>
                 <button id="start-round" type="button" disabled>Start</button>
+                <button id="start-offline" type="button" class="gate-offline">Play offline</button>
               </div>
             </div>
           </div>

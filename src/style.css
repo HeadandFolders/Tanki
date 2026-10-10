@@ -91,13 +91,44 @@ body {
 }
 
 .round-gate-card {
-  width: min(420px, 100%);
+  width: min(460px, 100%);
   display: grid;
   gap: 12px;
   padding: 18px 20px;
   border: 1px solid var(--line);
   background: #0c1118;
   box-shadow: 0 0 0 1px #1a1a20;
+}
+
+.gate-key-row {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.gate-key-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#gate-api-key {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  background: #18140c;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+#gate-api-key:focus {
+  outline: 1px solid var(--accent);
+}
+
+.gate-key-hint {
+  font-size: 0.65rem;
 }
 
 .round-gate-card h2 {
@@ -178,6 +209,21 @@ body {
 #start-round:disabled {
   opacity: 0.45;
   cursor: wait;
+}
+
+#start-offline {
+  padding: 8px 12px;
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+#start-offline:hover {
+  border-color: var(--muted);
+  color: var(--ink);
 }
 
 .layout {

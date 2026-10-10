@@ -427,9 +427,23 @@ type LlmProvider = "openai" | "gemini" | "anthropic";
 /** Pick provider from common key prefixes (Gemini / Anthropic / OpenAI). */
 export function detectLlmProvider(apiKey: string): LlmProvider {
   const k = apiKey.trim();
-  if (k.startsWith("AIza")) return "gemini";
+  // Gemini: classic AIza… and new AI Studio auth keys AQ.…
+  if (k.startsWith("AIza") || k.startsWith("AQ.")) return "gemini";
   if (k.startsWith("sk-ant-")) return "anthropic";
+  // OpenAI (sk-…) and unknown → OpenAI-compatible path
   return "openai";
+}
+
+function geminiGenerateUrl(apiKey: string, model: string): string {
+  return `${CONFIG.llm.gemini.path}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+}
+
+/** Gemini accepts classic AIza… and new AQ.… auth keys via query and/or header. */
+function geminiHeaders(apiKey: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-goog-api-key": apiKey,
+  };
 }
 
 export type LlmProbeResult =
@@ -457,11 +471,10 @@ export async function probeLlmConnection(
   try {
     if (provider === "gemini") {
       const model = CONFIG.llm.gemini.model;
-      const url = `${CONFIG.llm.gemini.path}/${model}:generateContent?key=${encodeURIComponent(key)}`;
-      const res = await fetch(url, {
+      const res = await fetch(geminiGenerateUrl(key, model), {
         method: "POST",
         signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
+        headers: geminiHeaders(key),
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: 'Reply with JSON: {"ok":true}' }] }],
           generationConfig: {
@@ -474,7 +487,7 @@ export async function probeLlmConnection(
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new Error(
-          `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+          `Gemini HTTP ${res.status}${body ? `: ${body.slice(0, 160)}` : ""}`,
         );
       }
     } else if (provider === "anthropic") {
@@ -500,6 +513,11 @@ export async function probeLlmConnection(
         );
       }
     } else {
+      if (!key.startsWith("sk-")) {
+        throw new Error(
+          `Key looks like ${key.startsWith("AQ.") ? "Gemini (AQ.…)" : "a non-OpenAI key"} — expected OpenAI sk-…, Gemini AIza…/AQ.…, or Anthropic sk-ant-…`,
+        );
+      }
       const res = await fetch(CONFIG.llm.openai.path, {
         method: "POST",
         signal: controller.signal,
@@ -517,7 +535,7 @@ export async function probeLlmConnection(
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new Error(
-          `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
+          `OpenAI HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`,
         );
       }
     }
@@ -697,11 +715,10 @@ async function fetchLlmJson(
   try {
     if (provider === "gemini") {
       const model = CONFIG.llm.gemini.model;
-      const url = `${CONFIG.llm.gemini.path}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(url, {
+      const res = await fetch(geminiGenerateUrl(apiKey, model), {
         method: "POST",
         signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
+        headers: geminiHeaders(apiKey),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: "user", parts: [{ text: user }] }],

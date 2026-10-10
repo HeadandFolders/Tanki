@@ -1,7 +1,7 @@
 /**
  * ▶ PASTE YOUR API KEY HERE (Gemini / OpenAI / Anthropic)
  *
- * Gemini: AIza… · OpenAI: sk-… · Anthropic: sk-ant-…
+ * Gemini: AQ.… or AIza… · OpenAI: sk-… · Anthropic: sk-ant-…
  * Provider auto-detected from the key prefix.
  * Used by Radio LIVE → STT → LLM → bot goals.
  * Leave empty for offline keyword mock.

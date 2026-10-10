@@ -235,9 +235,12 @@ function friendlyBrain(
   let moveY = 0;
   const goal = tank.goal.kind;
   const orderedMove =
-    goal === "moveTo" || goal === "spreadOut" || goal === "holdPosition";
+    goal === "moveTo" ||
+    goal === "spreadOut" ||
+    goal === "holdPosition" ||
+    goal === "escort";
 
-  // Low HP → fall back, but don't cancel an explicit move/spread/hold order
+  // Low HP → fall back, but don't cancel an explicit move/spread/hold/escort order
   if (
     !orderedMove &&
     tank.hp / tank.maxHp < CONFIG.ai.retreatHpFraction &&
@@ -368,16 +371,23 @@ function friendlyBrain(
   } else if (goal === "escort") {
     const tid = tank.goal.params?.targetTankId;
     const buddy = world.tanks.find((t) => t.id === tid && t.alive);
-    if (buddy) {
-      const ang = angleTo(buddy.x, buddy.y, tank.x, tank.y);
-      const tx = buddy.x + Math.cos(ang) * CONFIG.ai.escortDistance;
-      const ty = buddy.y + Math.sin(ang) * CONFIG.ai.escortDistance;
-      const s = steerTo(tank, tx, ty, speed, dt, world);
+    if (buddy && buddy.id !== tank.id) {
+      // Trail on the VIP's six so we stick close while they drive
+      const trailAng = buddy.angle + Math.PI;
+      const slot = CONFIG.ai.escortDistance;
+      const tx = buddy.x + Math.cos(trailAng) * slot;
+      const ty = buddy.y + Math.sin(trailAng) * slot;
+      const dBuddy = dist(tank.x, tank.y, buddy.x, buddy.y);
+      const catchup = CONFIG.ai.escortCatchup ?? slot * 2;
+      const sprint = dBuddy > catchup ? 1.2 : dBuddy > slot * 1.35 ? 1.05 : 1;
+      const s = steerTo(tank, tx, ty, speed * sprint, dt, world, {
+        separate: true,
+      });
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = nearestEnemy
         ? angleTo(tank.x, tank.y, nearestEnemy.x, nearestEnemy.y)
-        : s.aimAngle;
+        : buddy.angle;
       if (nearestEnemy) wantShoot = true;
     } else {
       tank.goal = { kind: "patrol", params: newPatrolPoint(tank, world) };

@@ -58,6 +58,35 @@ function friendlies(tanks: Tank[]): Tank[] {
   return tanks.filter((t) => t.team === "blue" && t.alive);
 }
 
+/** VIP to escort/cover — "me" = commander, or "cover #N" / "escort tank N". */
+function resolveEscortVip(
+  text: string,
+  tanks: Tank[],
+  controlledId: string,
+): Tank | undefined {
+  const alive = friendlies(tanks);
+  const lower = text.toLowerCase();
+  const controlled = alive.find((t) => t.id === controlledId);
+
+  // "4, cover me" / "follow me" / "guard us" → VIP is the player
+  if (
+    /\b(me|us|myself|commander)\b/.test(lower) ||
+    /\b(cover|follow|protect|guard)\s+me\b/.test(lower)
+  ) {
+    return controlled;
+  }
+
+  // "escort #2" / "cover tank 3" / "protect 1" → that tank is the VIP
+  const vipNum = lower.match(
+    /\b(?:escort|cover|protect|guard|follow)\s+(?:tank\s*)?#?([1-6])\b/,
+  );
+  if (vipNum) {
+    return alive.find((t) => t.number === Number(vipNum[1])) ?? controlled;
+  }
+
+  return controlled;
+}
+
 function resolveTargetsWithControl(
   text: string,
   tanks: Tank[],
@@ -67,14 +96,49 @@ function resolveTargetsWithControl(
   const lower = text.toLowerCase();
   if (/\b(all|everyone|team)\b/.test(lower)) return alive;
 
+  const coverVerb = /\b(escort|cover|protect|follow|guard)\b/.test(lower);
+  const coverMe = coverVerb && /\b(me|us|myself|commander)\b/.test(lower);
+  const vipFromVerb = coverVerb
+    ? lower.match(
+        /\b(?:escort|cover|protect|guard|follow)\s+(?:tank\s*)?#?([1-6])\b/,
+      )
+    : null;
+  const vipNumber = vipFromVerb ? Number(vipFromVerb[1]) : null;
+  const vipId = coverMe
+    ? controlledId
+    : vipNumber != null
+      ? alive.find((t) => t.number === vipNumber)?.id
+      : undefined;
+
   const nums = [...lower.matchAll(/\b(?:tank\s*)?#?([1-6])\b/g)].map((m) =>
     Number(m[1]),
   );
+
+  const withoutVip = (list: Tank[]) =>
+    vipId ? list.filter((t) => t.id !== vipId) : list;
+
+  if (coverVerb) {
+    // Bodyguards = named tanks that are NOT the VIP ("4, cover me" → #4)
+    const bodyguardNums = nums.filter((n) => n !== vipNumber);
+    if (bodyguardNums.length) {
+      return alive.filter((t) => bodyguardNums.includes(t.number));
+    }
+    // "cover 4" with no other addressee → everyone else covers #4
+    if (vipNumber != null && !coverMe) {
+      return withoutVip(alive);
+    }
+  }
+
   if (nums.length) return alive.filter((t) => nums.includes(t.number));
 
-  if (/\bscouts?\b/.test(lower)) return alive.filter((t) => t.role === "scout");
-  if (/\b(shooters?|gunners?)\b/.test(lower))
-    return alive.filter((t) => t.role === "shooter");
+  if (/\bscouts?\b/.test(lower)) {
+    const scouts = alive.filter((t) => t.role === "scout");
+    return coverVerb ? withoutVip(scouts) : scouts;
+  }
+  if (/\b(shooters?|gunners?)\b/.test(lower)) {
+    const guns = alive.filter((t) => t.role === "shooter");
+    return coverVerb ? withoutVip(guns) : guns;
+  }
 
   // Formation / company verbs imply the whole living team when no addressee
   if (
@@ -84,6 +148,9 @@ function resolveTargetsWithControl(
   ) {
     return alive;
   }
+
+  // Bare "cover me" / "follow me" → rest of company sticks to the commander
+  if (coverMe) return withoutVip(alive);
 
   const controlled = alive.find((t) => t.id === controlledId);
   return controlled ? [controlled] : alive.slice(0, 1);
@@ -189,7 +256,7 @@ export function interpretOffline(
   worldState: WorldState,
 ): OrderResult[] {
   const lower = orderText.toLowerCase();
-  const targets = resolveTargetsWithControl(
+  let targets = resolveTargetsWithControl(
     orderText,
     tanks,
     worldState.controlledId,
@@ -236,14 +303,24 @@ export function interpretOffline(
       const w = worldState.wrecks.find((wr) => wr.label === label);
       if (w) params = { wreckId: w.id, x: w.x, y: w.y };
     }
-  } else if (/\b(escort|cover|protect)\b/.test(lower)) {
+  } else if (/\b(escort|cover|protect|follow|guard)\b/.test(lower)) {
     kind = "escort";
-    verb = "escorting";
-    const num = lower.match(/escort\s*(?:tank\s*)?#?([1-6])/);
-    const n = num ? Number(num[1]) : targets[0].number;
-    const escortTarget =
-      friendlies(tanks).find((t) => t.number === n) ?? targets[0];
-    params = { targetTankId: escortTarget.id };
+    const vip =
+      resolveEscortVip(orderText, tanks, worldState.controlledId) ??
+      friendlies(tanks).find((t) => t.id === worldState.controlledId);
+    // Bodyguards must not be the VIP (bug: "4, cover me" used to self-escort)
+    const bodyguards = vip
+      ? targets.filter((t) => t.id !== vip.id)
+      : targets;
+    if (bodyguards.length) targets = bodyguards;
+    else if (vip) {
+      targets = friendlies(tanks).filter((t) => t.id !== vip.id);
+    }
+    params = { targetTankId: vip?.id };
+    verb =
+      vip?.id === worldState.controlledId
+        ? "covering you — on your six"
+        : `escorting #${vip?.number ?? "?"}`;
   } else if (/\b(attack|engage|hunt|push)\b/.test(lower)) {
     kind = "attackNearest";
     verb = "hunting / attacking";
@@ -467,7 +544,8 @@ export async function probeLlmConnection(
 
 const ORDER_SYSTEM = `You are a tank company radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"moveTo|holdPosition|attackNearest|escort|retreat|reportIn|debug|patrol|spreadOut","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
 Goals only from that list. Prefer patrol/spreadOut/attackNearest over freezing on hold. tankId must be living blue tanks. You may loosely reinterpret unclear orders and admit that in chatLine. Keep chat short.
-Map is top-down: x right, y down; origin top-left. When the order names a place (corner, side, north/south/east/west), set goal moveTo with numeric x,y inside the map for EVERY addressed tank. Example corners: bottom-left ≈ (0.1*W, 0.9*H), top-right ≈ (0.9*W, 0.1*H). Always include x and y for moveTo/holdPosition.`;
+Map is top-down: x right, y down; origin top-left. When the order names a place (corner, side, north/south/east/west), set goal moveTo with numeric x,y inside the map for EVERY addressed tank. Example corners: bottom-left ≈ (0.1*W, 0.9*H), top-right ≈ (0.9*W, 0.1*H). Always include x and y for moveTo/holdPosition.
+Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3.`;
 
 function sanitizeOrders(
   orders: OrderResult[],
@@ -490,6 +568,7 @@ function sanitizeOrders(
   ]);
   const spot =
     orderText && world ? landmark(orderText, world) : null;
+  const controlledId = world?.controlledId;
   return orders
     .filter((o) => living.has(o.tankId) && goals.has(o.goal))
     .map((o) => {
@@ -502,6 +581,16 @@ function sanitizeOrders(
       ) {
         params.x = spot.x;
         params.y = spot.y;
+      }
+      // Escort must name a VIP other than the bodyguard; "cover me" → commander
+      if (o.goal === "escort" && world && orderText) {
+        const vip = resolveEscortVip(orderText, tanks, world.controlledId);
+        if (vip && (params.targetTankId == null || params.targetTankId === o.tankId)) {
+          params.targetTankId = vip.id;
+        }
+        if (params.targetTankId === o.tankId && controlledId) {
+          params.targetTankId = controlledId;
+        }
       }
       return {
         tankId: o.tankId,

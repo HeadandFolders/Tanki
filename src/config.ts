@@ -69,7 +69,10 @@ export const CONFIG = {
     attackAggro: 260,
     /** Only abandon move/spread/hold orders when an enemy is this close. */
     orderThreatRadius: 70,
-    escortDistance: 70,
+    /** Stay close on "cover me" / escort — trail slot behind the VIP. */
+    escortDistance: 44,
+    /** Sprint toward VIP when farther than this. */
+    escortCatchup: 90,
     retreatHpFraction: 0.32,
     pathStep: 36,
     pushbackChance: 0.12,

@@ -15,7 +15,11 @@ export interface Goal {
     x?: number;
     y?: number;
     targetTankId?: string;
+    /** Named enemies for "2 and 3 attack 5 and 6". Each attacker hunts the nearest. */
+    targetTankIds?: string[];
     wreckId?: string;
+    /** Stop on this point instead of fanning out or holding short of it. */
+    exact?: boolean;
   };
   /** Default system; set to player when radio/text order applied. */
   source?: GoalSource;
@@ -144,6 +148,8 @@ export interface WorldState {
   /** mp-offline death blink husks (removed after blinks; no wreck gameplay). */
   deathFx: DeathFx[];
   markers: SightingMarker[];
+  /** Commander map marks (hold F and click). One X per team. */
+  playerMarks: Record<TeamId, Vec2 | null>;
   fogExplored: Uint8Array;
   fogCols: number;
   fogRows: number;
@@ -182,4 +188,6 @@ export interface InterpretBundle {
   ms: number;
   /** Set when an LLM attempt failed and results came from offline fallback. */
   llmError?: string;
+  /** Shown when the order was understood but could not be carried out. */
+  notice?: string;
 }

@@ -78,6 +78,7 @@ export function createWorld(
     wrecks: [],
     deathFx: [],
     markers: [],
+    playerMarks: { blue: null, red: null },
     fogExplored: fog.explored,
     fogCols: fog.cols,
     fogRows: fog.rows,
@@ -224,6 +225,26 @@ function autoSwitchNearest(world: WorldState, from: Tank): void {
   switchToTank(world, living[0]!.id, from.team);
 }
 
+/** Drop or move this team's map X. Later clicks replace the previous mark. */
+export function placePlayerMark(
+  world: WorldState,
+  team: "blue" | "red",
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  const pad = 8;
+  const px = Math.min(CONFIG.canvasWidth - pad, Math.max(pad, x));
+  const py = Math.min(CONFIG.canvasHeight - pad, Math.max(pad, y));
+  world.playerMarks[team] = { x: px, y: py };
+  pushEvent(
+    world,
+    `Map mark (${Math.round(px)}, ${Math.round(py)}).`,
+    "sys",
+  );
+  pushChat(world, "Mark set.", "ally");
+  return { x: px, y: py };
+}
+
 export function markWreckAt(world: WorldState, x: number, y: number): boolean {
   // No wreck / Capture-the-Code debugging in Multiplayer · Offline.
   if (isMpRules(world.gameMode)) return false;
@@ -259,6 +280,10 @@ export async function sendOrder(
     ctx,
     team,
   );
+  if (bundle.notice) {
+    pushEvent(world, bundle.notice, "warn");
+    pushChat(world, bundle.notice, "warn");
+  }
   if (bundle.llmError) {
     // Event log only — keep team chat free of API noise
     pushEvent(

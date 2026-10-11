@@ -13,6 +13,7 @@ import {
   createWorld,
   formatTime,
   markWreckAt,
+  placePlayerMark,
   pushEvent,
   sendOrder,
   startMatch,
@@ -29,7 +30,12 @@ import {
   type LlmProbeResult,
   type LlmProviderChoice,
 } from "./orders";
-import { renderWorld } from "./render";
+import {
+  invertArrowKeys,
+  renderWorld,
+  screenToWorld,
+  viewerHomeAtBottom,
+} from "./render";
 import { createVoiceRadio } from "./voice";
 import { NetClient } from "./net/client";
 import type { NetInput, NetTeam } from "./net/protocol";
@@ -208,7 +214,11 @@ const net = new NetClient({
     }
   },
   onPeerOrder: (text) => {
-    void sendOrder(world, text, {}, "red");
+    void sendOrder(world, text, hostLlmContext(), "red");
+  },
+  onPeerMark: (x, y) => {
+    placePlayerMark(world, "red", x, y);
+    flushLogs();
   },
   onLog: (line) => {
     if (world) pushEvent(world, line, "sys");
@@ -590,6 +600,15 @@ function canvasCoords(ev: MouseEvent): { x: number; y: number } {
   return { x, y };
 }
 
+/** Online red's map is drawn rotated; convert the cursor into world space. */
+function pointerWorld(): { x: number; y: number } {
+  return screenToWorld(
+    mouseX,
+    mouseY,
+    viewerHomeAtBottom(world.gameMode, localTeam),
+  );
+}
+
 canvas.addEventListener("mousemove", (ev) => {
   const p = canvasCoords(ev);
   mouseX = p.x;
@@ -603,19 +622,38 @@ canvas.addEventListener("mousedown", (ev) => {
   mouseY = p.y;
 
   if (ev.button === 0) {
+    const worldPt = screenToWorld(
+      p.x,
+      p.y,
+      viewerHomeAtBottom(world.gameMode, localTeam),
+    );
     const friendly = world.tanks.find(
       (t) =>
         t.team === localTeam &&
         t.alive &&
-        Math.hypot(t.x - p.x, t.y - p.y) <= CONFIG.tankRadius + 6,
+        Math.hypot(t.x - worldPt.x, t.y - worldPt.y) <= CONFIG.tankRadius + 6,
     );
+    if (keys.has("f")) {
+      if (world.outcome === "playing" || world.outcome === "countdown") {
+        const placed = placePlayerMark(world, localTeam, worldPt.x, worldPt.y);
+        if (
+          isMpOnline(world.gameMode) &&
+          localTeam === "red" &&
+          net.info.connected
+        ) {
+          net.sendMark(placed.x, placed.y);
+        }
+        flushLogs();
+      }
+      return;
+    }
     if (friendly) {
       if (localTeam === "red") guestControlledNumber = friendly.number;
       switchToTank(world, friendly.id, localTeam);
       refreshRoster();
       return;
     }
-    if (markWreckAt(world, p.x, p.y)) {
+    if (markWreckAt(world, worldPt.x, worldPt.y)) {
       flushLogs();
       return;
     }
@@ -629,9 +667,13 @@ window.addEventListener("mouseup", () => {
 
 window.addEventListener("keydown", (ev) => {
   const tag = (ev.target as HTMLElement)?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
   const k = ev.key === " " ? " " : ev.key.toLowerCase();
+  // F stays tracked while held so a click can drop a mark even if an input had focus.
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+    if (k === "f") keys.add("f");
+    return;
+  }
+
   if (
     k === "arrowup" ||
     k === "arrowdown" ||
@@ -767,6 +809,23 @@ roundGate.addEventListener("keydown", (ev) => {
   }
 });
 
+function hostLlmContext(): {
+  apiKey?: string;
+  provider?: ReturnType<typeof resolveLlmBackend>;
+  model?: string;
+} {
+  const key = gateProbe.kind === "ok" ? gateResolvedKey() : undefined;
+  if (!key) return {};
+  if (liveLlm) {
+    return { apiKey: key, provider: liveLlm.backend, model: liveLlm.model };
+  }
+  return {
+    apiKey: key,
+    provider: resolveLlmBackend(key, gateProviderChoice()),
+    model: gateModelInput.value.trim() || undefined,
+  };
+}
+
 async function dispatchOrder(
   text: string,
   via: "typed" | "voice" | "phrase",
@@ -788,16 +847,7 @@ async function dispatchOrder(
 
   // Cloud LLM only after a successful pre-Start probe — never retry a known-bad key
   const key = gateProbe.kind === "ok" ? gateResolvedKey() : undefined;
-  const llmCtx =
-    key && liveLlm
-      ? { apiKey: key, provider: liveLlm.backend, model: liveLlm.model }
-      : key
-        ? {
-            apiKey: key,
-            provider: resolveLlmBackend(key, gateProviderChoice()),
-            model: gateModelInput.value.trim() || undefined,
-          }
-        : {};
+  const llmCtx = hostLlmContext();
   const src = apiKeySource(gateApiKeyInput.value || apiKeyInput.value);
 
   if (via === "voice") {
@@ -946,12 +996,24 @@ function appendLog(
   el.scrollTop = el.scrollHeight;
 }
 
+/** Control switches name a hull. The other player must not see which one. */
+function revealsEnemyCommander(text: string): boolean {
+  if (localTeam === "blue") return text.startsWith("Remote control →");
+  return (
+    text.startsWith("Control →") || text.includes("continuing last order")
+  );
+}
+
 function flushLogs(): void {
   while (chatCursor < world.chat.length) {
-    appendLog(chatEl, world.chat[chatCursor++]);
+    const line = world.chat[chatCursor++]!;
+    if (revealsEnemyCommander(line.text)) continue;
+    appendLog(chatEl, line);
   }
   while (eventCursor < world.events.length) {
-    appendLog(eventsEl, world.events[eventCursor++]);
+    const line = world.events[eventCursor++]!;
+    if (revealsEnemyCommander(line.text)) continue;
+    appendLog(eventsEl, line);
   }
 }
 
@@ -964,11 +1026,12 @@ function frame(ts: number): void {
   const isHost = online && localTeam === "blue";
 
   if (isGuest && world.outcome === "playing") {
-    // Guest does not simulate — send input, render host snapshots
+    // Guest does not simulate — send world-space input (view is rotated 180°).
+    const aim = pointerWorld();
     const payload: NetInput = {
-      keys: [...keys],
-      mouseX,
-      mouseY,
+      keys: invertArrowKeys(keys),
+      mouseX: aim.x,
+      mouseY: aim.y,
       shooting,
       controlledNumber: guestControlledNumber,
     };
@@ -990,7 +1053,11 @@ function frame(ts: number): void {
     }
   }
 
-  renderWorld(ctx, world, mouseX, mouseY);
+  const aim = pointerWorld();
+  const marking =
+    keys.has("f") &&
+    (world.outcome === "playing" || world.outcome === "countdown");
+  renderWorld(ctx, world, aim.x, aim.y, localTeam, marking);
 
   timerEl.textContent = formatTime(world.matchLeft);
   const me =

@@ -2,13 +2,13 @@ import {
   CONFIG,
   homeTerritoryBounds,
   isMpOffline,
-  isMpOnline,
   isMpRules,
 } from "./config";
 import {
   angleTo,
   circleHitsWall,
   dist,
+  normalizeAngle,
   rotateToward,
   segmentHitsWall,
   tryMove,
@@ -21,7 +21,7 @@ import {
 } from "./belief";
 import { canSeeTank } from "./fog";
 import { COMBAT_LOCKED_GOALS, ORDERED_MOVE_GOALS } from "./goals";
-import type { Goal, Tank, Wall, WorldState, Wreck } from "./types";
+import type { Tank, Wall, WorldState, Wreck } from "./types";
 
 export function updateTankAi(
   world: WorldState,
@@ -46,11 +46,12 @@ export function updateTankAi(
     return { moveX: 0, moveY: 0, wantShoot: false, aimAngle: tank.angle };
   }
 
-  // Online: guest's red bots use the same hold-until-ordered brain as blue.
+  // Multiplayer: every bot holds its spot until a literal order. No push, patrol, or panic.
+  if (isMpRules(world.gameMode)) {
+    return mpOfflineFriendlyBrain(world, tank, dt);
+  }
+
   if (tank.team === "red") {
-    if (isMpOnline(world.gameMode)) {
-      return mpOfflineFriendlyBrain(world, tank, dt);
-    }
     return enemyBrain(world, tank, dt);
   }
   return friendlyBrain(world, tank, dt);
@@ -77,6 +78,11 @@ function isPlayerOrder(tank: Tank): boolean {
   return tank.goal.source === "player";
 }
 
+/** Map-mark orders stop on the X. Other holds keep the looser radius. */
+function arriveRadius(tank: Tank): number {
+  return tank.goal.params?.exact ? 8 : CONFIG.ai.holdRadius;
+}
+
 /** True if a tank-sized body can travel the segment without hitting walls. */
 function pathClear(
   x0: number,
@@ -98,9 +104,47 @@ function pathClear(
   return true;
 }
 
+/** Extra path cost for walking near a living enemy. Finite, so a blocked map still has a route. */
+function hazardExtra(
+  x: number,
+  y: number,
+  hazards: { x: number; y: number }[],
+): number {
+  const radius = 200;
+  let extra = 0;
+  for (const h of hazards) {
+    const d = dist(x, y, h.x, h.y);
+    if (d < radius) extra += 48 * (1 - d / radius);
+  }
+  return extra;
+}
+
+function livingFoes(world: WorldState, tank: Tank): { x: number; y: number }[] {
+  return world.tanks
+    .filter((t) => t.alive && t.team !== tank.team)
+    .map((t) => ({ x: t.x, y: t.y }));
+}
+
+function segmentHazard(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  hazards: { x: number; y: number }[],
+): number {
+  if (!hazards.length) return 0;
+  let sum = 0;
+  const steps = 6;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    sum += hazardExtra(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, hazards);
+  }
+  return sum;
+}
+
 /**
- * Coarse BFS waypoint around walls. Returns the next steer point toward goal
- * (not the full path) so escorts/attacks can route through chokes.
+ * Coarse waypoint around walls. Prefers a longer clear lane over a short
+ * lane that runs through enemies. Returns the next steer point, not the full path.
  */
 function nextWaypointAroundWalls(
   sx: number,
@@ -109,9 +153,15 @@ function nextWaypointAroundWalls(
   gy: number,
   walls: Wall[],
   r: number,
+  hazards: { x: number; y: number }[] = [],
 ): { x: number; y: number } {
   const goal = clampMap(gx, gy);
-  if (pathClear(sx, sy, goal.x, goal.y, walls, r)) return goal;
+  if (
+    pathClear(sx, sy, goal.x, goal.y, walls, r) &&
+    segmentHazard(sx, sy, goal.x, goal.y, hazards) < 1
+  ) {
+    return goal;
+  }
 
   const step = CONFIG.ai.pathStep;
   const pad = CONFIG.tileSize * 3;
@@ -132,21 +182,77 @@ function nextWaypointAroundWalls(
   const maxC = Math.ceil((maxX - minX) / step);
   const maxR = Math.ceil((maxY - minY) / step);
 
-  const walkable = (cx: number, cy: number): boolean => {
-    if (cx < 0 || cy < 0 || cx > maxC || cy > maxR) return false;
-    const p = toWorld(cx, cy);
-    return !circleHitsWall(p.x, p.y, r, walls);
+  // A lane can be open even when the lattice point sits in a wall.
+  // Nudge each cell to a free spot so the short corridor stays on the graph.
+  const resolved = new Map<string, { x: number; y: number } | null>();
+  const nudges: [number, number][] = [
+    [0, 0],
+    [14, 0],
+    [-14, 0],
+    [0, 14],
+    [0, -14],
+    [14, 14],
+    [14, -14],
+    [-14, 14],
+    [-14, -14],
+    [22, 0],
+    [-22, 0],
+    [0, 22],
+    [0, -22],
+  ];
+  const resolveCell = (
+    cx: number,
+    cy: number,
+  ): { x: number; y: number } | null => {
+    if (cx < 0 || cy < 0 || cx > maxC || cy > maxR) return null;
+    const k = key(cx, cy);
+    if (resolved.has(k)) return resolved.get(k) ?? null;
+    const base = toWorld(cx, cy);
+    for (const [ox, oy] of nudges) {
+      const p = clampMap(base.x + ox, base.y + oy);
+      if (!circleHitsWall(p.x, p.y, r * 0.9, walls)) {
+        resolved.set(k, p);
+        return p;
+      }
+    }
+    resolved.set(k, null);
+    return null;
+  };
+  const linked = (
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+  ): boolean => {
+    const body = r * 0.82;
+    if (pathClear(a.x, a.y, b.x, b.y, walls, body)) return true;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len;
+    const py = dx / len;
+    for (const off of [16, -16, 26, -26]) {
+      const ix = mx + px * off;
+      const iy = my + py * off;
+      if (
+        !circleHitsWall(ix, iy, body, walls) &&
+        pathClear(a.x, a.y, ix, iy, walls, body) &&
+        pathClear(ix, iy, b.x, b.y, walls, body)
+      ) {
+        return true;
+      }
+    }
+    return false;
   };
 
-  if (!walkable(end.cx, end.cy)) {
-    // Softened goal: nearest walkable cell near the target
+  if (!resolveCell(end.cx, end.cy)) {
     let best: { cx: number; cy: number; d: number } | null = null;
-    for (let dx = -3; dx <= 3; dx++) {
-      for (let dy = -3; dy <= 3; dy++) {
+    for (let dx = -4; dx <= 4; dx++) {
+      for (let dy = -4; dy <= 4; dy++) {
         const cx = end.cx + dx;
         const cy = end.cy + dy;
-        if (!walkable(cx, cy)) continue;
-        const p = toWorld(cx, cy);
+        const p = resolveCell(cx, cy);
+        if (!p) continue;
         const d = dist(p.x, p.y, goal.x, goal.y);
         if (!best || d < best.d) best = { cx, cy, d };
       }
@@ -159,10 +265,61 @@ function nextWaypointAroundWalls(
     }
   }
 
-  type Node = { cx: number; cy: number };
-  const q: Node[] = [{ cx: start.cx, cy: start.cy }];
-  const came = new Map<string, string | null>();
-  came.set(key(start.cx, start.cy), null);
+  if (!resolveCell(start.cx, start.cy)) {
+    let bestStart: { cx: number; cy: number; d: number } | null = null;
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dy = -3; dy <= 3; dy++) {
+        const cx = start.cx + dx;
+        const cy = start.cy + dy;
+        const p = resolveCell(cx, cy);
+        if (!p) continue;
+        const d = dist(p.x, p.y, sx, sy);
+        if (!bestStart || d < bestStart.d) bestStart = { cx, cy, d };
+      }
+    }
+    if (bestStart) {
+      start.cx = bestStart.cx;
+      start.cy = bestStart.cy;
+    }
+  }
+
+  type Node = { cx: number; cy: number; g: number };
+  const startKey = key(start.cx, start.cy);
+  const q: Node[] = [{ cx: start.cx, cy: start.cy, g: 0 }];
+  const heapPush = (n: Node) => {
+    q.push(n);
+    let i = q.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (q[p]!.g <= q[i]!.g) break;
+      const tmp = q[p]!;
+      q[p] = q[i]!;
+      q[i] = tmp;
+      i = p;
+    }
+  };
+  const heapPop = (): Node => {
+    const top = q[0]!;
+    const last = q.pop()!;
+    if (!q.length) return top;
+    q[0] = last;
+    let i = 0;
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let s = i;
+      if (l < q.length && q[l]!.g < q[s]!.g) s = l;
+      if (r < q.length && q[r]!.g < q[s]!.g) s = r;
+      if (s === i) break;
+      const tmp = q[s]!;
+      q[s] = q[i]!;
+      q[i] = tmp;
+      i = s;
+    }
+    return top;
+  };
+  const best = new Map<string, number>([[startKey, 0]]);
+  const came = new Map<string, string | null>([[startKey, null]]);
   const dirs: [number, number][] = [
     [1, 0],
     [-1, 0],
@@ -174,31 +331,55 @@ function nextWaypointAroundWalls(
     [-1, -1],
   ];
   let found: Node | null = null;
-  const limit = 900;
+  const limit = 4000;
   let visits = 0;
   while (q.length && visits < limit) {
-    const cur = q.shift()!;
+    const cur = heapPop();
     visits++;
+    const ck = key(cur.cx, cur.cy);
+    if (cur.g !== best.get(ck)) continue;
     if (cur.cx === end.cx && cur.cy === end.cy) {
       found = cur;
       break;
     }
-    const from = toWorld(cur.cx, cur.cy);
+    const from = resolveCell(cur.cx, cur.cy);
+    if (!from) continue;
     for (const [dx, dy] of dirs) {
       const nx = cur.cx + dx;
       const ny = cur.cy + dy;
-      const k = key(nx, ny);
-      if (came.has(k) || !walkable(nx, ny)) continue;
-      const to = toWorld(nx, ny);
-      // Require clear step so diagonal doesn't clip corners
-      if (!pathClear(from.x, from.y, to.x, to.y, walls, r * 0.92)) continue;
-      came.set(k, key(cur.cx, cur.cy));
-      q.push({ cx: nx, cy: ny });
+      const to = resolveCell(nx, ny);
+      if (!to || !linked(from, to)) continue;
+      const nk = key(nx, ny);
+      const stepCost = dx !== 0 && dy !== 0 ? 1.414 : 1;
+      const ng = cur.g + stepCost + hazardExtra(to.x, to.y, hazards);
+      if (ng >= (best.get(nk) ?? Infinity)) continue;
+      best.set(nk, ng);
+      came.set(nk, ck);
+      heapPush({ cx: nx, cy: ny, g: ng });
     }
   }
 
   if (!found) {
-    // Fallback: lateral detours when BFS fails
+    // Follow the explored cell closest to the goal instead of cutting across.
+    let bestKey: string | null = null;
+    let bestD = Infinity;
+    for (const k of came.keys()) {
+      const [cx, cy] = k.split(",").map(Number);
+      const p = resolveCell(cx!, cy!);
+      if (!p) continue;
+      const d = dist(p.x, p.y, goal.x, goal.y);
+      if (d < bestD) {
+        bestD = d;
+        bestKey = k;
+      }
+    }
+    if (bestKey && bestKey !== startKey) {
+      const [cx, cy] = bestKey.split(",").map(Number);
+      found = { cx: cx!, cy: cy!, g: best.get(bestKey) ?? 0 };
+    }
+  }
+
+  if (!found) {
     const ang = angleTo(sx, sy, goal.x, goal.y);
     const side = ((Math.round(sx) + Math.round(sy)) % 2 === 0 ? 1 : -1) as 1 | -1;
     for (const distOff of [step, step * 1.6, step * 2.4]) {
@@ -208,7 +389,8 @@ function nextWaypointAroundWalls(
         const p = clampMap(wx, wy);
         if (
           !circleHitsWall(p.x, p.y, r, walls) &&
-          pathClear(sx, sy, p.x, p.y, walls, r)
+          pathClear(sx, sy, p.x, p.y, walls, r) &&
+          segmentHazard(sx, sy, p.x, p.y, hazards) < 1
         ) {
           return p;
         }
@@ -217,8 +399,7 @@ function nextWaypointAroundWalls(
     return goal;
   }
 
-  // Walk back to the step after start
-  const path: Node[] = [];
+  const path: { cx: number; cy: number }[] = [];
   let ck: string | null = key(found.cx, found.cy);
   while (ck) {
     const [cx, cy] = ck.split(",").map(Number);
@@ -226,9 +407,10 @@ function nextWaypointAroundWalls(
     ck = came.get(ck) ?? null;
   }
   path.reverse();
-  // Steer toward a point 1–2 cells ahead (smoother than only the next cell)
-  const look = path[Math.min(2, path.length - 1)] ?? path[path.length - 1]!;
-  return toWorld(look.cx, look.cy);
+  // One cell ahead when skirting enemies, so the shortcut doesn't re-enter them.
+  const ahead = hazards.length ? 1 : 2;
+  const look = path[Math.min(ahead, path.length - 1)] ?? path[path.length - 1]!;
+  return resolveCell(look.cx, look.cy) ?? toWorld(look.cx, look.cy);
 }
 
 function steerTo(
@@ -238,15 +420,20 @@ function steerTo(
   speed: number,
   dt: number,
   world: WorldState,
-  opts: { separate?: boolean } = {},
+  opts: { separate?: boolean; avoid?: { x: number; y: number }[] } = {},
 ): { moveX: number; moveY: number; aimAngle: number } {
   const r = CONFIG.tankRadius;
-  // Reuse a recent waypoint when the goal hasn’t moved much — stops BFS flicker.
+  const avoid = opts.avoid ?? [];
+  const avoidKey = avoid
+    .map((p) => `${Math.round(p.x / 48)},${Math.round(p.y / 48)}`)
+    .join("|");
+  // Reuse a recent waypoint when the goal hasn’t moved much — stops path flicker.
   const cached = steerWpCache.get(tank.id);
   let waypoint: { x: number; y: number };
   if (
     cached &&
     cached.until > world.time &&
+    cached.avoidKey === avoidKey &&
     dist(cached.gx, cached.gy, tx, ty) < 28 &&
     dist(tank.x, tank.y, cached.x, cached.y) > 10
   ) {
@@ -259,6 +446,7 @@ function steerTo(
       ty,
       world.walls,
       r,
+      avoid,
     );
     steerWpCache.set(tank.id, {
       x: waypoint.x,
@@ -266,6 +454,7 @@ function steerTo(
       gx: tx,
       gy: ty,
       until: world.time + 0.22,
+      avoidKey,
     });
   }
   const ang = angleTo(tank.x, tank.y, waypoint.x, waypoint.y);
@@ -470,8 +659,8 @@ function maybeEngageFromBelief(world: WorldState, tank: Tank): void {
 }
 
 /**
- * Cover-me slot: stand toward enemy fire (threat arc), spread across it.
- * Falls back to a full circle around the VIP when no contacts are known.
+ * Cover-me slot: stand in front of the VIP, on the line between the VIP and
+ * the enemies they are aiming at. Never a ring behind the barrel.
  */
 function escortCoverSlot(
   world: WorldState,
@@ -492,122 +681,110 @@ function escortCoverSlot(
   let index = guards.findIndex((g) => g.id === tank.id);
   if (index < 0) index = Math.max(0, tank.number - 1) % n;
 
-  // Threat direction from VIP → enemy cluster (belief + live)
-  let threatX = 0;
-  let threatY = 0;
-  let threatCount = 0;
-  for (const e of knownEnemyTanks(world, vip)) {
-    threatX += e.x;
-    threatY += e.y;
-    threatCount++;
-  }
-  for (const c of world.teamBelief.contacts) {
-    // Weight markers even if tank ref missing
-    if (world.tanks.some((t) => t.id === c.enemyId && t.alive)) continue;
-    threatX += c.x;
-    threatY += c.y;
-    threatCount++;
-  }
+  // No-fog multiplayer: everyone is on the map. Fog modes only use known contacts.
+  const enemies = isMpRules(world.gameMode)
+    ? world.tanks.filter((e) => e.alive && e.team !== vip.team)
+    : knownEnemyTanks(world, vip);
+  const aim = vip.angle;
+  const ahead = enemies.filter((e) => {
+    const bearing = angleTo(vip.x, vip.y, e.x, e.y);
+    return Math.abs(normalizeAngle(bearing - aim)) < (Math.PI * 2) / 3;
+  });
+  const pool = ahead.length ? ahead : [];
+  const threat = pool.length ? nearest(pool, vip.x, vip.y) : null;
+  const faceAngle = threat
+    ? angleTo(vip.x, vip.y, threat.x, threat.y)
+    : aim;
 
-  const radius = CONFIG.ai.escortDistance;
-  let faceAngle: number;
-  let slotAngle: number;
-
-  if (threatCount > 0) {
-    const cx = threatX / threatCount;
-    const cy = threatY / threatCount;
-    faceAngle = angleTo(vip.x, vip.y, cx, cy);
-    // Spread bodyguards across an arc facing the threat (not all on one point)
-    const spread = CONFIG.ai.escortArcSpread;
-    const t = n === 1 ? 0.5 : index / (n - 1);
-    slotAngle = faceAngle - spread / 2 + t * spread;
-  } else {
-    // No contacts: ring around VIP so they don't pile south of facing
-    faceAngle = vip.angle;
-    slotAngle = faceAngle + (index / n) * Math.PI * 2 + Math.PI / n;
+  let radius: number = CONFIG.ai.escortDistance;
+  if (threat) {
+    const d = dist(vip.x, vip.y, threat.x, threat.y);
+    radius = Math.min(110, Math.max(40, d * 0.55));
+    if (radius > d - 26) radius = Math.max(28, d * 0.42);
   }
 
-  const raw = {
-    x: vip.x + Math.cos(slotAngle) * radius,
-    y: vip.y + Math.sin(slotAngle) * radius,
-  };
-  const clamped = clampMap(raw.x, raw.y);
-  return { x: clamped.x, y: clamped.y, faceAngle };
+  const spread = Math.min(CONFIG.ai.escortArcSpread, 1.35);
+  const t = n === 1 ? 0.5 : index / (n - 1);
+  const slotAngle = faceAngle - spread / 2 + t * spread;
+
+  const place = (ang: number, rad: number) =>
+    clampMap(
+      vip.x + Math.cos(ang) * rad,
+      vip.y + Math.sin(ang) * rad,
+    );
+  let raw = place(slotAngle, radius);
+  const nudges = [0, 0.28, -0.28, 0.55, -0.55];
+  const scales = [1, 0.72, 1.2, 0.5];
+  let placed = false;
+  for (const scale of scales) {
+    for (const nudge of nudges) {
+      const p = place(slotAngle + nudge, radius * scale);
+      if (!circleHitsWall(p.x, p.y, CONFIG.tankRadius, world.walls)) {
+        raw = p;
+        placed = true;
+        break;
+      }
+    }
+    if (placed) break;
+  }
+  return { x: raw.x, y: raw.y, faceAngle };
 }
 
-/** Panic commitment clock — prevents frame-flip flee/approach thrash. */
-const panicUntil = new Map<string, number>();
 /** Red AI sticky focus so nearest-of-many blues doesn’t flip every tick. */
 const redFocusUntil = new Map<string, { id: string; until: number }>();
 /** Short-lived steer waypoint cache to calm BFS cell flicker. */
 const steerWpCache = new Map<
   string,
-  { x: number; y: number; gx: number; gy: number; until: number }
+  { x: number; y: number; gx: number; gy: number; until: number; avoidKey: string }
 >();
 
-/**
- * Panic when surrounded (2+ nearby) or under true melee pressure.
- * Player attack/escort only panics when surrounded — otherwise they can’t fight
- * inside fightRange. Hysteresis + commit time stop 1-red thrash.
- */
-function shouldPanicEscape(
-  world: WorldState,
-  tank: Tank,
-  liveEnemies: Tank[],
-): boolean {
-  const {
-    meleePanicRadius,
-    surroundRadius,
-    surroundEnemyCount,
-    panicClearRadius,
-    panicCommitSec,
-  } = CONFIG.mpOffline;
-  const now = world.time;
-  const committed = panicUntil.get(tank.id) ?? 0;
-
-  let near = 0;
-  let melee = false;
-  let anyInsideClear = false;
-  for (const e of liveEnemies) {
-    const d = dist(tank.x, tank.y, e.x, e.y);
-    if (d <= meleePanicRadius) melee = true;
-    if (d <= surroundRadius) near++;
-    if (d <= panicClearRadius) anyInsideClear = true;
-  }
-  const surrounded = near >= surroundEnemyCount;
-
-  if (committed > now) {
-    if (anyInsideClear || surrounded || melee) return true;
-    panicUntil.delete(tank.id);
-    return false;
-  }
-
-  // Any player order: only peel when surrounded (2+). A single last red in
-  // melee must not cancel spread/hold/attack — that caused the 1-red freeze.
-  if (isPlayerOrder(tank)) {
-    if (!surrounded) return false;
-  } else if (!surrounded && !melee) {
-    return false;
-  }
-
-  panicUntil.set(tank.id, now + panicCommitSec);
-  return true;
+function orderedPreyIds(tank: Tank): string[] {
+  if (tank.goal.kind !== "attackNearest") return [];
+  const many = tank.goal.params?.targetTankIds;
+  if (many?.length) return many;
+  const one = tank.goal.params?.targetTankId;
+  return one ? [one] : [];
 }
 
-function fleePoint(tank: Tank, threats: Tank[]): { x: number; y: number } {
-  let ax = 0;
-  let ay = 0;
-  for (const e of threats) {
-    const d = dist(tank.x, tank.y, e.x, e.y) || 1;
-    ax += (tank.x - e.x) / d;
-    ay += (tank.y - e.y) / d;
-  }
-  const mag = Math.hypot(ax, ay) || 1;
-  const distFlee = CONFIG.mpOffline.escapeDistance;
-  return clampMap(
-    tank.x + (ax / mag) * distFlee,
-    tank.y + (ay / mag) * distFlee,
+/** Nearest living enemy among the ones this attack order named. */
+function nearestOrderedPrey(world: WorldState, tank: Tank): Tank | null {
+  const ids = new Set(orderedPreyIds(tank));
+  if (!ids.size) return null;
+  return nearest(
+    world.tanks.filter(
+      (t) => t.alive && t.team !== tank.team && ids.has(t.id),
+    ),
+    tank.x,
+    tank.y,
   );
+}
+
+/** Nearest enemy inside shoot range with a clear shot. Prefer the ordered target. */
+function shotTarget(world: WorldState, tank: Tank): Tank | null {
+  const range = Math.max(
+    CONFIG.roles[tank.role].fightRange,
+    isMpRules(world.gameMode) ? CONFIG.mpOffline.shootRange : 0,
+  );
+  const preferredIds = new Set(orderedPreyIds(tank));
+  let preferred: Tank | null = null;
+  let preferredD = Infinity;
+  let closest: Tank | null = null;
+  let closestD = range;
+  for (const e of world.tanks) {
+    if (!e.alive || e.team === tank.team) continue;
+    const d = dist(tank.x, tank.y, e.x, e.y);
+    if (d > range) continue;
+    if (segmentHitsWall(tank.x, tank.y, e.x, e.y, world.walls)) continue;
+    if (preferredIds.has(e.id) && d < preferredD) {
+      preferred = e;
+      preferredD = d;
+    }
+    if (d < closestD) {
+      closestD = d;
+      closest = e;
+    }
+  }
+  return preferred ?? closest;
 }
 
 function stickyFocus(
@@ -631,10 +808,9 @@ function stickyFocus(
 }
 
 /**
- * Multiplayer · Offline teammate AI:
- * - Default hold until voice/text orders (no autonomous patrol/scout)
- * - Shoot while holding if enemy in range + LOS
- * - Panic escape when surrounded / under close attack, then resume hold/last order
+ * Multiplayer bot AI (offline and online):
+ * - Hold the current spot until a player order says otherwise
+ * - Shoot in place if an enemy is in range; do not chase, flee, or patrol
  */
 function mpOfflineFriendlyBrain(
   world: WorldState,
@@ -666,36 +842,7 @@ function mpOfflineFriendlyBrain(
   let moveX = 0;
   let moveY = 0;
 
-  // Panic escape: flee without waiting for orders, then resume last goal.
-  // Hysteresis + surround/melee gates stop 1-red fight-range thrash.
-  if (nearestLive && shouldPanicEscape(world, tank, liveEnemies)) {
-    const resume: Goal = {
-      kind: tank.goal.kind,
-      params: { ...tank.goal.params },
-      source: tank.goal.source,
-    };
-    const flee = fleePoint(tank, liveEnemies);
-    const s = steerTo(tank, flee.x, flee.y, speed * 1.15, dt, world, {
-      separate: false,
-    });
-    moveX = s.moveX;
-    moveY = s.moveY;
-    aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
-    wantShoot = true;
-    applyMove(tank, moveX, moveY, world);
-    // Keep ordered goals; after clear, hold/move resumes naturally next frames.
-    if (!isPlayerOrder(tank) && resume.kind === "holdPosition") {
-      // Snap hold station to post-escape spot once threat clears (below).
-      tank.goal = {
-        kind: "holdPosition",
-        source: "system",
-        params: { x: flee.x, y: flee.y },
-      };
-    }
-    return { moveX, moveY, wantShoot, aimAngle };
-  }
-
-  // Shoot-while-holding (and while executing any order): fire if hittable.
+  // Shoot in place. Movement comes only from the current order.
   if (nearestLive) {
     aimAngle = angleTo(tank.x, tank.y, nearestLive.x, nearestLive.y);
     tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * 2 * dt);
@@ -707,8 +854,11 @@ function mpOfflineFriendlyBrain(
   if (activeGoal === "holdPosition") {
     const hx = tank.goal.params?.x ?? tank.x;
     const hy = tank.goal.params?.y ?? tank.y;
-    if (dist(tank.x, tank.y, hx, hy) > CONFIG.ai.holdRadius) {
-      const s = steerTo(tank, hx, hy, speed, dt, world, { separate: true });
+    if (dist(tank.x, tank.y, hx, hy) > arriveRadius(tank)) {
+      const s = steerTo(tank, hx, hy, speed, dt, world, {
+        separate: false,
+        avoid: livingFoes(world, tank),
+      });
       moveX = s.moveX;
       moveY = s.moveY;
       if (!nearestLive) aimAngle = s.aimAngle;
@@ -716,14 +866,18 @@ function mpOfflineFriendlyBrain(
   } else if (activeGoal === "moveTo") {
     const tx = tank.goal.params?.x ?? tank.x;
     const ty = tank.goal.params?.y ?? tank.y;
-    if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
+    const exact = tank.goal.params?.exact === true;
+    if (dist(tank.x, tank.y, tx, ty) < arriveRadius(tank)) {
       tank.goal = {
         kind: "holdPosition",
-        params: { x: tx, y: ty },
+        params: { x: tx, y: ty, exact },
         source: tank.goal.source ?? "system",
       };
     } else {
-      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: true });
+      const s = steerTo(tank, tx, ty, speed, dt, world, {
+        separate: !exact,
+        avoid: livingFoes(world, tank),
+      });
       moveX = s.moveX;
       moveY = s.moveY;
       if (!nearestLive) aimAngle = s.aimAngle;
@@ -760,7 +914,7 @@ function mpOfflineFriendlyBrain(
               ? 1.1
               : 1;
         const s = steerTo(tank, slot.x, slot.y, speed * sprint, dt, world, {
-          separate: true,
+          separate: false,
         });
         moveX = s.moveX;
         moveY = s.moveY;
@@ -775,13 +929,7 @@ function mpOfflineFriendlyBrain(
     }
   } else if (activeGoal === "attackNearest" && isPlayerOrder(tank)) {
     // Player-ordered attack: close distance even without LOS; shoot when hittable.
-    const specificId = tank.goal.params?.targetTankId;
-    const specific =
-      specificId != null
-        ? world.tanks.find(
-            (t) => t.id === specificId && t.alive && t.team !== tank.team,
-          )
-        : null;
+    const specific = nearestOrderedPrey(world, tank);
     const hunt =
       specific ??
       nearestLive ??
@@ -794,28 +942,23 @@ function mpOfflineFriendlyBrain(
       const seesHunt = canSeeTank(tank, hunt, world.walls);
       const dHunt = dist(tank.x, tank.y, hunt.x, hunt.y);
       const fightRange = CONFIG.roles[tank.role].fightRange;
-      // Distance-gated (not LOS-gated) so wall-corner LOS flicker can’t
-      // flip approach ↔ combat every frame when one red remains.
-      if (dHunt <= fightRange + 36) {
+      const avoid = world.tanks
+        .filter(
+          (t) => t.alive && t.team !== tank.team && t.id !== hunt.id,
+        )
+        .map((t) => ({ x: t.x, y: t.y }));
+      // Stop and shoot only when the shot line is actually clear.
+      // A short Euclidean distance through a wall is not "in range".
+      if (seesHunt && dHunt <= fightRange) {
         const fight = combatManeuver(world, tank, hunt, speed, dt);
         moveX = fight.moveX;
         moveY = fight.moveY;
-        wantShoot = seesHunt;
-        aimAngle = seesHunt
-          ? fight.aimAngle
-          : angleTo(tank.x, tank.y, hunt.x, hunt.y);
+        wantShoot = true;
+        aimAngle = fight.aimAngle;
       } else {
-        // Approach on a clear per-tank ring slot (fallback to hunt pos)
-        const slotAng = ((tank.number - 1) / 6) * Math.PI * 2;
-        const slotR = Math.min(fightRange * 0.8, 64);
-        let ax = hunt.x + Math.cos(slotAng) * slotR;
-        let ay = hunt.y + Math.sin(slotAng) * slotR;
-        if (circleHitsWall(ax, ay, CONFIG.tankRadius, world.walls)) {
-          ax = hunt.x;
-          ay = hunt.y;
-        }
-        const s = steerTo(tank, ax, ay, speed, dt, world, {
-          separate: dHunt > 180,
+        const s = steerTo(tank, hunt.x, hunt.y, speed, dt, world, {
+          separate: false,
+          avoid,
         });
         moveX = s.moveX;
         moveY = s.moveY;
@@ -851,6 +994,17 @@ function mpOfflineFriendlyBrain(
         y: tank.goal.params?.y ?? tank.y,
       },
     };
+  }
+
+  const shot = shotTarget(world, tank);
+  if (shot) {
+    wantShoot = true;
+    aimAngle = angleTo(tank.x, tank.y, shot.x, shot.y);
+    tank.angle = rotateToward(
+      tank.angle,
+      aimAngle,
+      CONFIG.tankTurnRate * 2.6 * dt,
+    );
   }
 
   applyMove(tank, moveX, moveY, world);
@@ -926,13 +1080,7 @@ function friendlyBrain(
   const activeGoal = tank.goal.kind;
 
   if (activeGoal === "attackNearest") {
-    const specificId = tank.goal.params?.targetTankId;
-    const specific =
-      specificId != null
-        ? world.tanks.find(
-            (t) => t.id === specificId && t.alive && t.team !== tank.team,
-          )
-        : null;
+    const specific = nearestOrderedPrey(world, tank);
     const focus = specific ?? nearestLive ?? nearestKnown;
     if (specific && canSeeTank(tank, specific, world.walls)) {
       const fight = combatManeuver(world, tank, specific, speed, dt);
@@ -966,7 +1114,11 @@ function friendlyBrain(
         tank.goal = {
           kind: "attackNearest",
           source: tank.goal.source ?? "system",
-          params: { ...p, targetTankId: tank.goal.params?.targetTankId },
+          params: {
+            ...p,
+            targetTankId: tank.goal.params?.targetTankId,
+            targetTankIds: tank.goal.params?.targetTankIds,
+          },
         };
       }
       const s = steerTo(
@@ -984,8 +1136,10 @@ function friendlyBrain(
   } else if (activeGoal === "holdPosition") {
     const hx = tank.goal.params?.x ?? tank.x;
     const hy = tank.goal.params?.y ?? tank.y;
-    if (dist(tank.x, tank.y, hx, hy) > CONFIG.ai.holdRadius) {
-      const s = steerTo(tank, hx, hy, speed, dt, world, { separate: true });
+    if (dist(tank.x, tank.y, hx, hy) > arriveRadius(tank)) {
+      const s = steerTo(tank, hx, hy, speed, dt, world, {
+        separate: tank.goal.params?.exact !== true,
+      });
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;
@@ -996,16 +1150,17 @@ function friendlyBrain(
   } else if (activeGoal === "moveTo") {
     const tx = tank.goal.params?.x ?? tank.x;
     const ty = tank.goal.params?.y ?? tank.y;
-    if (dist(tank.x, tank.y, tx, ty) < CONFIG.ai.holdRadius) {
+    const exact = tank.goal.params?.exact === true;
+    if (dist(tank.x, tank.y, tx, ty) < arriveRadius(tank)) {
       tank.goal = {
         kind: "holdPosition",
-        params: { x: tx, y: ty },
+        params: { x: tx, y: ty, exact },
         source: tank.goal.source ?? "system",
       };
       moveX = 0;
       moveY = 0;
     } else {
-      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: true });
+      const s = steerTo(tank, tx, ty, speed, dt, world, { separate: !exact });
       moveX = s.moveX;
       moveY = s.moveY;
       aimAngle = s.aimAngle;

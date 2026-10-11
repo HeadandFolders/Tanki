@@ -23,6 +23,7 @@ export interface NetClientHandlers {
   onState: (state: NetStateSnap) => void;
   onPeerInput: (input: NetInput) => void;
   onPeerOrder: (text: string) => void;
+  onPeerMark: (x: number, y: number) => void;
   onLog?: (line: string) => void;
 }
 
@@ -124,6 +125,10 @@ export class NetClient {
     this.send({ type: "order", text });
   }
 
+  sendMark(x: number, y: number): void {
+    this.send({ type: "mark", x, y });
+  }
+
   sendState(state: NetStateSnap): void {
     this.send({ type: "state", state });
   }
@@ -173,6 +178,9 @@ export class NetClient {
         break;
       case "peer-order":
         this.handlers.onPeerOrder(msg.text);
+        break;
+      case "peer-mark":
+        this.handlers.onPeerMark(msg.x, msg.y);
         break;
       case "error":
         this.handlers.onStatus({ kind: "error", message: msg.message });

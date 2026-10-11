@@ -167,7 +167,11 @@ function spawnTeam(
     const angle = team === "blue" ? -Math.PI / 2 : Math.PI / 2;
 
     const goal: Goal = mpRules
-      ? defaultBlueGoal(role, i, preferX, fogged, rng, true)
+      ? {
+          kind: "holdPosition",
+          source: "system",
+          params: { x: pos.x, y: pos.y },
+        }
       : team === "blue"
         ? defaultBlueGoal(role, i, preferX, fogged, rng, false)
         : { kind: "attackNearest", source: "system" };

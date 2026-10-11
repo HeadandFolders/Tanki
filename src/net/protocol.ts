@@ -66,6 +66,7 @@ export type ClientMsg =
   | { type: "hello"; role: NetRole; room: string; name?: string }
   | { type: "input"; input: NetInput }
   | { type: "order"; text: string }
+  | { type: "mark"; x: number; y: number }
   | { type: "ready" }
   | { type: "start" }
   | { type: "state"; state: NetStateSnap }
@@ -91,6 +92,7 @@ export type ServerMsg =
   | { type: "state"; state: NetStateSnap }
   | { type: "peer-input"; input: NetInput }
   | { type: "peer-order"; text: string }
+  | { type: "peer-mark"; x: number; y: number }
   | { type: "error"; message: string }
   | { type: "pong"; t: number };
 

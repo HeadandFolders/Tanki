@@ -1,4 +1,4 @@
-import { CONFIG } from "./config";
+import { CONFIG, isMpRules } from "./config";
 import { goalKindsForPrompt, isGoalKind } from "./goals";
 import type {
   GoalKind,
@@ -25,17 +25,27 @@ export async function interpretOrder(
   ctx: InterpretContext = {},
   team: TeamId = "blue",
 ): Promise<InterpretBundle> {
-  const text = orderText.trim();
+  const text = normalizeSpokenNumbers(orderText.trim());
   const t0 = performance.now();
   if (!text) return { results: [], source: "mock", ms: 0 };
 
-  // LLM path is blue-host only for now; red guest uses offline keyword parse.
-  if (ctx.apiKey && team === "blue") {
+  const marked = ordersForPlayerMark(text, tanks, worldState, team);
+  if (marked) {
+    return {
+      results: marked.orders,
+      source: "mock",
+      ms: Math.round(performance.now() - t0),
+      notice: marked.notice,
+    };
+  }
+
+  // Both teams: the host interprets with the LLM when a key is present.
+  if (ctx.apiKey) {
     try {
-      const llm = await interpretWithLlm(text, tanks, worldState, ctx);
+      const llm = await interpretWithLlm(text, tanks, worldState, ctx, team);
       if (llm.length) {
         return {
-          results: llm,
+          results: lockNamedAttack(text, llm, tanks, team),
           source: "llm",
           ms: Math.round(performance.now() - t0),
         };
@@ -45,7 +55,12 @@ export async function interpretOrder(
       const msg = /401|invalid.?api.?key|incorrect api key/i.test(raw)
         ? `invalid API key (${raw})`
         : raw;
-      const fallback = interpretOffline(text, tanks, worldState, team);
+      const fallback = lockNamedAttack(
+        text,
+        interpretOffline(text, tanks, worldState, team),
+        tanks,
+        team,
+      );
       return {
         results: fallback,
         source: "mock",
@@ -56,9 +71,164 @@ export async function interpretOrder(
   }
 
   return {
-    results: interpretOffline(text, tanks, worldState, team),
+    results: lockNamedAttack(
+      text,
+      interpretOffline(text, tanks, worldState, team),
+      tanks,
+      team,
+    ),
     source: "mock",
     ms: Math.round(performance.now() - t0),
+  };
+}
+
+/**
+ * "3 and 4 attack 2" names allies before the verb and the enemy after it.
+ * Drop anyone else so a tank that already has a job is not retasked, and
+ * do not treat the enemy number as another friendly addressee.
+ */
+/** "2 and 3 attack 5" is pure. "2 move south and shoot at will" is not. */
+function orderIsPureAttack(text: string): boolean {
+  const lower = normalizeSpokenNumbers(text).toLowerCase();
+  if (!/\b(attack|engage|hunt)\b/.test(lower)) return false;
+  if (
+    /\b(move|go|head|take|flank|cover|escort|follow|hold|retreat|south|north|east|west|left|right)\b/.test(
+      lower,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function lockNamedAttack(
+  orderText: string,
+  results: OrderResult[],
+  tanks: Tank[],
+  team: TeamId,
+): OrderResult[] {
+  // A successful LLM reading of a compound order must not be replaced by attack-only.
+  if (!orderIsPureAttack(orderText)) return results;
+  const targeted = parseTargetedEnemyAttack(orderText);
+  if (!targeted) return results;
+  if (!targeted.allyNumbers.length && !targeted.allAllies) return results;
+  const allies =
+    targeted.allyNumbers.length > 0
+      ? friendlies(tanks, team).filter((t) =>
+          targeted.allyNumbers.includes(t.number),
+        )
+      : friendlies(tanks, team);
+  if (!allies.length) return results;
+  const { params, verb } = attackTargetParams(targeted, tanks, team);
+  return allies.map((t) => ({
+    tankId: t.id,
+    goal: "attackNearest",
+    params,
+    chatLine: `#${t.number}: ${verb}.`,
+  }));
+}
+
+const SPOKEN_NUMBERS: Record<string, string> = {
+  one: "1",
+  two: "2",
+  three: "3",
+  four: "4",
+  five: "5",
+  six: "6",
+};
+
+/** "two and three attack five" / "4 shoot 2" → digits and an attack verb. */
+export function normalizeSpokenNumbers(text: string): string {
+  const numbered = text.replace(
+    /\b(one|two|three|four|five|six)\b/gi,
+    (word) => SPOKEN_NUMBERS[word.toLowerCase()] ?? word,
+  );
+  return numbered.replace(
+    /\b(?:shoot|fire)\s+(?:at\s+)?(?=(?:the\s+)?(?:enemy\s+)?(?:tanks?\s*)?#?[1-6]\b)/gi,
+    "attack ",
+  );
+}
+
+const TANK_NUMBER_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+};
+
+/** Hull numbers 1–6, with or without a leading "#", or spoken as words. */
+function tankNumbersIn(text: string): number[] {
+  const nums: number[] = [];
+  const re = /(?:#|\b)([1-6])\b|\b(one|two|three|four|five|six)\b/g;
+  for (const m of text.matchAll(re)) {
+    if (m[1]) nums.push(Number(m[1]));
+    else if (m[2]) nums.push(TANK_NUMBER_WORDS[m[2]]!);
+  }
+  return nums;
+}
+
+/**
+ * "3 move to the mark" / "tanks #1 and #5 move to the mark".
+ * Numbers (or number-words) before the verb are the only addressees.
+ */
+export function parseMoveToMark(text: string): {
+  allyNumbers: number[];
+  allAllies: boolean;
+} | null {
+  const lower = text.toLowerCase();
+  if (/\bwreck\b/.test(lower)) return null;
+  const verbAt = lower.search(/\b(?:move|go|head|advance|get)\b/);
+  if (verbAt < 0) return null;
+  const afterVerb = lower.slice(verbAt);
+  if (!/\bmark\b/.test(afterVerb)) return null;
+  const afterMark = afterVerb.split(/\bmark\b/).slice(1).join(" ");
+  if (
+    /\b(hold|attack|engage|hunt|retreat|scout|cover|escort|spread|patrol)\b/.test(
+      afterMark,
+    )
+  ) {
+    return null;
+  }
+  const before = lower.slice(0, verbAt);
+  const allyNumbers = [...new Set(tankNumbersIn(before))];
+  const allAllies = /\b(all|everyone|team|tanks)\b/.test(before);
+  return { allyNumbers, allAllies };
+}
+
+function ordersForPlayerMark(
+  orderText: string,
+  tanks: Tank[],
+  world: WorldState,
+  team: TeamId,
+): { orders: OrderResult[]; notice?: string } | null {
+  const req = parseMoveToMark(orderText);
+  if (!req) return null;
+  const mark = world.playerMarks[team];
+  if (!mark) {
+    return {
+      orders: [],
+      notice: "No map mark — hold F and click the map.",
+    };
+  }
+  const alive = friendlies(tanks, team);
+  let targets: Tank[];
+  if (req.allyNumbers.length) {
+    targets = alive.filter((t) => req.allyNumbers.includes(t.number));
+  } else if (req.allAllies) {
+    targets = alive;
+  } else {
+    const cmd = alive.find((t) => t.id === commanderId(world, team));
+    targets = cmd ? [cmd] : alive.slice(0, 1);
+  }
+  return {
+    orders: targets.map((t) => ({
+      tankId: t.id,
+      goal: "moveTo" as const,
+      params: { x: mark.x, y: mark.y, exact: true },
+      chatLine: `#${t.number}: ack, moving to the mark.`,
+    })),
   };
 }
 
@@ -101,34 +271,64 @@ function resolveEscortVip(
 }
 
 /**
- * "3, attack enemy tank #2" / "all attack enemy #5" / "4 attack #1" (with enemy/#).
- * Ally numbers are taken only from the prefix before the attack verb so the
- * enemy tank number is not treated as a blue addressee.
+ * "3 and 4 attack 2" / "3, attack enemy tank #2" / "all attack enemy #5".
+ * Numbers before the verb are allies. The number after the verb is the enemy,
+ * even without the word "enemy" or a "#", so that enemy number is not ordered.
  */
 export function parseTargetedEnemyAttack(text: string): {
   allyNumbers: number[];
-  enemyNumber: number;
+  enemyNumbers: number[];
   allAllies: boolean;
 } | null {
   const lower = text.toLowerCase();
   const attackAt = lower.search(/\b(?:attack|engage|hunt)\b/);
   if (attackAt < 0) return null;
   const after = lower.slice(attackAt);
-  // Require "enemy" and/or "#" so bare "all attack" stays untargeted.
-  const m = after.match(
-    /\b(?:attack|engage|hunt)\s+(?:the\s+)?(?:enemy\s+)?(?:tank\s*)?(#)?([1-6])\b/,
-  );
-  if (!m) return null;
-  const hasEnemyWord = /\benemy\b/.test(after);
-  const hasHash = m[1] === "#";
-  if (!hasEnemyWord && !hasHash) return null;
-  const enemyNumber = Number(m[2]);
+  const enemyNumbers = [
+    ...new Set(
+      tankNumbersIn(after.replace(/^(?:attack|engage|hunt)\b/, "")),
+    ),
+  ];
+  if (!enemyNumbers.length) return null;
   const before = lower.slice(0, attackAt);
-  const allAllies = /\b(all|everyone|team)\b/.test(lower);
-  const allyNumbers = [
-    ...before.matchAll(/\b(?:tank\s*)?#?([1-6])\b/g),
-  ].map((x) => Number(x[1]));
-  return { allyNumbers, enemyNumber, allAllies };
+  const allAllies = /\b(all|everyone|team)\b/.test(before);
+  // "#" is not a word character, so \b does not sit in front of "#3".
+  // "Tanks #3 and #4" must still name those allies and nobody else.
+  const allyNumbers = [...new Set(tankNumbersIn(before))];
+  const hasEnemyWord = /\benemy\b/.test(after);
+  const hasHash = /#[1-6]/.test(after);
+  // "all attack" has no trailing number and stays untargeted. A bare "attack 2"
+  // with no named attackers also stays untargeted. "3 and 4 attack 2" does not.
+  if (!hasEnemyWord && !hasHash && allyNumbers.length === 0 && !allAllies) {
+    return null;
+  }
+  return { allyNumbers, enemyNumbers, allAllies };
+}
+
+function attackTargetParams(
+  targeted: { enemyNumbers: number[] },
+  tanks: Tank[],
+  team: TeamId,
+): { params: OrderResult["params"]; verb: string } {
+  const ids = targeted.enemyNumbers
+    .map(
+      (n) => foes(tanks, team).find((t) => t.alive && t.number === n)?.id,
+    )
+    .filter((id): id is string => id != null);
+  const listed = targeted.enemyNumbers.map((n) => `#${n}`).join(" and ");
+  if (ids.length > 1) {
+    return {
+      params: { targetTankId: ids[0], targetTankIds: ids },
+      verb: `engaging enemies ${listed}`,
+    };
+  }
+  if (ids.length === 1) {
+    return {
+      params: { targetTankId: ids[0] },
+      verb: `engaging enemy ${listed}`,
+    };
+  }
+  return { params: {}, verb: `hunting enemies ${listed}` };
 }
 
 function resolveTargetsWithControl(
@@ -165,9 +365,7 @@ function resolveTargetsWithControl(
       ? alive.find((t) => t.number === vipNumber)?.id
       : undefined;
 
-  const nums = [...lower.matchAll(/\b(?:tank\s*)?#?([1-6])\b/g)].map((m) =>
-    Number(m[1]),
-  );
+  const nums = tankNumbersIn(lower);
 
   const withoutVip = (list: Tank[]) =>
     vipId ? list.filter((t) => t.id !== vipId) : list;
@@ -322,6 +520,77 @@ export function interpretOffline(
   worldState: WorldState,
   team: TeamId = "blue",
 ): OrderResult[] {
+  const spoken = normalizeSpokenNumbers(orderText);
+  const marked = ordersForPlayerMark(spoken, tanks, worldState, team);
+  if (marked) return marked.orders;
+  if (isMpRules(worldState.gameMode)) {
+    const parts = splitOrderClauses(spoken).filter(
+      (clause) => !isSpeakerClause(clause) && !isFireAtWillClause(clause),
+    );
+    const changed = parts.length !== 1 || parts[0] !== spoken;
+    if (changed) {
+      if (!parts.length) return [];
+      const merged = new Map<string, OrderResult>();
+      for (const clause of parts) {
+        for (const result of interpretOffline(clause, tanks, worldState, team)) {
+          if (!merged.has(result.tankId)) merged.set(result.tankId, result);
+        }
+      }
+      return [...merged.values()];
+    }
+  }
+  return interpretOfflineBody(spoken, tanks, worldState, team);
+}
+
+function splitOrderClauses(text: string): string[] {
+  const chunks = text.split(/\s*(?:,|;)\s*/).filter(Boolean);
+  const parts: string[] = [];
+  for (const chunk of chunks) {
+    const andParts = chunk.split(/\s+\band\b\s+/i);
+    let buf = andParts[0] ?? "";
+    for (let i = 1; i < andParts.length; i++) {
+      const next = andParts[i] ?? "";
+      // "2 and 3 attack 5 and 6" is one order. The numbers after attack
+      // are enemies, not a new clause that retasks friendly #6.
+      const listSoFar = /^(?:tanks?\s+)?[\d\s#and,]+$/i.test(buf);
+      const nextStartsNumber = /^#?\d+\b/.test(next.trim());
+      const nextIsOnlyEnemy =
+        /^(?:(?:the|enemy|tanks?)\s+)*#?\d+\s*$/i.test(next.trim());
+      const bufHasAttack = /\b(?:attack|engage|hunt)\b/i.test(buf);
+      if (
+        (listSoFar && nextStartsNumber) ||
+        (bufHasAttack && nextIsOnlyEnemy)
+      ) {
+        buf = `${buf} and ${next}`;
+      }
+      else {
+        if (buf.trim()) parts.push(buf.trim());
+        buf = next;
+      }
+    }
+    if (buf.trim()) parts.push(buf.trim());
+  }
+  return parts.length ? parts : [text];
+}
+
+function isSpeakerClause(text: string): boolean {
+  return /^\s*(i|i'll|ill|i will|i'm|im|me)\b/i.test(text) && !/\b[1-6]\b/.test(text);
+}
+
+function isFireAtWillClause(text: string): boolean {
+  return (
+    /\b(shoot|fire)\b/i.test(text) &&
+    /\b(at\s*will|freely|anything)\b/i.test(text) &&
+    !/\b[1-6]\b/.test(text)
+  );
+}
+
+function interpretOfflineBody(
+  orderText: string,
+  tanks: Tank[],
+  worldState: WorldState,
+  team: TeamId = "blue",
+): OrderResult[] {
   const lower = orderText.toLowerCase();
   const cmdId = commanderId(worldState, team);
   let targets = resolveTargetsWithControl(
@@ -398,13 +667,9 @@ export function interpretOffline(
     kind = "attackNearest";
     const targeted = parseTargetedEnemyAttack(orderText);
     if (targeted) {
-      const foe = foes(tanks, team).find(
-        (t) => t.alive && t.number === targeted.enemyNumber,
-      );
-      params = foe ? { targetTankId: foe.id } : {};
-      verb = foe
-        ? `engaging enemy #${targeted.enemyNumber}`
-        : `hunting enemy #${targeted.enemyNumber}`;
+      const attack = attackTargetParams(targeted, tanks, team);
+      params = attack.params;
+      verb = attack.verb;
       perTankParams = false;
       if (targeted.allyNumbers.length) {
         targets = friendlies(tanks, team).filter((t) =>
@@ -419,7 +684,9 @@ export function interpretOffline(
     }
   } else if (/\b(hold|stay|wait|defend)\b/.test(lower)) {
     kind = "holdPosition";
-    verb = "holding (soft — will still fight)";
+    verb = isMpRules(worldState.gameMode)
+      ? "holding position"
+      : "holding (soft — will still fight)";
     const spot = landmark(orderText, worldState);
     if (spot) {
       params = { x: spot.x, y: spot.y };
@@ -427,13 +694,18 @@ export function interpretOffline(
     } else {
       perTankParams = true;
     }
-  } else if (/\b(move|go|advance|recon|head|get)\b/.test(lower)) {
+  } else if (/\b(move|go|advance|recon|head|get|take|flank)\b/.test(lower)) {
     kind = "moveTo";
     verb = "moving";
     const spot = landmark(orderText, worldState);
     if (spot) {
       params = { x: spot.x, y: spot.y };
       verb = `moving to ${spot.name}`;
+    } else if (isMpRules(worldState.gameMode)) {
+      // No destination in the order — do not invent one.
+      kind = "holdPosition";
+      verb = "holding — that order had no place";
+      perTankParams = true;
     } else {
       // Still a move order — advance on the named axis if any, else center push
       kind = "moveTo";
@@ -446,6 +718,10 @@ export function interpretOffline(
       kind = "moveTo";
       params = { x: spot.x, y: spot.y };
       verb = `moving to ${spot.name}`;
+    } else if (isMpRules(worldState.gameMode)) {
+      kind = "holdPosition";
+      verb = "holding — that wasn't a move order";
+      perTankParams = true;
     } else {
       // Unclear → keep pushing (attack/patrol), not a stuck hold
       kind = "attackNearest";
@@ -468,11 +744,15 @@ export function interpretOffline(
           y: CONFIG.canvasHeight * (0.55 + (t.number % 3) * 0.1),
         };
       } else if (kind === "holdPosition") {
-        const lane = (t.number - 0.5) / 6;
-        p = {
-          x: CONFIG.canvasWidth * (0.12 + lane * 0.76),
-          y: homeY - (t.number % 2) * 50,
-        };
+        if (isMpRules(worldState.gameMode)) {
+          p = { x: t.x, y: t.y };
+        } else {
+          const lane = (t.number - 0.5) / 6;
+          p = {
+            x: CONFIG.canvasWidth * (0.12 + lane * 0.76),
+            y: homeY - (t.number % 2) * 50,
+          };
+        }
       } else if (
         kind === "patrol" ||
         kind === "attackNearest" ||
@@ -711,6 +991,16 @@ Map is top-down: x right, y down; origin top-left. When the order names a place 
 Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3. Scout/recon → goal scout with northward x,y.
 Targeted attack: "3, attack enemy tank #2" / "all attack enemy #5" → goal attackNearest for the named blue(s), params.targetTankId = the living red tank id (red-N).`;
 
+const ORDER_SYSTEM_LITERAL = `You are the company commander’s radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"${goalKindsForPrompt()}","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
+Interpret the order intelligently. One sentence may give different goals to different tanks. Goals only from that list. tankId must be a living tank of the ordering team (see friendlies). Do not order a tank the speaker did not address. "I / I'll / me" is the human commander (controlledId): do not give that tank a goal unless its number is spoken.
+Map is top-down, origin top-left, y increases south. North y≈0.15*H, south y≈0.85*H, west/left x≈0.12*W, east/right x≈0.88*W. Always include numeric x,y for moveTo.
+Examples:
+- "2 move south and shoot at will" → only #2 moveTo south. Bots already fire at enemies in range while moving, so do NOT also set attackNearest.
+- "3 take the right and I'll take the left" → only #3 moveTo the right. The speaker handles the left.
+- "2 and 3 attack 5" / "2 and 3 attack 5 and 6" / "four attack two" → attackNearest only for allies named BEFORE the verb. Every number AFTER the verb is an enemy. One enemy: params.targetTankId. Several enemies: params.targetTankIds lists all of them. Never order an enemy number as a friendly.
+- "cover me" → escort, params.targetTankId = controlledId, not the bodyguard.
+If a place is relative ("the right", "behind them"), pick concrete x,y from the map and the enemy positions. Keep chat short.`;
+
 /** Exported for the order eval suite (roadmap P0). */
 export function sanitizeOrders(
   orders: OrderResult[],
@@ -728,8 +1018,12 @@ export function sanitizeOrders(
   const foeTarget =
     targeted && world
       ? foes(tanks, team).find(
-          (t) => t.alive && t.number === targeted.enemyNumber,
+          (t) => t.alive && t.number === targeted.enemyNumbers[0],
         )
+      : undefined;
+  const foeIds =
+    targeted && world
+      ? attackTargetParams(targeted, tanks, team).params?.targetTankIds
       : undefined;
   return orders
     .filter((o) => living.has(o.tankId) && isGoalKind(o.goal))
@@ -759,8 +1053,12 @@ export function sanitizeOrders(
           params.targetTankId = controlledId;
         }
       }
-      // Targeted enemy attack — fill / correct foe targetTankId
-      if (o.goal === "attackNearest" && foeTarget) {
+      // Targeted enemy attack — fill / correct foe targetTankId.
+      // Several enemies stay a set; one enemy is focus-fire.
+      if (o.goal === "attackNearest" && foeIds && foeIds.length > 1) {
+        params.targetTankIds = foeIds;
+        params.targetTankId = foeIds[0];
+      } else if (o.goal === "attackNearest" && foeTarget && !foeIds) {
         params.targetTankId = foeTarget.id;
       } else if (
         o.goal === "attackNearest" &&
@@ -808,14 +1106,22 @@ async function interpretWithLlm(
   tanks: Tank[],
   worldState: WorldState,
   ctx: InterpretContext,
+  team: TeamId = "blue",
 ): Promise<OrderResult[]> {
   const apiKey = ctx.apiKey?.trim();
-  if (!apiKey) return interpretOffline(orderText, tanks, worldState);
+  if (!apiKey) return interpretOffline(orderText, tanks, worldState, team);
 
-  const alive = friendlies(tanks).map((t) => ({
+  const alive = friendlies(tanks, team).map((t) => ({
     id: t.id,
     number: t.number,
     role: t.role,
+    x: Math.round(t.x),
+    y: Math.round(t.y),
+    hp: Math.round(t.hp),
+  }));
+  const enemies = foes(tanks, team).map((t) => ({
+    id: t.id,
+    number: t.number,
     x: Math.round(t.x),
     y: Math.round(t.y),
     hp: Math.round(t.hp),
@@ -829,8 +1135,10 @@ async function interpretWithLlm(
 
   const user = JSON.stringify({
     orderText,
-    controlledId: worldState.controlledId,
-    tanks: alive,
+    team,
+    controlledId: commanderId(worldState, team),
+    friendlies: alive,
+    enemies,
     wrecks,
     shareMode: worldState.shareMode,
     gameMode: worldState.gameMode,
@@ -840,6 +1148,7 @@ async function interpretWithLlm(
       height: CONFIG.canvasHeight,
       origin: "top-left",
       yDown: true,
+      note: "y increases southward. left/west = small x, right/east = large x.",
       corners: {
         topLeft: mapCorner(0.08, 0.08, "top-left"),
         topRight: mapCorner(0.92, 0.08, "top-right"),
@@ -855,19 +1164,25 @@ async function interpretWithLlm(
     provider,
     apiKey,
     model,
-    ORDER_SYSTEM,
+    isMpRules(worldState.gameMode) ? ORDER_SYSTEM_LITERAL : ORDER_SYSTEM,
     user,
   );
   const parsed = extractJsonObject(content);
-  let orders = sanitizeOrders(parsed.orders ?? [], tanks, orderText, worldState);
-  if (!orders.length) return interpretOffline(orderText, tanks, worldState);
+  let orders = sanitizeOrders(
+    parsed.orders ?? [],
+    tanks,
+    orderText,
+    worldState,
+    team,
+  );
+  if (!orders.length) return interpretOffline(orderText, tanks, worldState, team);
   const movedWithoutCoords = orders.every(
     (o) =>
       (o.goal !== "moveTo" && o.goal !== "holdPosition") ||
       (o.params?.x != null && o.params?.y != null),
   );
   if (!movedWithoutCoords) {
-    const offline = interpretOffline(orderText, tanks, worldState);
+    const offline = interpretOffline(orderText, tanks, worldState, team);
     if (offline.some((o) => o.goal === "moveTo" && o.params?.x != null)) {
       return offline;
     }

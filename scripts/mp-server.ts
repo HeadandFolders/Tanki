@@ -225,6 +225,11 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.type === "mark" && peer.role === "guest" && room.host) {
+      send(room.host.ws, { type: "peer-mark", x: msg.x, y: msg.y });
+      return;
+    }
+
     if (msg.type === "state" && peer.role === "host" && room.guest) {
       send(room.guest.ws, { type: "state", state: msg.state });
       return;

@@ -1,22 +1,64 @@
-import { CONFIG, homeTerritoryBounds } from "./config";
+import { CONFIG, homeTerritoryBounds, isMpOnline } from "./config";
 import { cardinalAngle, dist, eaglePosition } from "./arena";
 import { canSeeTank } from "./fog";
-import type { DeathFx, Tank, Wall, WorldState } from "./types";
+import type { DeathFx, Tank, TeamId, Wall, WorldState } from "./types";
+
+/** Online red sits on the north edge; rotate the view so that base is at the bottom. */
+export function viewerHomeAtBottom(mode: WorldState["gameMode"], team: TeamId): boolean {
+  return isMpOnline(mode) && team === "red";
+}
+
+/** Screen canvas pixels → world pixels. Identity unless the view is rotated 180°. */
+export function screenToWorld(
+  x: number,
+  y: number,
+  flipped: boolean,
+): { x: number; y: number } {
+  if (!flipped) return { x, y };
+  return { x: CONFIG.canvasWidth - x, y: CONFIG.canvasHeight - y };
+}
+
+/** Screen arrows → world arrows when the map is shown rotated 180°. */
+export function invertArrowKeys(keys: Iterable<string>): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    if (k === "arrowup") out.push("arrowdown");
+    else if (k === "arrowdown") out.push("arrowup");
+    else if (k === "arrowleft") out.push("arrowright");
+    else if (k === "arrowright") out.push("arrowleft");
+    else out.push(k);
+  }
+  return out;
+}
+
+/** True while world drawing is under the 180° online-red view. */
+let viewFlipped = false;
 
 export function renderWorld(
   ctx: CanvasRenderingContext2D,
   world: WorldState,
   mouseX: number,
   mouseY: number,
+  viewerTeam: "blue" | "red" = "blue",
+  marking = false,
 ): void {
   const W = CONFIG.canvasWidth;
   const H = CONFIG.canvasHeight;
+  const viewerControlledId =
+    viewerTeam === "red" ? world.remoteControlledId : world.controlledId;
+  viewFlipped = viewerHomeAtBottom(world.gameMode, viewerTeam);
 
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, W, H);
 
+  ctx.save();
+  if (viewFlipped) {
+    ctx.translate(W, H);
+    ctx.rotate(Math.PI);
+  }
+
   drawFloor(ctx, W, H);
-  drawHomeTint(ctx);
+  drawHomeTint(ctx, viewerTeam);
   drawWalls(ctx, world);
   drawEagle(ctx, world);
 
@@ -27,22 +69,28 @@ export function renderWorld(
 
   for (const t of world.tanks) {
     if (!t.alive) continue;
-    if (t.team === "blue") drawTank(ctx, world, t, true);
-    else if (isEnemyVisible(world, t)) drawTank(ctx, world, t, false);
+    const friendly = t.team === viewerTeam;
+    // Gold command mark is local-only. Enemy hulls stay one shared look.
+    const commanded = friendly && t.id === viewerControlledId;
+    if (friendly || isEnemyVisible(world, t)) {
+      drawTank(ctx, world, t, friendly, commanded);
+    }
   }
 
   drawDeathFx(ctx, world);
 
   for (const p of world.projectiles) {
-    if (p.team === "red" && !shouldShowHostile(world, p.x, p.y)) continue;
+    if (p.team !== viewerTeam && !shouldShowHostile(world, p.x, p.y)) continue;
     drawBullet(ctx, p.x, p.y);
   }
 
   if (world.shareMode !== "clear") drawFog(ctx, world);
-  drawFrontline(ctx);
+  drawFrontline(ctx, viewerTeam);
   drawMarkers(ctx, world);
+  drawPlayerMark(ctx, world, viewerTeam);
+  if (marking) drawMapX(ctx, mouseX, mouseY, 0.45);
 
-  const me = world.tanks.find((t) => t.id === world.controlledId && t.alive);
+  const me = world.tanks.find((t) => t.id === viewerControlledId && t.alive);
   if (me) {
     ctx.strokeStyle = "rgba(248,240,96,0.45)";
     ctx.lineWidth = 1;
@@ -53,6 +101,9 @@ export function renderWorld(
     ctx.stroke();
     ctx.setLineDash([]);
   }
+
+  ctx.restore();
+  viewFlipped = false;
 
   // End-of-match banner only (ready gate uses the HTML overlay).
   if (
@@ -97,20 +148,22 @@ function drawFloor(ctx: CanvasRenderingContext2D, W: number, H: number): void {
   }
 }
 
-function drawHomeTint(ctx: CanvasRenderingContext2D): void {
-  const home = homeTerritoryBounds("blue");
+function drawHomeTint(ctx: CanvasRenderingContext2D, team: TeamId): void {
+  const home = homeTerritoryBounds(team);
   ctx.fillStyle = CONFIG.colors.homeTint;
   ctx.fillRect(0, home.y0, CONFIG.canvasWidth, home.y1 - home.y0);
 }
 
-function drawFrontline(ctx: CanvasRenderingContext2D): void {
-  const home = homeTerritoryBounds("blue");
+function drawFrontline(ctx: CanvasRenderingContext2D, team: TeamId): void {
+  const home = homeTerritoryBounds(team);
+  // Edge of home that faces the middle of the map.
+  const y = team === "blue" ? home.y0 : home.y1;
   ctx.strokeStyle = CONFIG.colors.frontline;
   ctx.lineWidth = 2;
   ctx.setLineDash([6, 4]);
   ctx.beginPath();
-  ctx.moveTo(CONFIG.tileSize * 2, home.y0);
-  ctx.lineTo(CONFIG.canvasWidth - CONFIG.tileSize * 2, home.y0);
+  ctx.moveTo(CONFIG.tileSize * 2, y);
+  ctx.lineTo(CONFIG.canvasWidth - CONFIG.tileSize * 2, y);
   ctx.stroke();
   ctx.setLineDash([]);
 }
@@ -246,22 +299,70 @@ function tankBodyColor(t: Tank, friendly: boolean): string {
   return CONFIG.colors.playerTankByNumber[idx] ?? CONFIG.colors.playerTeam;
 }
 
+/** Bright gold hull with a moving specular band. */
+function commandedCellColor(
+  cell: number,
+  col: number,
+  sweep: number,
+  body: string,
+  tread: string,
+  barrel: string,
+  cabin: string,
+): string {
+  if (cell === 2) return tread;
+  if (cell === 3) return barrel;
+  const d = col - sweep;
+  if (d > -0.6 && d < 1.4) return "#fff7c2";
+  if (d >= 1.4 && d < 2.8) return "#ffe27a";
+  return cell === 4 ? cabin : body;
+}
+
+/** Pulsing halo around the locally commanded tank. */
+function drawCommandShine(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  time: number,
+): void {
+  const pulse = 0.5 + 0.5 * Math.sin(time * 5);
+  ctx.save();
+  ctx.translate(Math.round(x), Math.round(y));
+  ctx.shadowColor = "#ffd000";
+  ctx.shadowBlur = 16;
+  ctx.strokeStyle = "#ffe14a";
+  ctx.globalAlpha = 0.35 + 0.45 * pulse;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.56, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 0.2 + 0.3 * (1 - pulse);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.74, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawTank(
   ctx: CanvasRenderingContext2D,
   world: WorldState,
   t: Tank,
   friendly: boolean,
+  commanded: boolean,
 ): void {
   const isScout = t.role === "scout";
-  const body = tankBodyColor(t, friendly);
-  const tread = friendly ? "#4a3810" : "#505058";
-  const cabin = friendly ? "#1a1408" : "#2a2a30";
-  const barrel = friendly ? "#f0e8c0" : "#d0d0d8";
+  const body = commanded ? "#f0c020" : tankBodyColor(t, friendly);
+  const tread = commanded ? "#8a5a10" : friendly ? "#4a3810" : "#505058";
+  const cabin = commanded ? "#a87818" : friendly ? "#1a1408" : "#2a2a30";
+  const barrel = commanded ? "#fff6c8" : friendly ? "#f0e8c0" : "#d0d0d8";
 
   const facing = cardinalAngle(t.angle);
   const scale = CONFIG.spriteScale;
   const n = TANK_PAT.length;
   const size = n * scale;
+  // Specular band sweeping across the hull. Local viewer only.
+  const sweep = commanded ? ((world.time * 9) % (n + 8)) - 4 : 0;
 
   ctx.save();
   ctx.translate(Math.round(t.x), Math.round(t.y));
@@ -271,8 +372,15 @@ function drawTank(
     for (let col = 0; col < n; col++) {
       const cell = TANK_PAT[row]![col]!;
       if (!cell) continue;
-      ctx.fillStyle =
-        cell === 1 ? body : cell === 2 ? tread : cell === 3 ? barrel : cabin;
+      ctx.fillStyle = commanded
+        ? commandedCellColor(cell, col, sweep, body, tread, barrel, cabin)
+        : cell === 1
+          ? body
+          : cell === 2
+            ? tread
+            : cell === 3
+              ? barrel
+              : cabin;
       ctx.fillRect(
         col * scale - size / 2,
         row * scale - size / 2,
@@ -283,43 +391,43 @@ function drawTank(
   }
   ctx.restore();
 
-  // Big high-contrast number on dark cabin (outline then fill)
+  if (commanded) drawCommandShine(ctx, t.x, t.y, size, world.time);
+
+  // Labels in screen space so a 180° online view doesn't print them upside down.
+  ctx.save();
+  ctx.translate(t.x, t.y);
+  if (viewFlipped) ctx.rotate(Math.PI);
+
   const label = String(t.number);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = "bold 16px monospace";
   ctx.lineWidth = 3;
   ctx.strokeStyle = "#0a0804";
-  ctx.strokeText(label, t.x, t.y + 1);
+  ctx.strokeText(label, 0, 1);
   ctx.fillStyle = "#fffef0";
-  ctx.fillText(label, t.x, t.y + 1);
+  ctx.fillText(label, 0, 1);
 
-  // role tag
   ctx.fillStyle = isScout ? "#d8f080" : "#ffe060";
   ctx.font = "bold 10px monospace";
   ctx.textBaseline = "alphabetic";
   ctx.strokeStyle = "#0a0804";
   ctx.lineWidth = 2;
-  ctx.strokeText(isScout ? "S" : "G", t.x + 15, t.y - 10);
-  ctx.fillText(isScout ? "S" : "G", t.x + 15, t.y - 10);
+  ctx.strokeText(isScout ? "S" : "G", 15, -10);
+  ctx.fillText(isScout ? "S" : "G", 15, -10);
 
-  // HP bar
   const pct = t.hp / t.maxHp;
   ctx.fillStyle = "#000";
-  ctx.fillRect(t.x - 12, t.y - 18, 24, 3);
+  ctx.fillRect(-12, -18, 24, 3);
   ctx.fillStyle = pct > 0.35 ? "#40c040" : "#e04040";
-  ctx.fillRect(t.x - 12, t.y - 18, 24 * pct, 3);
+  ctx.fillRect(-12, -18, 24 * pct, 3);
 
   if (friendly && t.isCodeCarrier && world.gameMode === "ctf") {
     ctx.fillStyle = CONFIG.colors.codeIcon;
-    ctx.fillRect(t.x - 3, t.y - 24, 6, 4);
+    ctx.fillRect(-3, -24, 6, 4);
   }
 
-  if (t.id === world.controlledId) {
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(t.x - size / 2 - 2, t.y - size / 2 - 2, size + 4, size + 4);
-  }
+  ctx.restore();
 
   if (t.debugProgress > 0) {
     ctx.strokeStyle = CONFIG.colors.accent;
@@ -425,13 +533,30 @@ function drawWreck(
   ctx.fillStyle = "#f2e6c8";
   ctx.font = "bold 11px monospace";
   ctx.textAlign = "center";
-  ctx.fillText(label, x, y + 4);
+  fillUpright(ctx, label, x, y + 4);
   if (debugged) {
     ctx.fillStyle = result === "code" ? CONFIG.colors.codeIcon : "#999";
     ctx.font = "9px monospace";
-    ctx.fillText(result === "code" ? "CODE" : "clean", x, y + 18);
+    fillUpright(ctx, result === "code" ? "CODE" : "clean", x, y + 18);
   }
   ctx.textAlign = "left";
+}
+
+function fillUpright(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+): void {
+  if (!viewFlipped) {
+    ctx.fillText(text, x, y);
+    return;
+  }
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.PI);
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
 }
 
 function drawFog(ctx: CanvasRenderingContext2D, world: WorldState): void {
@@ -470,6 +595,36 @@ function drawFog(ctx: CanvasRenderingContext2D, world: WorldState): void {
   }
 }
 
+function drawMapX(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  alpha = 1,
+): void {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = CONFIG.colors.marker;
+  ctx.lineWidth = 3;
+  const s = 11;
+  ctx.beginPath();
+  ctx.moveTo(x - s, y - s);
+  ctx.lineTo(x + s, y + s);
+  ctx.moveTo(x + s, y - s);
+  ctx.lineTo(x - s, y + s);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawPlayerMark(
+  ctx: CanvasRenderingContext2D,
+  world: WorldState,
+  viewerTeam: TeamId,
+): void {
+  const mark = world.playerMarks[viewerTeam];
+  if (!mark) return;
+  drawMapX(ctx, mark.x, mark.y);
+}
+
 function drawMarkers(ctx: CanvasRenderingContext2D, world: WorldState): void {
   for (const m of world.markers) {
     const age = world.time - m.createdAt;
@@ -482,7 +637,7 @@ function drawMarkers(ctx: CanvasRenderingContext2D, world: WorldState): void {
     ctx.fillStyle = CONFIG.colors.marker;
     ctx.font = "10px monospace";
     ctx.textAlign = "center";
-    ctx.fillText(`${m.label} ${age.toFixed(0)}s`, m.x, m.y - 16);
+    fillUpright(ctx, `${m.label} ${age.toFixed(0)}s`, m.x, m.y - 16);
     ctx.globalAlpha = 1;
     ctx.textAlign = "left";
   }

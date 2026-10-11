@@ -87,6 +87,11 @@ export const CONFIG = {
     panicCommitSec: 0.55,
     /** How far to flee when panicking. */
     escapeDistance: 130,
+    /**
+     * Open fire on any enemy this close when the shot line is clear.
+     * Longer than gunner fightRange so a tank passing a corridor actually shoots.
+     */
+    shootRange: 220,
     /** Use denser choke geometry for this mode's arena. */
     denseArena: true,
   },

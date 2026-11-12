@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { circleHitsWall } from "../src/arena";
 import { createBaseStates } from "../src/arena-bases";
 import { CONFIG, homeTerritoryBounds } from "../src/config";
-import { getRespawnRate, rawDamageFor, RESPAWN, TANK_TYPES } from "../src/config/balance";
+import {
+  getRespawnRate,
+  MIDDLE_ZONE,
+  rawDamageFor,
+  RESPAWN,
+  TANK_TYPES,
+  type RespawnRateControl,
+} from "../src/config/balance";
 import { createWorld, respawnQueue, startMatch } from "../src/game";
 import { canSeeTank } from "../src/fog";
 import { advanceHpInterrupt, assignOrder, createInterruptStack, restoreGoal, stackFor, updateInterruptStack } from "../src/interrupt-stack";
@@ -743,8 +750,6 @@ try {
   });
 
   check("respawn countdown ticks once per team at getRespawnRate", () => {
-    assert.equal(getRespawnRate("blue"), 1, "the middle zone is not in yet");
-    assert.equal(getRespawnRate("red"), 1);
     const hz = 30;
     const recording = fixture(hz);
     recording.snapshot.stacks = {};
@@ -757,14 +762,99 @@ try {
     const blue = runner.world.tanks.find((t) => t.id === "blue-2")!;
     assert.equal(red.alive, false);
     assert.equal(blue.alive, false);
+    // This fixture parks its hulls far from the middle, so the open zone is what
+    // makes the base rate the expected clock here; the bonus has its own check.
+    assert.equal(runner.world.middleZone.holder, null);
+    assert.equal(runner.world.middleZone.contested, false);
     for (let i = 0; i < 20; i++) {
       const redLeft = red.respawnLeft!;
       const blueLeft = blue.respawnLeft!;
       runner.step();
-      assert.ok(Math.abs(redLeft - red.respawnLeft! - (1 / hz) * getRespawnRate("red")) < 1e-9);
-      assert.ok(Math.abs(blueLeft - blue.respawnLeft! - (1 / hz) * getRespawnRate("blue")) < 1e-9);
+      const zone = runner.world.middleZone;
+      assert.ok(Math.abs(redLeft - red.respawnLeft! - (1 / hz) * getRespawnRate("red", zone)) < 1e-9);
+      assert.ok(Math.abs(blueLeft - blue.respawnLeft! - (1 / hz) * getRespawnRate("blue", zone)) < 1e-9);
+      assert.ok(getRespawnRate("red", zone) === MIDDLE_ZONE.baseRate);
     }
     assert.ok(red.respawnLeft! > 0 && blue.respawnLeft! > 0);
+  });
+
+  check("getRespawnRate pays the bonus only to a team alone in the zone", () => {
+    const open: RespawnRateControl = { holder: null, contested: false };
+    const blueHolds: RespawnRateControl = { holder: "blue", contested: false };
+    const contested: RespawnRateControl = { holder: null, contested: true };
+    assert.equal(MIDDLE_ZONE.holdRate, 2, "the zone bonus is no longer twice as fast");
+    assert.equal(MIDDLE_ZONE.baseRate, 1, "the unheld clock is no longer the plain clock");
+    assert.equal(getRespawnRate("blue"), MIDDLE_ZONE.baseRate, "no zone still meant a bonus");
+    assert.equal(getRespawnRate("blue", open), MIDDLE_ZONE.baseRate);
+    assert.equal(getRespawnRate("blue", blueHolds), MIDDLE_ZONE.holdRate);
+    assert.equal(getRespawnRate("red", blueHolds), MIDDLE_ZONE.baseRate, "the team outside got the bonus too");
+    assert.equal(getRespawnRate("blue", contested), MIDDLE_ZONE.baseRate, "both teams got the bonus while contested");
+    assert.equal(getRespawnRate("red", contested), MIDDLE_ZONE.baseRate);
+    // The multiplier is a property of the team, never of how many of its hulls
+    // happen to be standing in the zone, so two can never mean four.
+    assert.equal(getRespawnRate("blue", { holder: "red", contested: false }), MIDDLE_ZONE.baseRate);
+  });
+
+  check("the middle zone sets each team's respawn clock from who stands in it", () => {
+    const hz = 30;
+    const recording = fixture(hz);
+    recording.snapshot.stacks = {};
+    recording.commands = [];
+    shootHull(recording.snapshot.world, "red-2", "blue-1", "kill-red-2");
+    shootHull(recording.snapshot.world, "blue-2", "red-6", "kill-blue-2");
+    const runner = new ReplayRunner(recording);
+    const zone = runner.world.middleZone;
+    const blue = runner.world.tanks.find((t) => t.id === "blue-2")!;
+    const red = runner.world.tanks.find((t) => t.id === "red-2")!;
+    const watcher = runner.world.tanks.find((t) => t.id === "blue-1")!;
+    const enemy = runner.world.tanks.find((t) => t.id === "red-6")!;
+
+    /** Seconds one hull's countdown lost during one tick. */
+    const tick = (hull: Tank): number => {
+      const before = hull.respawnLeft!;
+      runner.step();
+      return before - hull.respawnLeft!;
+    };
+    /**
+     * Station a living hull at a point. The goal is re-armed with it, otherwise
+     * the hull drives straight back to wherever it was parked before.
+     */
+    const standAt = (tank: Tank, x: number, y: number): void => {
+      tank.x = x;
+      tank.y = y;
+      if (tank.lastKnownPos) {
+        tank.lastKnownPos.x = x;
+        tank.lastKnownPos.y = y;
+      }
+      restoreGoal(tank, { kind: "holdPosition", source: "player", params: { x, y } });
+    };
+    const ranAt = (seconds: number, rate: number) =>
+      Math.abs(seconds - (1 / hz) * rate) < 1e-9;
+
+    runner.step();
+    assert.equal(zone.holder, null, "the zone was claimed while empty");
+    assert.ok(ranAt(tick(blue), MIDDLE_ZONE.baseRate), "an empty zone still sped blue's clock");
+    assert.ok(ranAt(tick(red), MIDDLE_ZONE.baseRate), "an empty zone still sped red's clock");
+
+    standAt(watcher, zone.x, zone.y);
+    // Control is read at the top of the tick and the countdown uses it in the
+    // same tick, so one step both claims the zone and speeds the clock.
+    const heldByBlue = tick(blue);
+    assert.equal(zone.holder, "blue", "a lone hull in the zone did not claim it for its team");
+    assert.ok(ranAt(heldByBlue, MIDDLE_ZONE.holdRate), "the holding team's clock did not run at the bonus rate");
+    assert.ok(ranAt(tick(red), MIDDLE_ZONE.baseRate), "the other team got the bonus as well");
+
+    standAt(enemy, zone.x + zone.radius * 0.5, zone.y);
+    const contestedBlue = tick(blue);
+    assert.equal(zone.contested, true, "two teams in the zone did not read as contested");
+    assert.equal(zone.holder, null, "a contested zone still named a holder");
+    assert.ok(ranAt(contestedBlue, MIDDLE_ZONE.baseRate), "contesting did not cost the holder its bonus");
+    assert.ok(ranAt(tick(red), MIDDLE_ZONE.baseRate), "contesting gave the other team a bonus");
+
+    standAt(enemy, zone.x + zone.radius * 3, zone.y);
+    const reclaimed = tick(blue);
+    assert.equal(zone.holder, "blue", "the bonus did not return once the enemy left");
+    assert.ok(ranAt(reclaimed, MIDDLE_ZONE.holdRate), "a reclaimed zone did not speed the clock back up");
   });
 
   check("recorded input, same-tick command order, terminal stop, and invalid snapshot rejection", () => {

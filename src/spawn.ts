@@ -1,4 +1,5 @@
 import {
+  ARENA_SPECS,
   CONFIG,
   homeTerritoryBounds,
   isBaseWar,
@@ -10,7 +11,7 @@ import {
 } from "./config";
 import { findClearPoint } from "./arena";
 import { goalState } from "./interrupt-stack";
-import { loadoutFor, TANK_TYPES } from "./config/balance";
+import { generatedApronTiles, loadoutFor, TANK_TYPES } from "./config/balance";
 import { LARGE_SPAWN_TILES } from "./arena-large";
 import { baseWarSpawnPoints } from "./arena-bases";
 import type { Goal, Tank, TeamId, Vec2, Wall } from "./types";
@@ -21,6 +22,27 @@ export function spawnBounds(
   team: TeamId,
 ): { x0: number; y0: number; x1: number; y1: number } {
   const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
+  if (arena === "generated") {
+    const s = CONFIG.tileSize;
+    const spec = ARENA_SPECS.generated;
+    const a = generatedApronTiles(spec.rows);
+    /* Red's box is the point mirror of blue's, same as the map and the base. */
+    const t =
+      team === "blue"
+        ? a
+        : {
+            x0: spec.cols - 1 - a.x1,
+            y0: spec.rows - 1 - a.y1,
+            x1: spec.cols - 1 - a.x0,
+            y1: spec.rows - 1 - a.y0,
+          };
+    return {
+      x0: t.x0 * s + CONFIG.tankRadius,
+      y0: t.y0 * s + CONFIG.tankRadius,
+      x1: (t.x1 + 1) * s - CONFIG.tankRadius,
+      y1: (t.y1 + 1) * s - CONFIG.tankRadius,
+    };
+  }
   if (arena === "large") {
     const t = LARGE_SPAWN_TILES[team];
     const s = CONFIG.tileSize;

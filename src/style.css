@@ -103,6 +103,39 @@ body {
   font-weight: 600;
 }
 
+/* The middle respawn zone: who owns the ×2 clock right now. Colours match the
+   ring drawn on the map, not the --blue/--red top-bar variables. */
+.zone-hud {
+  display: inline-flex;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.zone-hud-state {
+  font-weight: 700;
+}
+
+.zone-hud-state.zone-blue {
+  color: #e8c040;
+}
+
+.zone-hud-state.zone-red {
+  color: #ec5555;
+}
+
+.zone-hud-state.zone-contested {
+  color: #b45ad0;
+}
+
+.zone-hud-state.zone-open {
+  color: var(--muted);
+}
+
+.zone-hud-rate {
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .round-gate {
   position: absolute;
   inset: 0;

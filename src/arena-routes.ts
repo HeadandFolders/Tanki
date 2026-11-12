@@ -527,7 +527,8 @@ function rasterize(walls: Wall[], cols: number, rows: number): Uint8Array {
   return grid;
 }
 
-function gridToWalls(grid: Uint8Array, cols: number, rows: number): Wall[] {
+/** Rectangles for a 0 open / 1 brick / 2 steel / 3 border tile grid. */
+export function gridToWalls(grid: Uint8Array, cols: number, rows: number): Wall[] {
   const used = new Uint8Array(grid.length);
   const walls: Wall[] = [];
   const s = CONFIG.tileSize;

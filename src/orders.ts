@@ -261,7 +261,7 @@ function ordersForPlayerMark(
   if (!mark) {
     return {
       orders: [],
-      notice: "No map mark — hold F and click the map.",
+      notice: "No mark pinned — hold F and click the overview.",
     };
   }
   const alive = friendlies(tanks, team);
@@ -794,7 +794,7 @@ export function planUtterance(
         anchor: null,
         reservedAnchor: null,
         enemyNumbers: [],
-        notice: "No map mark — hold F and click the map.",
+        notice: "No mark pinned — hold F and click the overview.",
       };
     }
     return {

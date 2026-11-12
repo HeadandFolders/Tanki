@@ -1,4 +1,4 @@
-import { CONFIG, homeTerritoryBounds, isMpOnline, type Role } from "./config";
+import { CONFIG, homeTerritoryBounds, isMpOnline, isMpRules, type Role } from "./config";
 import { cardinalAngle, dist, eaglePosition } from "./arena";
 import { beliefFor } from "./belief";
 import {
@@ -10,6 +10,7 @@ import {
 } from "./camera";
 import { canSeeTank } from "./fog";
 import { goalState } from "./interrupt-stack";
+import type { MapRoute, MapRouteRole } from "./mapgen";
 import type { BaseState, DeathFx, Tank, TeamId, Wall, WorldState } from "./types";
 
 /** Online red sits on the north edge; rotate the view so that base is at the bottom. */
@@ -48,8 +49,8 @@ export function renderWorld(
   mouseX: number,
   mouseY: number,
   viewerTeam: "blue" | "red" = "blue",
-  marking = false,
   editing = false,
+  routes: MapRoute[] | null = null,
 ): void {
   const VW = CONFIG.viewWidth;
   const VH = CONFIG.viewHeight;
@@ -69,6 +70,7 @@ export function renderWorld(
 
   drawFloor(ctx, CONFIG.canvasWidth, CONFIG.canvasHeight);
   drawHomeTint(ctx, viewerTeam);
+  drawMiddleZoneFill(ctx, world);
   drawWalls(ctx, world);
   drawBases(ctx, world);
   if (!world.bases) drawEagle(ctx, world);
@@ -100,9 +102,9 @@ export function renderWorld(
 
   if (world.shareMode !== "clear") drawFog(ctx, world);
   drawFrontline(ctx, viewerTeam);
+  drawMiddleZoneRing(ctx, world);
   drawMarkers(ctx, world);
   drawPlayerMark(ctx, world, viewerTeam);
-  if (marking) drawMapX(ctx, mouseX, mouseY, 0.45);
 
   if (editing) {
     for (const w of world.walls) {
@@ -112,6 +114,8 @@ export function renderWorld(
       ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
     }
   }
+
+  if (routes) drawRoutes(ctx, routes);
 
   const me = world.tanks.find((t) => t.id === viewerControlledId && t.alive);
   if (me && !editing) {
@@ -127,6 +131,8 @@ export function renderWorld(
 
   ctx.restore();
   viewFlipped = false;
+
+  if (routes) drawRouteLegend(ctx, routes);
 
   drawBaseHud(ctx, world, viewerTeam);
 
@@ -154,6 +160,65 @@ export function renderWorld(
     ctx.fillText("PRESS RESTART", VW / 2, VH / 2 + 53);
     ctx.textAlign = "left";
   }
+}
+
+/** One colour per route role, so the overlay reads without the legend. */
+const ROUTE_COLORS: Record<MapRouteRole, string> = {
+  direct: "#f2b632",
+  protected: "#4cc9f0",
+  zone: "#b04ce0",
+};
+
+/** The generator's three routes, drawn in world space over the finished map. */
+function drawRoutes(ctx: CanvasRenderingContext2D, routes: MapRoute[]): void {
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const route of routes) {
+    ctx.strokeStyle = ROUTE_COLORS[route.role];
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    for (const [i, p] of route.points.entries()) {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    // The blue-base end gets a ring, so the direction of travel is obvious.
+    const from = route.points[0];
+    if (!from) continue;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(from.x, from.y, CONFIG.tileSize * 0.7, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** Screen-space numbers behind each line: how long it is and how open. */
+function drawRouteLegend(ctx: CanvasRenderingContext2D, routes: MapRoute[]): void {
+  ctx.save();
+  const x = 12;
+  const lineHeight = 17;
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(x - 6, 54, 268, routes.length * lineHeight + 10);
+  ctx.font = "bold 12px monospace";
+  ctx.textAlign = "left";
+  for (const [i, route] of routes.entries()) {
+    const y = 68 + i * lineHeight;
+    ctx.fillStyle = ROUTE_COLORS[route.role];
+    ctx.fillRect(x, y - 8, 10, 10);
+    ctx.fillStyle = "#f2f2f2";
+    const viaZone = route.throughZone ? " via zone" : "";
+    ctx.fillText(
+      `${route.role}${viaZone}  ${Math.round(route.travelSec)}s  ` +
+        `${Math.round(route.lengthPx / CONFIG.tileSize)} tiles  ` +
+        `${Math.round(route.exposedShare * 100)}% open`,
+      x + 16,
+      y,
+    );
+  }
+  ctx.restore();
 }
 
 function drawBaseHud(ctx: CanvasRenderingContext2D, world: WorldState, viewerTeam: TeamId): void {
@@ -219,16 +284,23 @@ function minimapWalls(world: WorldState): HTMLCanvasElement | null {
   return img;
 }
 
+/** One hull's panel chip, in panel px: big enough for a digit, small enough
+ *  that a full company still reads as dots rather than a wall of text. */
+const MINIMAP_CHIP = 9;
+
 /**
  * Full-map overview drawn on the sidebar panel: walls, friendly hulls, the
  * team's mark, and enemies only where the viewer could know about them
- * (clear mode, live sight, or belief).
+ * (clear mode, live sight, or belief). Every hull carries its number, friend
+ * and foe alike, because the panel is where a mark gets pinned.
+ * `markAt` is the cursor in panel pixels, shown as a ghost pin while F is held.
  */
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
   world: WorldState,
   cam: Camera,
   viewerTeam: TeamId,
+  markAt: { x: number; y: number } | null = null,
 ): void {
   const r = minimapRect();
   ctx.imageSmoothingEnabled = false;
@@ -251,10 +323,51 @@ export function renderMinimap(
   ctx.strokeRect(0.5, 0.5, r.w - 1, r.h - 1);
   ctx.restore();
 
+  // The middle zone ring, so the zoomed-out view reads who owns the bonus.
+  const zone = world.middleZone;
+  const zc = worldToMinimap(cam, zone.x, zone.y);
+  ctx.save();
+  ctx.strokeStyle = zonePalette(world).stroke;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(zc.x, zc.y, Math.max(3, zone.radius * r.scale), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
   const dot = (wx: number, wy: number, color: string, size = 3) => {
     const p = worldToMinimap(cam, wx, wy);
     ctx.fillStyle = color;
     ctx.fillRect(Math.round(p.x - size / 2), Math.round(p.y - size / 2), size, size);
+  };
+
+  /**
+   * A hull as its panel chip: a dark plate, a border in its team colour and the
+   * hull's own number in that same colour. The panel is where a mark gets
+   * pinned, so every hull a viewer may order has to read as one number there.
+   */
+  const chip = (
+    wx: number,
+    wy: number,
+    color: string,
+    num: number,
+    alpha = 1,
+  ) => {
+    const p = worldToMinimap(cam, wx, wy);
+    const x = Math.round(p.x - MINIMAP_CHIP / 2);
+    const y = Math.round(p.y - MINIMAP_CHIP / 2);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "rgba(8,8,8,0.78)";
+    ctx.fillRect(x, y, MINIMAP_CHIP, MINIMAP_CHIP);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, MINIMAP_CHIP - 1, MINIMAP_CHIP - 1);
+    ctx.fillStyle = color;
+    ctx.font = "bold 8px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(num), x + MINIMAP_CHIP / 2, y + MINIMAP_CHIP / 2 + 0.5);
+    ctx.restore();
   };
 
   const viewerControlledId =
@@ -264,16 +377,17 @@ export function renderMinimap(
   for (const t of world.tanks) {
     if (!t.alive) continue;
     if (t.team === viewerTeam) {
-      dot(t.x, t.y, t.id === viewerControlledId ? "#fff0a0" : "#e0b020", 4);
+      chip(t.x, t.y, t.id === viewerControlledId ? "#fff0a0" : "#e0b020", t.number);
       continue;
     }
     if (world.shareMode === "clear" || isEnemyVisible(world, t)) {
-      dot(t.x, t.y, "#e04040", 4);
+      chip(t.x, t.y, "#e04040", t.number);
       continue;
     }
     const c = belief.contacts.find((k) => k.enemyId === t.id);
     if (c && now - c.seenAt <= CONFIG.ai.beliefTtlSec) {
-      dot(c.x, c.y, "rgba(224,64,64,0.55)", 3);
+      if (c.observed) chip(c.x, c.y, "rgba(224,64,64,0.62)", c.observed.number, 0.62);
+      else dot(c.x, c.y, "rgba(224,64,64,0.55)", 3);
     }
   }
 
@@ -288,6 +402,21 @@ export function renderMinimap(
     ctx.moveTo(p.x + 3, p.y - 3);
     ctx.lineTo(p.x - 3, p.y + 3);
     ctx.stroke();
+  }
+
+  // The ghost pin: a mark goes down where the cursor crosses this panel, nowhere else.
+  if (markAt) {
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = CONFIG.colors.marker;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(markAt.x - 4, markAt.y - 4);
+    ctx.lineTo(markAt.x + 4, markAt.y + 4);
+    ctx.moveTo(markAt.x + 4, markAt.y - 4);
+    ctx.lineTo(markAt.x - 4, markAt.y + 4);
+    ctx.stroke();
+    ctx.restore();
   }
 
   const v = visibleRect(cam);
@@ -323,6 +452,58 @@ function drawFloor(ctx: CanvasRenderingContext2D, W: number, H: number): void {
       ctx.fillRect(x + 9, y + 10, 4, 2);
     }
   }
+}
+
+/**
+ * Which of the four middle-zone palettes is in force. Outside the multiplayer
+ * ruleset nothing respawns, so the zone never has a holder to advertise — it
+ * draws open.
+ */
+function zonePalette(world: WorldState): { stroke: string; fill: string } {
+  const live = isMpRules(world.gameMode);
+  const holder = live ? world.middleZone.holder : null;
+  if (holder === "blue") {
+    return { stroke: CONFIG.colors.zoneBlue, fill: CONFIG.colors.zoneFillBlue };
+  }
+  if (holder === "red") {
+    return { stroke: CONFIG.colors.zoneRed, fill: CONFIG.colors.zoneFillRed };
+  }
+  if (live && world.middleZone.contested) {
+    return { stroke: CONFIG.colors.zoneContested, fill: CONFIG.colors.zoneFillContested };
+  }
+  return { stroke: CONFIG.colors.zoneOpen, fill: CONFIG.colors.zoneFillOpen };
+}
+
+/** The zone's ground wash, drawn with the home tint so walls and hulls stay over it. */
+function drawMiddleZoneFill(ctx: CanvasRenderingContext2D, world: WorldState): void {
+  const zone = world.middleZone;
+  const d = zone.radius * 2;
+  if (!inView(zone.x - zone.radius, zone.y - zone.radius, d, d)) return;
+  ctx.fillStyle = zonePalette(world).fill;
+  ctx.beginPath();
+  ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/**
+ * The zone's boundary, drawn after the fog like the frontline: who holds the
+ * respawn bonus is information both teams already have, so it stays readable
+ * over brick and stone.
+ */
+function drawMiddleZoneRing(ctx: CanvasRenderingContext2D, world: WorldState): void {
+  const zone = world.middleZone;
+  const d = zone.radius * 2;
+  if (!inView(zone.x - zone.radius, zone.y - zone.radius, d, d)) return;
+  ctx.strokeStyle = zonePalette(world).stroke;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 6]);
+  ctx.beginPath();
+  ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // The exact middle, so the circle reads as a place to stand rather than an object.
+  ctx.fillStyle = zonePalette(world).stroke;
+  ctx.fillRect(zone.x - 2, zone.y - 2, 4, 4);
 }
 
 function drawHomeTint(ctx: CanvasRenderingContext2D, team: TeamId): void {

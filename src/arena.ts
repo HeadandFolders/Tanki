@@ -3,6 +3,8 @@ import { ensureTwoRoutes, layoutHash } from "./arena-routes";
 import { DENSE_WALLS, REFERENCE_WALLS, STANDARD_WALLS } from "./arena-layouts";
 import { buildLargeWalls, largeArenaZones, type ArenaZone } from "./arena-large";
 import { ARENA_SPECS, CONFIG, setWorldSize, type ArenaId } from "./config";
+import { MAP_GEN_SIZE } from "./config/balance";
+import { generatedWalls } from "./mapgen";
 import type { Wall } from "./types";
 
 export type ArenaDensity = ArenaId;
@@ -10,9 +12,11 @@ export type ArenaDensity = ArenaId;
 /**
  * Every stance a tank can occupy has two disjoint routes to every other stance.
  * Reference is the TDM / CTF map. Large (the default, see CONFIG.arenaDefault)
- * is the generated 144x90 map and dense the 80x50 multiplayer fill; both are
- * selectable. A saved edit is opened again if it would
- * leave a dead end or a one-tank chokepoint. Sets the world size.
+ * is the generated 144x90 map and dense the 80x50 multiplayer fill; "generated"
+ * is the seeded map generator's own, three times the area and verified by its
+ * own A* pass rather than this repair pass. All are selectable. A saved edit is
+ * opened again if it would leave a dead end or a one-tank chokepoint. Sets the
+ * world size.
  */
 /** Hash of the layout a peer would build, without disturbing the current world size. */
 export function arenaLayoutHash(arena: ArenaId, seed: number): string {
@@ -34,6 +38,14 @@ export function buildArena(
 ): Wall[] {
   const seed = typeof options === "number" ? options : (options.seed ?? CONFIG.largeArena.seed);
   const baseWar = typeof options !== "number" && options.baseWar === true;
+  if (arena === "generated") {
+    // The generator's own A* pass is what says this map has three routes; a
+    // repair pass over the walls afterwards would move the ground it measured,
+    // and a dragged edit would do the same to a peer's copy of the map.
+    setWorldSize(MAP_GEN_SIZE.cols, MAP_GEN_SIZE.rows);
+    const laid = generatedWalls(seed);
+    return baseWar ? restoreBaseWarWalls(prepareBaseWarWalls(laid, arena), arena) : laid;
+  }
   const spec = ARENA_SPECS[arena];
   setWorldSize(spec.cols, spec.rows);
   const base =

@@ -1,14 +1,18 @@
 /** Tank stats, armour, repairs, nukes and per-mode loadouts live in config/balance. */
-import { BASE_HP, TANK_TYPES } from "./config/balance";
+import { BASE_HP, MAP_GEN_SIZE, TANK_TYPES } from "./config/balance";
 
-/** Arena ids. "large" is the generated 144x90 map; the others are 80x50. */
-export type ArenaId = "reference" | "standard" | "dense" | "large";
+/**
+ * Arena ids. "large" is the generated 144x90 map; "generated" is the seeded
+ * map generator's own output, about three times that area; the others are 80x50.
+ */
+export type ArenaId = "reference" | "standard" | "dense" | "large" | "generated";
 
 export const ARENA_SPECS: Record<ArenaId, { cols: number; rows: number }> = {
   reference: { cols: 80, rows: 50 },
   standard: { cols: 80, rows: 50 },
   dense: { cols: 80, rows: 50 },
   large: { cols: 144, rows: 90 },
+  generated: { cols: MAP_GEN_SIZE.cols, rows: MAP_GEN_SIZE.rows },
 };
 
 /** A base occupies a 3x3 block of tiles. */
@@ -352,6 +356,19 @@ export const CONFIG = {
     floorAlt: "#242424",
     homeTint: "rgba(240, 208, 48, 0.08)",
     frontline: "rgba(240, 208, 48, 0.55)",
+    /**
+     * Middle respawn zone. The ring is the colour of whoever owns the bonus
+     * right now: the blue team's gold, the red team's red, violet when both
+     * sides are in it, and grey while it stands open.
+     */
+    zoneBlue: "#e8c040",
+    zoneRed: "#ec5555",
+    zoneContested: "#b45ad0",
+    zoneOpen: "#8f9aa8",
+    zoneFillBlue: "rgba(232, 192, 64, 0.13)",
+    zoneFillRed: "rgba(236, 85, 85, 0.13)",
+    zoneFillContested: "rgba(180, 90, 208, 0.16)",
+    zoneFillOpen: "rgba(143, 154, 168, 0.07)",
     grid: "rgba(255,255,255,0.04)",
     wreck: "#705838",
     codeIcon: "#f0d060",

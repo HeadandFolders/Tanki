@@ -18,6 +18,10 @@
             <span id="base-hp-red" class="base-hp-red"></span>
           </span>
           <span id="respawn-hud" class="respawn-hud" hidden></span>
+          <span id="zone-hud" class="zone-hud" hidden>
+            <span id="zone-hud-state" class="zone-hud-state zone-open"></span>
+            <span id="zone-hud-rate" class="zone-hud-rate"></span>
+          </span>
           <label class="topbar-mode-label">
             Mode
             <select id="game-mode" title="Also changeable from the Game menu">
@@ -119,6 +123,7 @@
                   <select id="mp-arena">
                     <option value="dense">Dense (80×50)</option>
                     <option value="large" selected>Large (144×90)</option>
+                    <option value="generated">Generated (204×190, seeded)</option>
                   </select>
                 </label>
               </div>
@@ -208,13 +213,13 @@
               id="minimap"
               width="360"
               height="225"
-              title="Whole-arena overview · hold F and click to mark a spot"
+              title="Whole-arena overview · hold F and click here to pin a mark"
             ></canvas>
           </section>
 
           <section>
             <h2>Orders / Radio</h2>
-            <p class="hint">Arrows move · mouse aim · Space/click shoot · 1–6 switch · hold F and click to mark · “3 move to the mark”</p>
+            <p class="hint">Arrows move · mouse aim · Space/click shoot · 1–6 switch · hold F and click the overview to pin a mark · “3 move to the mark” · R overlays the generated map's three routes</p>
             <p class="hint roles-legend"><span class="scout">S = scout</span> (slower, long vision) · <span class="shooter">G = gunner</span> (faster, short vision)</p>
             <p class="hint">Radio LIVE → STT → LLM (if API key) → bots move</p>
             <form id="order-form">

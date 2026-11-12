@@ -8,13 +8,13 @@ import { dirname, join, resolve } from "node:path";
 import { COMMANDER_PROFILES, type CommanderProfile } from "../src/ai-commander.ts";
 import { baseWarMap } from "../src/arena-bases.ts";
 import { TOOL_NAMES } from "../src/command-schema.ts";
-import { CONFIG, type ArenaId, type GameMode, type RedDifficulty, type Role, type ShareMode } from "../src/config.ts";
-import { RESPAWN, TANK_TYPE_IDS } from "../src/config/balance.ts";
+import { CONFIG, isMpRules, type ArenaId, type GameMode, type RedDifficulty, type Role, type ShareMode } from "../src/config.ts";
+import { MIDDLE_ZONE, RESPAWN, TANK_TYPE_IDS } from "../src/config/balance.ts";
 import { matchSeeds, matchSpec, runMatch, TEAMS, type MatchRecord } from "../src/sim/match.ts";
 import { batchParams, summarize, type Summary } from "../src/sim/summary.ts";
 
 const MODES: readonly GameMode[] = ["base-war", "mp-offline", "tdm"];
-const ARENAS: readonly ArenaId[] = ["large", "dense", "reference", "standard"];
+const ARENAS: readonly ArenaId[] = ["large", "dense", "reference", "standard", "generated"];
 const SHARES: readonly ShareMode[] = ["clear", "auto", "report", "none"];
 const DIFFICULTIES: readonly RedDifficulty[] = ["easy", "normal", "hard"];
 
@@ -29,6 +29,8 @@ const USAGE = [
   "  --red PROFILE      same options for red (default tactical)",
   "  --mode M           " + MODES.join("|") + " (default base-war; only it has bases to measure)",
   "  --arena A          " + ARENAS.join("|") + " (also --map; default " + CONFIG.arenaDefault + ")",
+  "  --map-seed S       seed a generated map is laid out from (default " + CONFIG.largeArena.seed +
+    "; only --map generated reads it)",
   "  --share S          " + SHARES.join("|") + " (default clear, i.e. no fog)",
   "  --difficulty D     " + DIFFICULTIES.join("|") + " order quality for both commanders (default normal)",
   "  --max-length SEC   a match still playing here ends as an over-length draw (default " +
@@ -81,6 +83,7 @@ let blue: CommanderProfile = "tactical";
 let red: CommanderProfile = "tactical";
 let mode: GameMode = "base-war";
 let arena: ArenaId = CONFIG.arenaDefault;
+let mapSeed: number = CONFIG.largeArena.seed;
 let share: ShareMode = "clear";
 let difficulty: RedDifficulty = "normal";
 let maxLengthSec = CONFIG.sim.maxLengthSec;
@@ -103,6 +106,7 @@ for (let i = 0; i < args.length; i++) {
     case "mode": mode = listOf(valueOf(args, i++, flag), MODES, flag, "mode"); break;
     case "arena":
     case "map": arena = listOf(valueOf(args, i++, flag), ARENAS, flag, "map"); break;
+    case "map-seed": mapSeed = Math.trunc(numberOf(valueOf(args, i++, flag), flag)); break;
     case "share": share = listOf(valueOf(args, i++, flag), SHARES, flag, "share mode"); break;
     case "difficulty": difficulty = listOf(valueOf(args, i++, flag), DIFFICULTIES, flag, "difficulty"); break;
     case "max-length": maxLengthSec = numberOf(valueOf(args, i++, flag), flag); break;
@@ -148,17 +152,20 @@ function table(title: string, header: string[], body: string[][]): void {
 }
 
 console.log(`sim: ${matches} scripted matches, no rendering, ${hz} Hz fixed step`);
-console.log(`  mode=${mode} arena=${arena} share=${share} difficulty=${difficulty}`);
+console.log(`  mode=${mode} arena=${arena}${arena === "generated" ? ` map-seed=${mapSeed}` : ""}` +
+  ` share=${share} difficulty=${difficulty}`);
 console.log(`  blue=${blue}  red=${red}  seed=${seed}  first match world seed=${matchSeeds(seed, 0).world}`);
 console.log(`  max length=${sec(maxLengthSec)}s  middle band=central ${pct(middleBand)} of map height` +
   `  base HP sample=${sec(baseSampleSec)}s`);
+console.log(`  middle zone: at the map centre, radius=${pct(MIDDLE_ZONE.radiusFraction)} of map height;` +
+  ` respawn clock ×${MIDDLE_ZONE.holdRate} for its sole holder, ×${MIDDLE_ZONE.baseRate} otherwise`);
 console.log(`  respawn delay=${RESPAWN.delaySec}s + ${RESPAWN.protectionSec}s protection at own base` +
   `  under strength=fewer than ${underStrengthAlive} hulls alive`);
 
 const started = performance.now();
 const results: MatchRecord[] = [];
 const spec = matchSpec({
-  seed, mode, arena, share, difficulty, hz, maxLengthSec,
+  seed, mode, arena, mapSeed, share, difficulty, hz, maxLengthSec,
   middleBandFraction: middleBand, baseSampleSec, underStrengthAlive,
   profiles: { blue, red },
 });
@@ -244,6 +251,20 @@ table("MIDDLE AREA", ["team", "tank-seconds", "avg tanks there", "share of match
     pct(summary.middle[team].occupiedShareMean),
   ]));
 
+table(`MIDDLE ZONE CONTROL (sole holder respawns at ×${MIDDLE_ZONE.holdRate}, everyone else ×${MIDDLE_ZONE.baseRate})`,
+  ["team", "seconds holding", "share of match holding"],
+  TEAMS.map((team) => [
+    team,
+    summary.zone.hold[team].secondsMean.toFixed(1),
+    pct(summary.zone.hold[team].shareMean),
+  ]));
+console.log(`  contested (both sides in it) ${pct(summary.zone.contestedShareMean)} of match` +
+  `  · open (nobody there) ${pct(summary.zone.openShareMean)}`);
+if (!isMpRules(mode)) {
+  console.log("  note: the respawn bonus only runs under the multiplayer ruleset" +
+    " (base-war, mp-offline, mp-online), so in this mode the zone describes control only.");
+}
+
 if (summary.baseHp) {
   table("BASE HP OVER TIME (mean of matches still running in the bucket)",
     ["by t<=", "samples", "blue %", "red %"],
@@ -285,7 +306,8 @@ if (rows) {
 }
 
 const outPath = resolve(out || join("logs",
-  `sim-${blue}-vs-${red}-${mode}-${arena}-${matches}mx${seed}.json`));
+  `sim-${blue}-vs-${red}-${mode}-${arena}${arena === "generated" ? `-map${mapSeed}` : ""}` +
+  `-${matches}mx${seed}.json`));
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, JSON.stringify({ params: summary.params, summary, matches: results }, null, 2));
 console.log(`\nwrote ${outPath}`);

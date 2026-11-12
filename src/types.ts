@@ -190,6 +190,21 @@ export interface BaseTile {
 /** Side of the map the base backs onto; the other three sides are open. */
 export type WallSide = "north" | "south" | "east" | "west";
 
+/**
+ * The contested zone in the middle of the map. Its circle comes from the arena
+ * size and never changes; its control is re-derived from the living hulls every
+ * simulation step. `holder` is the whole rule: the team named there gets the
+ * fast respawn clock, and an empty or shared zone names nobody. `contested` only
+ * says why nobody holds it, for the map and the HUD.
+ */
+export interface MiddleZoneState {
+  x: number;
+  y: number;
+  radius: number;
+  holder: TeamId | null;
+  contested: boolean;
+}
+
 /** What a map declares about its base: where it sits and what wall backs it. */
 export interface BasePlacement {
   tile: BaseTile;
@@ -222,6 +237,8 @@ export interface WorldState {
   arenaSeed: number;
   /** Named zone anchors of this arena; empty on the hand-authored band maps. */
   zones: ArenaZone[];
+  /** The contested middle zone — the only zone that changes how the game plays. */
+  middleZone: MiddleZoneState;
   walls: Wall[];
   bases?: Record<TeamId, BaseState>;
   tanks: Tank[];
@@ -230,7 +247,7 @@ export interface WorldState {
   /** mp-offline death blink husks (removed after blinks; no wreck gameplay). */
   deathFx: DeathFx[];
   markers: SightingMarker[];
-  /** Commander map marks (hold F and click). One X per team. */
+  /** Commander marks, pinned on the overview panel (hold F and click it). One X per team. */
   playerMarks: Record<TeamId, Vec2 | null>;
   fogExplored: Uint8Array;
   fogCols: number;

@@ -10,6 +10,7 @@ export interface BatchParams {
   seed: number;
   mode: GameMode;
   arena: ArenaId;
+  mapSeed: number;
   share: ShareMode;
   difficulty: RedDifficulty;
   profiles: Record<TeamId, CommanderProfile>;
@@ -67,6 +68,16 @@ export interface Summary {
     occupiedShareMean: number;
     concurrentMean: number;
   }>;
+  /**
+   * Middle-zone control as a share of match time: how often each team alone in
+   * the zone got the fast respawn clock, how often both sides cancelled it out,
+   * and how often nobody was there. The three shares add up to the match.
+   */
+  zone: {
+    hold: Record<TeamId, { secondsMean: number; shareMean: number }>;
+    contestedShareMean: number;
+    openShareMean: number;
+  };
   baseHp: BaseHpSummary | null;
   orders: Record<TeamId, { total: number; mean: number }>;
   /** Orders that reached a hull, split by intent tool and summed over the batch. */
@@ -181,6 +192,11 @@ export function summarize(rows: MatchRecord[], params: BatchParams): Summary {
       concurrentMean: mean(rows.map((row) =>
         row.lengthSec > 0 ? row.middleTankSeconds[team] / row.lengthSec : 0)),
     },
+    zoneHold: {
+      secondsMean: mean(rows.map((row) => row.zoneHoldSeconds[team])),
+      shareMean: mean(rows.map((row) =>
+        row.lengthSec > 0 ? row.zoneHoldSeconds[team] / row.lengthSec : 0)),
+    },
     orders: {
       total: rows.reduce((sum, row) => sum + row.orders[team], 0),
       mean: mean(rows.map((row) => row.orders[team])),
@@ -195,6 +211,7 @@ export function summarize(rows: MatchRecord[], params: BatchParams): Summary {
     underStrength: { secondsMean: number; shareMean: number };
     fielded: Partial<Record<Role, number>>;
     middle: Summary["middle"][TeamId];
+    zoneHold: Summary["zone"]["hold"][TeamId];
     orders: { total: number; mean: number };
     decisiveWinRate: number;
   }>;
@@ -229,6 +246,17 @@ export function summarize(rows: MatchRecord[], params: BatchParams): Summary {
       perTeam[team].underStrength])) as Summary["underStrength"],
     fielded: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].fielded])) as Summary["fielded"],
     middle: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].middle])) as Summary["middle"],
+    zone: {
+      hold: Object.fromEntries(TEAMS.map((team) =>
+        [team, perTeam[team].zoneHold])) as Summary["zone"]["hold"],
+      contestedShareMean: mean(rows.map((row) =>
+        row.lengthSec > 0 ? row.zoneContestedSeconds / row.lengthSec : 0)),
+      openShareMean: mean(rows.map((row) => {
+        if (row.lengthSec <= 0) return 0;
+        const claimed = row.zoneHoldSeconds.blue + row.zoneHoldSeconds.red + row.zoneContestedSeconds;
+        return Math.max(0, 1 - claimed / row.lengthSec);
+      })),
+    },
     baseHp: traced.length ? {
       buckets: baseHpCurve(traced, 10, params.maxLengthSec),
       finalPct: Object.fromEntries(TEAMS.map((team) => [team,
@@ -248,6 +276,7 @@ export function batchParams(spec: MatchSpec, matches: number): BatchParams {
     seed: spec.seed,
     mode: spec.mode,
     arena: spec.arena,
+    mapSeed: spec.mapSeed,
     share: spec.share,
     difficulty: spec.difficulty,
     profiles: { ...spec.profiles },

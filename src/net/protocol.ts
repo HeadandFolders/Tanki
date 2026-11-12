@@ -59,6 +59,12 @@ export interface NetStateSnap {
   winner: "blue" | "red" | "draw" | null;
   controlledBlue: string;
   controlledRed: string | null;
+  /**
+   * Middle-zone control as the host resolved it. The guest draws the colour and
+   * the HUD line from these; it never re-decides the zone from snapshot hulls.
+   */
+  middleHolder: NetTeam | null;
+  middleContested: boolean;
   tanks: NetTankSnap[];
   projectiles: NetProjSnap[];
   deathFx: NetDeathSnap[];

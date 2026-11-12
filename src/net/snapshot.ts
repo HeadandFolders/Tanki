@@ -20,6 +20,8 @@ export function worldToSnap(world: WorldState): NetStateSnap {
     winner,
     controlledBlue: world.controlledId,
     controlledRed: world.remoteControlledId,
+    middleHolder: world.middleZone.holder,
+    middleContested: world.middleZone.contested,
     tanks: world.tanks.map((t) => ({
       id: t.id,
       team: t.team,
@@ -69,6 +71,9 @@ export function applySnap(
   world.matchLeft = snap.matchLeft;
   world.controlledId = snap.controlledBlue;
   world.remoteControlledId = snap.controlledRed;
+  // Zone control is decided by the host; the guest only carries it to the HUD.
+  world.middleZone.holder = snap.middleHolder ?? null;
+  world.middleZone.contested = snap.middleContested === true;
 
   if (snap.winner === "draw") world.outcome = "draw";
   else if (snap.winner === "blue") {

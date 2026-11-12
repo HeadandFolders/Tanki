@@ -48,7 +48,7 @@ export function resolvePlace(
 ): { point: Vec2; heading: number; exact: boolean } | { notice: string } {
   if (ref.type === "marker") {
     const mark = world.playerMarks[team];
-    if (!mark) return { notice: "No map mark — hold F and click the map." };
+    if (!mark) return { notice: "No mark pinned — hold F and click the overview." };
     return { point: { x: mark.x, y: mark.y }, heading: 0, exact: true };
   }
   const player = commanderOf(world, team);

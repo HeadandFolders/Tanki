@@ -24,6 +24,7 @@ import {
   armorBand,
   fireCooldownOf,
   getRespawnRate,
+  middleZoneGeometry,
   projectileLifeOf,
   RESPAWN,
   TANK_TYPES,
@@ -58,6 +59,7 @@ import type {
   OrderResult,
   Projectile,
   Tank,
+  TeamId,
   WorldState,
   Wreck,
 } from "./types";
@@ -108,6 +110,11 @@ export function createWorld(
     arenaId,
     arenaSeed,
     zones: arenaZones(arenaId, arenaSeed),
+    middleZone: {
+      ...middleZoneGeometry(CONFIG.canvasWidth, CONFIG.canvasHeight),
+      holder: null,
+      contested: false,
+    },
     walls,
     bases: isBaseWar(gameMode) ? createBaseStates(arenaId) : undefined,
     tanks,
@@ -552,6 +559,7 @@ export function stepWorld(
     }
   }
 
+  updateMiddleZone(world);
   updateRespawns(world, dt);
   updateDeathFx(world);
   updateRepairs(world, dt);
@@ -581,15 +589,38 @@ function updateDeathFx(world: WorldState): void {
 }
 
 /**
+ * Who is standing in the middle zone. Two hulls of one side and none of the
+ * other is the whole rule, and it is what decides each team's respawn clock;
+ * both sides present cancel each other out, and an empty zone is simply open.
+ */
+function updateMiddleZone(world: WorldState): void {
+  const zone = world.middleZone;
+  const inside: Record<TeamId, number> = { blue: 0, red: 0 };
+  for (const tank of world.tanks) {
+    if (!tank.alive) continue;
+    if (dist(tank.x, tank.y, zone.x, zone.y) > zone.radius) continue;
+    inside[tank.team] += 1;
+  }
+  zone.contested = inside.blue > 0 && inside.red > 0;
+  zone.holder = zone.contested
+    ? null
+    : inside.blue > 0
+      ? "blue"
+      : inside.red > 0
+        ? "red"
+        : null;
+}
+
+/**
  * Slow respawn, multiplayer rules only — the wreck modes leave a hull dead for
  * good. Each waiting hull counts down at its team's respawn rate, which is the
- * one number the middle zone is going to move.
+ * one number the middle zone moves.
  */
 function updateRespawns(world: WorldState, dt: number): void {
   if (!isMpRules(world.gameMode)) return;
   for (const tank of world.tanks) {
     if (tank.alive || tank.respawnLeft === undefined) continue;
-    tank.respawnLeft -= dt * getRespawnRate(tank.team);
+    tank.respawnLeft -= dt * getRespawnRate(tank.team, world.middleZone);
     if (tank.respawnLeft <= 0) respawnTank(world, tank);
   }
 }

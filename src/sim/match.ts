@@ -24,6 +24,8 @@ export interface MatchSpec {
   index: number;
   mode: GameMode;
   arena: ArenaId;
+  /** Seed the seeded generator lays this map out from; ignored by authored maps. */
+  mapSeed: number;
   share: ShareMode;
   difficulty: RedDifficulty;
   profiles: Record<TeamId, CommanderProfile>;
@@ -41,6 +43,7 @@ export function matchSpec(overrides: Partial<MatchSpec> = {}): MatchSpec {
     index: 0,
     mode: "base-war",
     arena: CONFIG.arenaDefault,
+    mapSeed: CONFIG.largeArena.seed,
     share: "clear",
     difficulty: "normal",
     profiles: DEFAULT_PROFILES,
@@ -96,6 +99,10 @@ export interface MatchRecord {
   middleTankSeconds: Record<TeamId, number>;
   /** Seconds during which the team had at least one tank in the middle band. */
   middleOccupiedSeconds: Record<TeamId, number>;
+  /** Seconds the zone named this team as its sole holder — its respawn clock ran fast. */
+  zoneHoldSeconds: Record<TeamId, number>;
+  /** Seconds both teams stood in the zone, which is when neither gets the bonus. */
+  zoneContestedSeconds: number;
   /** Base HP over time; empty when the mode has no bases. */
   baseHp: BaseHpSample[];
   /** Orders that actually reached a living hull. */
@@ -135,7 +142,9 @@ function emptyRoleRecord(): Record<TeamId, Partial<Record<Role, number>>> {
 export function runMatch(spec: MatchSpec): MatchRecord {
   const dt = 1 / spec.hz;
   const seeds = matchSeeds(spec.seed, spec.index);
-  const world = createWorld(spec.share, spec.mode, spec.difficulty, seeds.world, "off", spec.arena);
+  const world = createWorld(
+    spec.share, spec.mode, spec.difficulty, seeds.world, "off", spec.arena, spec.mapSeed,
+  );
   for (const team of TEAMS) setCommander(world, team, spec.difficulty, seeds[team], spec.profiles[team]);
   startMatch(world);
 
@@ -157,6 +166,8 @@ export function runMatch(spec: MatchSpec): MatchRecord {
     underStrengthSec: emptyTeamRecord(),
     middleTankSeconds: emptyTeamRecord(),
     middleOccupiedSeconds: emptyTeamRecord(),
+    zoneHoldSeconds: emptyTeamRecord(),
+    zoneContestedSeconds: 0,
     baseHp: [],
     orders: emptyTeamRecord(),
     intents: { blue: {}, red: {} },
@@ -204,6 +215,8 @@ export function runMatch(spec: MatchSpec): MatchRecord {
       if (inMiddle[team]) record.middleOccupiedSeconds[team] += dt;
       if (living[team] < spec.underStrengthAlive) record.underStrengthSec[team] += dt;
     }
+    if (world.middleZone.holder) record.zoneHoldSeconds[world.middleZone.holder] += dt;
+    if (world.middleZone.contested) record.zoneContestedSeconds += dt;
     if (world.bases && world.time + EPS >= nextSampleAt) {
       record.baseHp.push({ t: world.time, blue: world.bases.blue.hp, red: world.bases.red.hp });
       nextSampleAt += spec.baseSampleSec;

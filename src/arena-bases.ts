@@ -2,6 +2,7 @@ import { segmentHitsWall } from "./arena";
 import { AUTHORED_BASES } from "./arena-layouts";
 import { LARGE_BASE } from "./arena-large";
 import { ARENA_SPECS, BASE_FOOTPRINT, CONFIG, type ArenaId } from "./config";
+import { generatedBaseTile } from "./config/balance";
 import type {
   BasePlacement,
   BaseState,
@@ -34,6 +35,10 @@ const OPPOSITE: Record<WallSide, WallSide> = {
 };
 
 function placement(arena: ArenaId): BasePlacement | undefined {
+  // The generator seats blue on the west border, halfway down, and its own
+  // route measure starts from the same tile.
+  if (arena === "generated")
+    return { tile: generatedBaseTile(ARENA_SPECS.generated.rows), wall: "west" };
   return arena === "large" ? LARGE_BASE : AUTHORED_BASES[arena];
 }
 

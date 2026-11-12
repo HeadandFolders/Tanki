@@ -7,7 +7,7 @@
  * the roster and the network snapshot already use.
  */
 import type { GameMode } from "../config";
-import type { TeamId } from "../types";
+import type { BaseTile, MiddleZoneState, TeamId } from "../types";
 
 export type TankTypeId =
   | "scout"
@@ -123,12 +123,47 @@ export const RESPAWN = {
 };
 
 /**
- * The only place a respawn clock is scaled. 1.0 today: the delay is the same
- * wherever the fight is. Zone control is what makes the two sides' clocks
- * differ, so it changes this number and nothing else.
+ * The contested zone in the middle of the map. A team with a living hull inside
+ * it, and no enemy hull inside, brings its dead hulls back twice as fast.
  */
-export function getRespawnRate(_team: TeamId): number {
-  return 1;
+export const MIDDLE_ZONE = {
+  /** Zone centre as a fraction of the arena extent — 0.5,0.5 is the exact middle. */
+  centerFraction: { x: 0.5, y: 0.5 },
+  /**
+   * Radius as a fraction of map height, so the 80x50 and the 144x90 maps get the
+   * same relative footprint (~6% of the map) and the same reach from either base.
+   */
+  radiusFraction: 0.18,
+  /** Respawn clock multiplier for the team that holds the zone alone. */
+  holdRate: 2,
+  /** Multiplier for everyone else — the number the game ran at before the zone existed. */
+  baseRate: 1,
+};
+
+/** Circle in world px resolved from the arena extent; see `MIDDLE_ZONE`. */
+export function middleZoneGeometry(width: number, height: number): {
+  x: number;
+  y: number;
+  radius: number;
+} {
+  return {
+    x: width * MIDDLE_ZONE.centerFraction.x,
+    y: height * MIDDLE_ZONE.centerFraction.y,
+    radius: height * MIDDLE_ZONE.radiusFraction,
+  };
+}
+
+/** The two fields that decide a team's respawn clock. */
+export type RespawnRateControl = Pick<MiddleZoneState, "holder" | "contested">;
+
+/**
+ * The only place a respawn clock is scaled. A team alone in the middle zone
+ * counts down at `MIDDLE_ZONE.holdRate`; everyone else counts down at
+ * `MIDDLE_ZONE.baseRate`, including both teams sharing it, which is recorded on
+ * the zone as no holder at all.
+ */
+export function getRespawnRate(team: TeamId, zone?: RespawnRateControl | null): number {
+  return zone && zone.holder === team ? MIDDLE_ZONE.holdRate : MIDDLE_ZONE.baseRate;
 }
 
 /** Half-width of each armour arc, degrees off the hull's own facing. */
@@ -313,6 +348,272 @@ export function baseReachOf(role: TankTypeId): number {
   const nuke = TANK_TYPES[role].nuke;
   return nuke ? Math.max(TANK_TYPES[role].range, nuke.range) : TANK_TYPES[role].range;
 }
+
+/**
+ * Tiles on a side of a base's square footprint, and the px on a tile side.
+ * `src/config.ts` owns the same two numbers, but it imports this file, so
+ * reading them back here would be a cycle. Keep them in step with `CONFIG`.
+ */
+const BASE_FOOTPRINT_TILES = 3;
+const TILE_PX = 16;
+
+/**
+ * Seeded map generation. One generator, one symmetry, one set of acceptance
+ * rules — every number a generated map is built to or judged by is here.
+ */
+export const MAP_GEN = {
+  /** Layout seed used when nothing names one (the game; the batch takes `--map-seed`). */
+  seedDefault: 20261112,
+
+  /** The map the area target is measured against: the current hand-built 144x90 default. */
+  referenceArena: { cols: 144, rows: 90 },
+  /** New map area as a multiple of that reference. */
+  areaMultiplier: 3,
+
+  /**
+   * How long the shortest tank route from base to base should take, in seconds,
+   * driven at `averageHullSpeed()`. The size chooser searches map shapes at the
+   * target area for the one that lands in this window.
+   */
+  baseToBaseSec: { min: 35, max: 45 },
+  /** Width/height ratios the chooser may consider, and the one it prefers. */
+  aspect: { min: 1.0, max: 1.6, preferred: 1.25 },
+  /**
+   * Route length as a multiple of the base-to-base straight line. Measured on
+   * generated maps: the shortest way from base to base leaves the axis, runs
+   * the length of the map one lane out, and returns — so it is this much
+   * longer than a line the walls never let a hull drive. The size chooser needs
+   * it to turn a wanted travel time into a size before anything is built.
+   */
+  detourFactor: 1.44,
+
+  /** Tile grid the border ring occupies on every side. */
+  borderTiles: 2,
+  /** Tiles on a side of a base's square footprint; `config.ts` calls the same thing BASE_FOOTPRINT. */
+  footprintTiles: 3,
+
+  /** Carved door and gap width in tiles. 3 tiles = 48px for a 22px hull. */
+  corridorTiles: 3,
+
+  /**
+   * How the half-map is drawn before anything is measured. The field starts as
+   * solid brick, and the three routes are carved lanes through it, so a lane
+   * leaving the brick is a detour by construction rather than by luck.
+   *
+   * Each lane is a row band offset from the midline between the bases, and the
+   * offset is a share of the half-height, so the same number works at any size
+   * and every band has an exact 180° twin.
+   */
+  layout: {
+    /** The short open avenue, this far north of the midline, in half-heights. */
+    avenueFraction: 0.52,
+    /** ... and how many rows it is wide: wide enough to drive in, never to hide in. */
+    avenueRows: 6,
+    /** The long covered alley, this far south of the midline, in half-heights. */
+    trenchFraction: 0.75,
+    /**
+     * An alley is ground this many rows (or columns) across, run straight, with
+     * a block of cover `baffleTiles` long stood `baffleDepthTiles` deep into one
+     * flank, the other, the other, alternating, every `baffleEveryTiles` along.
+     * Four numbers, and each is doing one of the two jobs, never both:
+     *
+     * - No sight may run it. One flank's blocks are `baffleEveryTiles` apart and
+     *   `baffleTiles` long, so a line down the alley sees open ground for
+     *   `2 * baffleEveryTiles - baffleTiles` tiles at most — under `sight.firingRunTiles`,
+     *   and no line crosses this many rows or columns without meeting a block.
+     *   Which needs the blocks to reach past the middle: `2 * baffleDepthTiles
+     *   >= alleyRows`, or the centre row is a firing line the whole length.
+     * - A hull must get through. The open band left on the far side of a block is
+     *   `alleyRows - baffleDepthTiles` rows, and a hull's stance needs the row
+     *   either side of it, so that is at least 3. And to change flank it needs a
+     *   stretch with nothing stood in it: `baffleEveryTiles - baffleTiles` tiles,
+     *   at least 3, or the alley is a dead end at the first block.
+     */
+    alleyRows: 6,
+    baffleTiles: 2,
+    baffleDepthTiles: 3,
+    baffleEveryTiles: 5,
+    /** The wave that crosses the midline, in half-heights of swing. */
+    serpentineFraction: 0.3,
+    /** Wave rows thick, and half-waves across the map: each one crosses the midline. */
+    serpentineRows: 5,
+    serpentineLegs: 6,
+    /** Carved door and trunk width, and how far a lane runs outside the aprons. */
+    trunkTiles: 3,
+    /** Open ground carved in front of each base: wide, tall, in tiles. */
+    apron: { cols: 18, rows: 26 },
+    /**
+     * Alcoves cut off the lanes: a trunk wide, this many tiles long, closed by a
+     * block of cover at the back. Short enough that no line of fire runs down
+     * one and out into the lane it opens on, deep enough to park a hull behind.
+     * They are the one thing that does leak sightlines into the alleys — a slant
+     * line out of an alley's flank picks up a bay standing in it — so their
+     * count, not just their length, is what the protected route's exposure
+     * measure is paid in.
+     */
+    bays: { count: 16, length: [4, 5], backTiles: 2, clearanceTiles: 2 },
+    /** Cover blocks a hull cannot shoot through; steel is the rarer, unwreckable one. */
+    steelShare: 0.2,
+    /** Attempts allowed to land every bay. */
+    maxPlaceAttempts: 4000,
+  },
+
+  /** What a "sightline" is, for the exposure measure and the baffle rule. */
+  sight: {
+    /** Ray length used to count how walled-in a point is. */
+    probePx: 40,
+    /** Of 8 rays, this many must hit a wall for the point to count as covered. */
+    coverRaysMin: 2,
+    /** An unbroken open run this many tiles long is a firing line: never covered. */
+    firingRunTiles: 10,
+  },
+
+  /**
+   * The acceptance rules. A generated map that fails any of these is thrown
+   * away and the generator retries with a new seed.
+   */
+  rules: {
+    /** Share of the shortest route that must be uncovered — it has to be the exposed one. */
+    exposedShareMin: 0.5,
+    /** Share of the protected route allowed to be uncovered. */
+    protectedShareMax: 0.25,
+    /** The two routes must differ this much on exposure, or the map has no real choice. */
+    exposureGapMin: 0.3,
+    /** Shortest route over the base-to-base straight line: walls must force a detour. */
+    detourRatioMin: 1.1,
+    /** The protected route is the long one: at least this many times the short one. */
+    protectedLengthMin: 1.15,
+    /** ... but it may not be a slog, or nobody takes it. */
+    protectedLengthMax: 2.2,
+    /** The middle-zone route, same bound. */
+    zoneLengthMax: 2.2,
+    /**
+     * Cost weight of one uncovered step, in steps, when looking for the
+     * protected route. This is what makes A* prefer cover over distance.
+     */
+    exposureCostWeight: 3,
+    /** How near the other route's ground counts as riding it, in tiles. */
+    routeSeparationTiles: 3,
+    /**
+     * ... and how much of a route may do it. Corridors cross each other on
+     * their way round the map, which costs a handful of tiles; a route that
+     * follows another one's corridor costs most of its length.
+     */
+    routeOverlapShareMax: 0.12,
+    /**
+     * Inside this many tiles of a base, routes are allowed to share ground:
+     * every lane leaves a base through its apron, and the apron is the one
+     * piece of terrain all three ways have in common.
+     */
+    baseMergeTiles: 21,
+    /** Share of the tank-fit lattice that must be reachable from a base. */
+    reachableShareMin: 0.9,
+    /** Seeds tried before giving up on a requested map seed. */
+    maxAttempts: 24,
+  },
+} as const;
+
+/** Drive speed averaged over the hulls a side fields — the map's ruler in px/s. */
+export function averageHullSpeed(loadout: readonly TankTypeId[] = LOADOUTS.company): number {
+  return loadout.reduce((sum, role) => sum + TANK_TYPES[role].speed, 0) / loadout.length;
+}
+
+/**
+ * Where a generated map seats blue's base; red is the 180° mirror of this.
+ *
+ * Mid-wall, not in a corner: a base in a corner would put one team's spawn
+ * beside the lane that reaches the map's far end first, and the generator's
+ * lanes are built to run past the middle rather than around a corner.
+ */
+export function generatedBaseTile(rows: number): BaseTile {
+  return {
+    tileX: MAP_GEN.borderTiles,
+    tileY: Math.round(rows / 2) - 1,
+  };
+}
+
+/**
+ * The open ground carved in front of blue's base, in tiles, inclusive. Red's is
+ * the 180° mirror. The generator carves it, the route measure gives it away and
+ * the teams spawn inside it, so all three read this one rect rather than each
+ * keeping their own copy of where it is.
+ */
+export function generatedApronTiles(rows: number): { x0: number; y0: number; x1: number; y1: number } {
+  const x0 = MAP_GEN.borderTiles;
+  const y0 = (rows >> 1) - Math.floor(MAP_GEN.layout.apron.rows / 2);
+  return {
+    x0,
+    y0,
+    x1: x0 + MAP_GEN.layout.apron.cols - 1,
+    y1: y0 + MAP_GEN.layout.apron.rows - 1,
+  };
+}
+
+/**
+ * The width and height a generated map gets: the shape at `areaMultiplier` x
+ * the reference area whose base-to-base drive time, worked out from the hull
+ * speeds, sits closest to the middle of the wanted window.
+ */
+export interface GeneratedMapSize {
+  cols: number;
+  rows: number;
+  /** Base centre to base centre, px. */
+  straightPx: number;
+  /** The shortest route the generator is expected to yield, px. */
+  estRoutePx: number;
+  /** ... and how long that takes at the average hull speed. */
+  estSec: number;
+  avgSpeed: number;
+  aspect: number;
+}
+
+/** A shape the size chooser scored on its way to picking one. */
+interface SizeCandidate extends GeneratedMapSize {
+  score: number;
+  inside: boolean;
+}
+
+export function chooseMapSize(): GeneratedMapSize {
+  const target = MAP_GEN.referenceArena.cols * MAP_GEN.referenceArena.rows * MAP_GEN.areaMultiplier;
+  const avgSpeed = averageHullSpeed();
+  const wanted = (MAP_GEN.baseToBaseSec.min + MAP_GEN.baseToBaseSec.max) / 2;
+  const candidates: SizeCandidate[] = [];
+  // Every whole-numbered height, but keep both counts even: the generator
+  // builds one half and mirrors it, and an odd row count leaves a row that is
+  // its own mirror.
+  for (let rows = 40; rows <= 600; rows += 2) {
+    const cols = Math.round(target / rows / 2) * 2;
+    if (cols < 40) continue;
+    const aspect = cols / rows;
+    if (aspect < MAP_GEN.aspect.min || aspect > MAP_GEN.aspect.max) continue;
+    const b = generatedBaseTile(rows);
+    const s = TILE_PX;
+    const bx = (b.tileX + BASE_FOOTPRINT_TILES / 2) * s;
+    const by = (b.tileY + BASE_FOOTPRINT_TILES / 2) * s;
+    // Red's base is blue's centre rotated 180° about the map centre, so each
+    // base-to-edge gap cancels into `cols * s - 2 * bx`.
+    const straightPx = Math.hypot(cols * s - 2 * bx, rows * s - 2 * by);
+    const estRoutePx = straightPx * MAP_GEN.detourFactor;
+    const estSec = estRoutePx / avgSpeed;
+    const inside = estSec >= MAP_GEN.baseToBaseSec.min && estSec <= MAP_GEN.baseToBaseSec.max;
+    const score =
+      Math.abs(estSec - wanted) / wanted + Math.abs(aspect - MAP_GEN.aspect.preferred) * 0.25;
+    candidates.push({
+      cols, rows, straightPx, estRoutePx, estSec, avgSpeed, aspect, score, inside,
+    });
+  }
+  if (candidates.length === 0) {
+    throw new Error("MAP_GEN: no aspect ratio in range at the target area");
+  }
+  let best: SizeCandidate = candidates[0]!;
+  for (const c of candidates) {
+    if ((c.inside && !best.inside) || (c.inside === best.inside && c.score < best.score)) best = c;
+  }
+  return best;
+}
+
+/** Chosen once, because ARENA_SPECS needs a fixed size for the generated map. */
+export const MAP_GEN_SIZE = chooseMapSize();
 
 /**
  * Armour band a shot arriving from `bearing` (world radians, measured from the

@@ -1,13 +1,16 @@
 import {
   CONFIG,
   isMpOnline,
+  isMpRules,
   modesFromMenu,
   type ArenaId,
   type GameMode,
   type MenuMode,
   type ShareMode,
 } from "./config";
+import { getRespawnRate } from "./config/balance";
 import { arenaLayoutHash, clearWallLayout, saveWallLayout } from "./arena";
+import { generatedRoutes } from "./mapgen";
 import { layoutHash } from "./arena-routes";
 import { apiKeySource, resolveApiKey } from "./api-key";
 import {
@@ -67,6 +70,9 @@ const baseHpEl = document.querySelector<HTMLElement>("#base-hp")!;
 const baseHpBlueEl = document.querySelector<HTMLElement>("#base-hp-blue")!;
 const baseHpRedEl = document.querySelector<HTMLElement>("#base-hp-red")!;
 const respawnHudEl = document.querySelector<HTMLElement>("#respawn-hud")!;
+const zoneHudEl = document.querySelector<HTMLElement>("#zone-hud")!;
+const zoneStateEl = document.querySelector<HTMLElement>("#zone-hud-state")!;
+const zoneRateEl = document.querySelector<HTMLElement>("#zone-hud-rate")!;
 const minimapEl = document.querySelector<HTMLCanvasElement>("#minimap")!;
 const minimapCtx = minimapEl.getContext("2d")!;
 const chatEl = document.querySelector("#chat")!;
@@ -309,13 +315,31 @@ function currentOpponent(): "easy" | "normal" | "hard" | "off" {
 function currentArena(): ArenaId | undefined {
   const menu = modeSelect.value;
   if (menu !== "mp-offline" && menu !== "mp-online" && menu !== "base-war") return undefined;
-  return mpArenaSelect.value === "large" ? "large" : "dense";
+  const value = mpArenaSelect.value;
+  return value === "generated" || value === "large" ? value : "dense";
 }
+
+/**
+ * `?map-seed=` picks which generated map the page builds; without it the map
+ * stays on the authored default seed so every other arena is untouched.
+ */
+const MAP_SEED = (() => {
+  const raw = new URLSearchParams(location.search).get("map-seed");
+  const n = raw === null ? NaN : Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : CONFIG.largeArena.seed;
+})();
+
+/** `?routes=1` shows the three routes at boot; "r" toggles them from there. */
+let showRoutes = new URLSearchParams(location.search).get("routes") === "1";
 
 /** Hard-refresh always lands on TDM No Fog unless the user already changed the select. */
 modeSelect.value = CONFIG.menuModeDefault;
+if (new URLSearchParams(location.search).get("arena") === "generated") {
+  modeSelect.value = "mp-offline";
+  mpArenaSelect.value = "generated";
+}
 const boot = applyMenuPreset();
-let world: WorldState = createWorld(boot.share, boot.mode, "normal", undefined, currentOpponent(), currentArena());
+let world: WorldState = createWorld(boot.share, boot.mode, "normal", undefined, currentOpponent(), currentArena(), MAP_SEED);
 let countdownTimer: number | null = null;
 let countdownLeft = 0;
 
@@ -542,7 +566,7 @@ function selectMenuMode(menu: MenuMode, rebuild: boolean): void {
   }
   if (rebuild) {
     // Rebuild the paused match with the new mode (still behind the menu)
-    world = createWorld(resolved.share, resolved.mode, "normal", undefined, currentOpponent(), currentArena());
+    world = createWorld(resolved.share, resolved.mode, "normal", undefined, currentOpponent(), currentArena(), MAP_SEED);
     resetLogs();
     flushLogs();
   }
@@ -688,12 +712,14 @@ mpStartBtn.addEventListener("click", () => {
   }
   gateProbe = { kind: "offline_chosen" };
   const arena = currentArena() ?? CONFIG.arenaDefault;
-  net.sendStart(arena, CONFIG.largeArena.seed, arenaLayoutHash(arena, CONFIG.largeArena.seed));
+  net.sendStart(arena, MAP_SEED, arenaLayoutHash(arena, MAP_SEED));
 });
 
 const keys = new Set<string>();
 let mouseX = CONFIG.viewWidth / 2;
 let mouseY = CONFIG.viewHeight / 2;
+/** Cursor over the overview panel, in panel px — the only place a mark pins. */
+let miniCursor: { x: number; y: number } | null = null;
 let shooting = false;
 let mapEditing = false;
 let dragWall: Wall | null = null;
@@ -792,7 +818,7 @@ function leaveMapEdit(): void {
   canvas.style.cursor = "";
   if (wasEditing && world.outcome === "ready") {
     const { share, mode } = currentModes();
-    world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena());
+    world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena(), MAP_SEED);
   }
 }
 
@@ -829,10 +855,9 @@ canvas.addEventListener("mousedown", (ev) => {
   }
 
   if (ev.button === 0) {
-    if (keys.has("f")) {
-      dropMark(pointerWorld());
-      return;
-    }
+    // A mark pins on the overview panel only; F on the map stays inert so it
+    // does not quietly turn into a hull switch.
+    if (keys.has("f")) return;
     const worldPt = pointerWorld();
     const friendly = world.tanks.find(
       (t) =>
@@ -875,6 +900,18 @@ minimapEl.addEventListener("mousedown", (ev) => {
   if (spot) dropMark(spot);
 });
 
+minimapEl.addEventListener("mousemove", (ev) => {
+  const rect = minimapEl.getBoundingClientRect();
+  const r = minimapRect();
+  miniCursor = {
+    x: ((ev.clientX - rect.left) / rect.width) * r.w,
+    y: ((ev.clientY - rect.top) / rect.height) * r.h,
+  };
+});
+minimapEl.addEventListener("mouseleave", () => {
+  miniCursor = null;
+});
+
 window.addEventListener("mouseup", () => {
   shooting = false;
   if (!dragWall) return;
@@ -900,7 +937,7 @@ mapEditResetBtn.addEventListener("click", () => {
   clearWallLayout(world.arenaId);
   dragWall = null;
   const { share, mode } = currentModes();
-  world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena());
+  world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena(), MAP_SEED);
   flushLogs();
 });
 
@@ -923,6 +960,9 @@ window.addEventListener("keydown", (ev) => {
     ev.preventDefault();
   }
   keys.add(k);
+  if (k === "r" && world.arenaId === "generated") {
+    showRoutes = !showRoutes;
+  }
   if (k === " " || k === "spacebar") {
     shooting = true;
   }
@@ -953,7 +993,7 @@ shareSelect.addEventListener("change", () => {
 function restartMatch(fromMenu = false): void {
   leaveMapEdit();
   const { share, mode } = fromMenu ? applyMenuPreset() : currentModes();
-  world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena());
+  world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena(), MAP_SEED);
   resetLogs();
   flushLogs();
   showRoundGate();
@@ -1234,6 +1274,22 @@ function renderRespawnHud(world: WorldState): void {
   );
 }
 
+/**
+ * Who owns the middle zone's respawn bonus, and what each side's clock is
+ * running at. The zone only bites where dead hulls come back, so outside the
+ * multiplayer ruleset there is nothing to advertise.
+ */
+function renderMiddleZone(world: WorldState): void {
+  const live = isMpRules(world.gameMode);
+  zoneHudEl.hidden = !live;
+  if (!live) return;
+  const zone = world.middleZone;
+  const holder = zone.holder;
+  zoneStateEl.textContent = `middle ${holder ? `${holder} holds` : zone.contested ? "contested" : "open"}`;
+  zoneStateEl.className = `zone-hud-state ${holder ? `zone-${holder}` : zone.contested ? "zone-contested" : "zone-open"}`;
+  zoneRateEl.textContent = `respawn blue ×${getRespawnRate("blue", zone)} red ×${getRespawnRate("red", zone)}`;
+}
+
 function appendLog(
   el: Element,
   line: { text: string; kind: string },
@@ -1352,13 +1408,25 @@ function frame(ts: number): void {
   const marking =
     keys.has("f") &&
     (world.outcome === "playing" || world.outcome === "countdown");
-  renderWorld(ctx, world, cam, aim.x, aim.y, localTeam, marking, mapEditing);
+  renderWorld(
+    ctx,
+    world,
+    cam,
+    aim.x,
+    aim.y,
+    localTeam,
+    mapEditing,
+    showRoutes && world.arenaId === "generated"
+      ? generatedRoutes(world.arenaSeed)
+      : null,
+  );
   syncMinimapSurface();
-  renderMinimap(minimapCtx, world, cam, localTeam);
+  renderMinimap(minimapCtx, world, cam, localTeam, marking ? miniCursor : null);
 
   timerEl.textContent = formatTime(world.matchLeft);
   renderBaseHp(world);
   renderRespawnHud(world);
+  renderMiddleZone(world);
   const me =
     localTeam === "red"
       ? world.tanks.find((t) => t.id === world.remoteControlledId)

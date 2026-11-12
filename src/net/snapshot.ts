@@ -1,4 +1,5 @@
 import type { WorldState } from "../types";
+import { restoreGoal } from "../interrupt-stack";
 import type { NetStateSnap } from "./protocol";
 
 export function worldToSnap(world: WorldState): NetStateSnap {
@@ -51,8 +52,8 @@ export function worldToSnap(world: WorldState): NetStateSnap {
       angle: d.angle,
       startedAt: d.startedAt,
     })),
-    chat: world.chat.slice(-12).map((c) => ({ text: c.text, kind: c.kind })),
-    events: world.events.slice(-16).map((e) => ({ text: e.text, kind: e.kind })),
+    chat: world.chat.slice(-12).map((c) => ({ ...c })),
+    events: world.events.slice(-16).map((e) => ({ ...e })),
   };
 }
 
@@ -89,11 +90,11 @@ export function applySnap(
     t.hp = s.hp;
     t.maxHp = s.maxHp;
     t.alive = s.alive;
-    t.goal = {
+    restoreGoal(t, {
       kind: s.goal as typeof t.goal.kind,
       source: (s.goalSource as "player" | "system" | undefined) ?? t.goal.source,
       params: t.goal.params,
-    };
+    });
     t.lastKnownPos = { x: s.x, y: s.y };
   }
 
@@ -114,28 +115,13 @@ export function applySnap(
     id: d.id,
     team: d.team,
     tankNumber: d.tankNumber,
-    role: d.role as "scout" | "shooter",
+    role: d.role as "scout" | "shooter" | "heavy",
     x: d.x,
     y: d.y,
     angle: d.angle,
     startedAt: d.startedAt,
   }));
 
-  // Replace chat/events tails when longer (avoid spam flicker)
-  if (snap.chat.length) {
-    const mapped = snap.chat.map((c) => ({
-      t: world.time,
-      text: c.text,
-      kind: c.kind as "ally" | "sys" | "warn",
-    }));
-    if (mapped.length >= world.chat.length) world.chat = mapped;
-  }
-  if (snap.events.length) {
-    const mapped = snap.events.map((e) => ({
-      t: world.time,
-      text: e.text,
-      kind: e.kind as "ally" | "sys" | "warn",
-    }));
-    if (mapped.length >= world.events.length) world.events = mapped;
-  }
+  world.chat = snap.chat.map((c) => ({ ...c, kind: c.kind as "ally" | "sys" | "warn" }));
+  world.events = snap.events.map((e) => ({ ...e, kind: e.kind as "ally" | "sys" | "warn" }));
 }

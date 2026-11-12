@@ -1,4 +1,4 @@
-import { CONFIG } from "../config";
+import { CONFIG, type ArenaId } from "../config";
 import {
   decode,
   encode,
@@ -19,10 +19,11 @@ export type NetStatus =
 
 export interface NetClientHandlers {
   onStatus: (s: NetStatus) => void;
-  onStart: (seed: number) => void;
+  onStart: (seed: number, arena: ArenaId, arenaSeed: number, layoutHash: string) => void;
+  onPeerLayout: (hash: string) => void;
   onState: (state: NetStateSnap) => void;
   onPeerInput: (input: NetInput) => void;
-  onPeerOrder: (text: string) => void;
+  onPeerOrder: (text: string, segmentId?: string) => void;
   onPeerMark: (x: number, y: number) => void;
   onLog?: (line: string) => void;
 }
@@ -113,16 +114,20 @@ export class NetClient {
     this.send({ type: "ready" });
   }
 
-  sendStart(): void {
-    this.send({ type: "start" });
+  sendStart(arena: ArenaId, arenaSeed: number, layoutHash: string): void {
+    this.send({ type: "start", arena, arenaSeed, layoutHash });
+  }
+
+  sendLayout(hash: string): void {
+    this.send({ type: "layout", hash });
   }
 
   sendInput(input: NetInput): void {
     this.send({ type: "input", input });
   }
 
-  sendOrder(text: string): void {
-    this.send({ type: "order", text });
+  sendOrder(text: string, metadata?: { segmentId?: string }): void {
+    this.send({ type: "order", text, segmentId: metadata?.segmentId });
   }
 
   sendMark(x: number, y: number): void {
@@ -168,7 +173,7 @@ export class NetClient {
         }
         break;
       case "start":
-        this.handlers.onStart(msg.seed);
+        this.handlers.onStart(msg.seed, msg.arena, msg.arenaSeed, msg.layoutHash);
         break;
       case "state":
         this.handlers.onState(msg.state);
@@ -177,10 +182,13 @@ export class NetClient {
         this.handlers.onPeerInput(msg.input);
         break;
       case "peer-order":
-        this.handlers.onPeerOrder(msg.text);
+        this.handlers.onPeerOrder(msg.text, msg.segmentId);
         break;
       case "peer-mark":
         this.handlers.onPeerMark(msg.x, msg.y);
+        break;
+      case "peer-layout":
+        this.handlers.onPeerLayout(msg.hash);
         break;
       case "error":
         this.handlers.onStatus({ kind: "error", message: msg.message });

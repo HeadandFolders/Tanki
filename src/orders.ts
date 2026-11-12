@@ -1,4 +1,6 @@
-import { CONFIG, isMpRules } from "./config";
+import { CONFIG, isBaseWar, isMpRules } from "./config";
+import { intentsToOrders } from "./command-resolver";
+import type { CommandIntent } from "./command-schema";
 import { goalKindsForPrompt, isGoalKind } from "./goals";
 import type {
   GoalKind,
@@ -29,6 +31,40 @@ export async function interpretOrder(
   const t0 = performance.now();
   if (!text) return { results: [], source: "mock", ms: 0 };
 
+  const plan = planUtterance(text, tanks, worldState, team);
+  if (plan) {
+    const base = ordersFromPlan(plan, tanks, team);
+    // Attack plans and the no-key path stay on the keyword result.
+    // A move plan may let the model nudge the anchor, not change the goal.
+    if (!ctx.apiKey || plan.goal !== "moveTo" || plan.notice) {
+      return {
+        results: base,
+        source: "mock",
+        ms: Math.round(performance.now() - t0),
+        notice: plan.notice,
+      };
+    }
+    try {
+      const llm = await interpretWithLlm(text, tanks, worldState, ctx, team);
+      return {
+        results: refineMoveAnchors(plan, base, llm, worldState, team),
+        source: "llm",
+        ms: Math.round(performance.now() - t0),
+      };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : "LLM error";
+      const msg = /401|invalid.?api.?key|incorrect api key/i.test(raw)
+        ? `invalid API key (${raw})`
+        : raw;
+      return {
+        results: base,
+        source: "mock",
+        ms: Math.round(performance.now() - t0),
+        llmError: msg,
+      };
+    }
+  }
+
   const marked = ordersForPlayerMark(text, tanks, worldState, team);
   if (marked) {
     return {
@@ -36,6 +72,22 @@ export async function interpretOrder(
       source: "mock",
       ms: Math.round(performance.now() - t0),
       notice: marked.notice,
+    };
+  }
+
+  // Cover / retreat / hold / spread already have a deterministic reading.
+  // Do not wait on the LLM for those — "everyone cover me" used to sit on
+  // the API for several seconds even though interpretOffline had the answer.
+  if (phraseReaderHandles(text)) {
+    return {
+      results: lockNamedAttack(
+        text,
+        interpretOffline(text, tanks, worldState, team),
+        tanks,
+        team,
+      ),
+      source: "mock",
+      ms: Math.round(performance.now() - t0),
     };
   }
 
@@ -232,6 +284,25 @@ function ordersForPlayerMark(
   };
 }
 
+/**
+ * Verbs the keyword reader already settles without a best-effort guess.
+ * Used so cover/retreat/hold skip Needle and the LLM.
+ */
+export function phraseReaderHandles(text: string): boolean {
+  const lower = normalizeSpokenNumbers(text).toLowerCase();
+  if (!lower.trim()) return false;
+  if (/\battack\s+(?:(?:the|their|enemy)\s+)*base\b/.test(lower)) return true;
+  if (/\b(?:debug|inspect)(?:\s+(?:marked\s+wrecks?|wreck\s+[a-z]))?[.!?]*$/.test(lower)) return true;
+  if (
+    /\b(escort|cover|protect|follow|guard|retreat|fall\s*back|get\s*out|spread(\s*out)?|fan\s*out|disperse|space\s*out|hold|stay|wait|defend)\b/.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function friendlies(tanks: Tank[], team: TeamId = "blue"): Tank[] {
   return tanks.filter((t) => t.team === team && t.alive);
 }
@@ -388,7 +459,11 @@ function resolveTargetsWithControl(
     const scouts = alive.filter((t) => t.role === "scout");
     return coverVerb ? withoutVip(scouts) : scouts;
   }
-  if (/\b(shooters?|gunners?)\b/.test(lower)) {
+  if (/\bheav(?:y|ies)\b/.test(lower)) {
+    const heavies = alive.filter((t) => t.role === "heavy");
+    return coverVerb ? withoutVip(heavies) : heavies;
+  }
+  if (/\b(lights?|shooters?|gunners?)\b/.test(lower)) {
     const guns = alive.filter((t) => t.role === "shooter");
     return coverVerb ? withoutVip(guns) : guns;
   }
@@ -514,6 +589,354 @@ function commanderId(world: WorldState, team: TeamId): string {
   return world.controlledId;
 }
 
+export type FlankSide = "left" | "right";
+export type RouteRisk = "normal" | "stealth";
+
+/**
+ * One utterance, one plan. Bots share a side of the commander instead of
+ * each receiving a map-edge move that can cross the speaker's lane.
+ */
+export interface OrderPlan {
+  goal: "moveTo" | "attackNearest";
+  addressedIds: string[];
+  side: FlankSide | null;
+  landmark: string | null;
+  speakerReservedSide: FlankSide | null;
+  risk: RouteRisk;
+  /** Radians, atan2 toward the enemy cluster (or the commander's hull facing). */
+  facing: number;
+  anchor: { x: number; y: number } | null;
+  reservedAnchor: { x: number; y: number } | null;
+  enemyNumbers: number[];
+  notice?: string;
+}
+
+/** Screen-right of `facing` (y-down atan2). Positive means to the commander's right. */
+export function lateralOffset(
+  facing: number,
+  origin: { x: number; y: number },
+  point: { x: number; y: number },
+): number {
+  const rx = -Math.sin(facing);
+  const ry = Math.cos(facing);
+  return (point.x - origin.x) * rx + (point.y - origin.y) * ry;
+}
+
+function enemyCentroid(
+  tanks: Tank[],
+  team: TeamId,
+): { x: number; y: number } | null {
+  const enemy = foes(tanks, team);
+  if (!enemy.length) return null;
+  const x = enemy.reduce((sum, t) => sum + t.x, 0) / enemy.length;
+  const y = enemy.reduce((sum, t) => sum + t.y, 0) / enemy.length;
+  return { x, y };
+}
+
+function commanderFacing(
+  commander: Tank,
+  tanks: Tank[],
+  team: TeamId,
+): number {
+  const cluster = enemyCentroid(tanks, team);
+  if (!cluster) return commander.angle;
+  return Math.atan2(cluster.y - commander.y, cluster.x - commander.x);
+}
+
+function clampArena(x: number, y: number): { x: number; y: number } {
+  const pad = CONFIG.arenaPadding + CONFIG.tankRadius + 8;
+  return {
+    x: Math.min(CONFIG.canvasWidth - pad, Math.max(pad, x)),
+    y: Math.min(CONFIG.canvasHeight - pad, Math.max(pad, y)),
+  };
+}
+
+/** Point ahead of the commander, offset to one flank of the enemy cluster. */
+function flankAnchor(
+  commander: Tank,
+  facing: number,
+  side: FlankSide,
+  tanks: Tank[],
+  team: TeamId,
+): { x: number; y: number } {
+  const cluster = enemyCentroid(tanks, team);
+  const distTo = cluster
+    ? Math.hypot(cluster.x - commander.x, cluster.y - commander.y)
+    : 240;
+  const ahead = Math.max(140, Math.min(260, distTo * 0.4));
+  const lateral = 190;
+  const fx = Math.cos(facing);
+  const fy = Math.sin(facing);
+  const rx = -Math.sin(facing);
+  const ry = Math.cos(facing);
+  const sign = side === "right" ? 1 : -1;
+  return clampArena(
+    commander.x + fx * ahead + rx * lateral * sign,
+    commander.y + fy * ahead + ry * lateral * sign,
+  );
+}
+
+/** "the right" / "flank left", not "bottom left" or compass corners. */
+function relativeSide(text: string): FlankSide | null {
+  if (/\b(bottom|top|upper|lower|north|south|east|west)\b/.test(text)) {
+    return null;
+  }
+  const m = text.match(/\b(?:the|flank)\s+(left|right)\b/);
+  return m ? (m[1] as FlankSide) : null;
+}
+
+function idsForNumbers(
+  nums: number[],
+  tanks: Tank[],
+  team: TeamId,
+): string[] {
+  const alive = friendlies(tanks, team);
+  const ids: string[] = [];
+  for (const n of nums) {
+    const t = alive.find((tank) => tank.number === n);
+    if (t && !ids.includes(t.id)) ids.push(t.id);
+  }
+  return ids;
+}
+
+/**
+ * Keyword plan for a whole utterance. Null means "use the older clause parser".
+ * Relative flanks, stealth moves, shoot-at-will moves, and named attacks match.
+ */
+export function planUtterance(
+  orderText: string,
+  tanks: Tank[],
+  world: WorldState,
+  team: TeamId = "blue",
+): OrderPlan | null {
+  const text = normalizeSpokenNumbers(orderText);
+  const clauses = splitOrderClauses(text);
+  const speakerClauses = clauses.filter((c) => isSpeakerClause(c));
+  const fireClauses = clauses.filter((c) => isFireAtWillClause(c));
+  const rest = clauses.filter(
+    (c) => !isSpeakerClause(c) && !isFireAtWillClause(c),
+  );
+  if (rest.length !== 1) return null;
+  const body = rest[0] ?? "";
+  const risk: RouteRisk = /\b(stealth(?:ily)?|sneak(?:ily)?|covert(?:ly)?)\b/i.test(
+    text,
+  )
+    ? "stealth"
+    : "normal";
+  const speakerReservedSide = speakerClauses.reduce<FlankSide | null>(
+    (side, clause) => side ?? relativeSide(clause),
+    null,
+  );
+  const cmd = friendlies(tanks, team).find(
+    (t) => t.id === commanderId(world, team),
+  );
+  const facing = cmd ? commanderFacing(cmd, tanks, team) : 0;
+
+  const attack = parseTargetedEnemyAttack(body);
+  if (attack && (attack.allyNumbers.length > 0 || attack.allAllies)) {
+    const addressedIds = attack.allyNumbers.length
+      ? idsForNumbers(attack.allyNumbers, tanks, team)
+      : friendlies(tanks, team).map((t) => t.id);
+    return {
+      goal: "attackNearest",
+      addressedIds,
+      side: null,
+      landmark: null,
+      speakerReservedSide: null,
+      risk: "normal",
+      facing,
+      anchor: null,
+      reservedAnchor: null,
+      enemyNumbers: attack.enemyNumbers,
+    };
+  }
+
+  const side = relativeSide(body);
+  const wantsMove = /\b(move|go|head|take|flank|advance)\b/i.test(body);
+  const stealthMove = risk === "stealth" && wantsMove;
+  const shootAndMove = fireClauses.length > 0 && wantsMove;
+  const flankMove = side != null && wantsMove;
+  if (!flankMove && !stealthMove && !shootAndMove) return null;
+
+  const addressedIds = idsForNumbers(tankNumbersIn(body), tanks, team);
+  if (!addressedIds.length) return null;
+
+  if (flankMove && side && cmd) {
+    return {
+      goal: "moveTo",
+      addressedIds,
+      side,
+      landmark: null,
+      speakerReservedSide,
+      risk,
+      facing,
+      anchor: flankAnchor(cmd, facing, side, tanks, team),
+      reservedAnchor: speakerReservedSide
+        ? flankAnchor(cmd, facing, speakerReservedSide, tanks, team)
+        : null,
+      enemyNumbers: [],
+    };
+  }
+
+  const spot = landmark(body, world);
+  const markPhrase = parseMoveToMark(body);
+  if (markPhrase) {
+    const mark = world.playerMarks[team];
+    if (!mark) {
+      return {
+        goal: "moveTo",
+        addressedIds,
+        side: null,
+        landmark: "mark",
+        speakerReservedSide: null,
+        risk,
+        facing,
+        anchor: null,
+        reservedAnchor: null,
+        enemyNumbers: [],
+        notice: "No map mark — hold F and click the map.",
+      };
+    }
+    return {
+      goal: "moveTo",
+      addressedIds,
+      side: null,
+      landmark: "mark",
+      speakerReservedSide: null,
+      risk,
+      facing,
+      anchor: { x: mark.x, y: mark.y },
+      reservedAnchor: null,
+      enemyNumbers: [],
+    };
+  }
+
+  if (!spot) return null;
+  return {
+    goal: "moveTo",
+    addressedIds,
+    side: null,
+    landmark: spot.name,
+    speakerReservedSide: null,
+    risk,
+    facing,
+    anchor: { x: spot.x, y: spot.y },
+    reservedAnchor: null,
+    enemyNumbers: [],
+  };
+}
+
+function ordersFromPlan(
+  plan: OrderPlan,
+  tanks: Tank[],
+  team: TeamId,
+): OrderResult[] {
+  if (plan.notice || !plan.addressedIds.length) return [];
+  const byId = new Map(friendlies(tanks, team).map((t) => [t.id, t]));
+  const addressed = plan.addressedIds
+    .map((id) => byId.get(id))
+    .filter((t): t is Tank => t != null);
+  if (!addressed.length) return [];
+
+  if (plan.goal === "attackNearest") {
+    const attack = attackTargetParams(
+      { enemyNumbers: plan.enemyNumbers },
+      tanks,
+      team,
+    );
+    return addressed.map((t) => ({
+      tankId: t.id,
+      goal: "attackNearest" as const,
+      params: attack.params,
+      chatLine: `#${t.number}: ${attack.verb}.`,
+    }));
+  }
+
+  const fx = Math.cos(plan.facing);
+  const fy = Math.sin(plan.facing);
+  return addressed.map((t, i) => {
+    const base = plan.anchor ?? { x: t.x, y: t.y };
+    // Stagger along the facing, never across the commander's other lane.
+    const x = base.x + fx * i * 28;
+    const y = base.y + fy * i * 28;
+    const params: OrderResult["params"] = {
+      x,
+      y,
+      risk: plan.risk,
+    };
+    if (plan.side) params.side = plan.side;
+    if (plan.landmark === "mark") params.exact = true;
+    const where = plan.side
+      ? `the ${plan.side}`
+      : (plan.landmark ?? "the point");
+    const how = plan.risk === "stealth" ? "stealthily " : "";
+    return {
+      tankId: t.id,
+      goal: "moveTo" as const,
+      params,
+      chatLine: `#${t.number}: ${how}moving to ${where}.`,
+    };
+  });
+}
+
+function refineMoveAnchors(
+  plan: OrderPlan,
+  base: OrderResult[],
+  llm: OrderResult[],
+  world: WorldState,
+  team: TeamId,
+): OrderResult[] {
+  if (plan.goal !== "moveTo" || plan.landmark === "mark" || !plan.anchor) {
+    return base;
+  }
+  const cmd = friendlies(tanksOf(world), team).find(
+    (t) => t.id === commanderId(world, team),
+  );
+  return base.map((order) => {
+    const alt = llm.find(
+      (o) =>
+        o.tankId === order.tankId &&
+        o.goal === "moveTo" &&
+        o.params?.x != null &&
+        o.params?.y != null,
+    );
+    if (!alt?.params || alt.params.x == null || alt.params.y == null) {
+      return order;
+    }
+    const proposed = { x: alt.params.x, y: alt.params.y };
+    if (plan.side && cmd) {
+      const lat = lateralOffset(plan.facing, cmd, proposed);
+      if (plan.side === "right" && lat <= 0) return order;
+      if (plan.side === "left" && lat >= 0) return order;
+    }
+    return {
+      ...order,
+      params: {
+        ...order.params,
+        x: proposed.x,
+        y: proposed.y,
+        side: plan.side ?? order.params?.side,
+        risk: plan.risk,
+      },
+    };
+  });
+}
+
+function tanksOf(world: WorldState): Tank[] {
+  return world.tanks;
+}
+
+function baseOrderIntent(text: string, tanks: Tank[], world: WorldState, team: TeamId): CommandIntent | null {
+  if (!isBaseWar(world.gameMode)) return null;
+  const match = text.toLowerCase().match(/^(.*?)\b(attack|defend)\s*(?:(?:the|their|our|enemy)\s+)*?(base)?[.!?\s]*$/);
+  if (!match || (match[2] === "attack" && !match[3])) return null;
+  const numbers = tankNumbersIn(match[1]!);
+  const targets = friendlies(tanks, team).filter((t) =>
+    numbers.length ? numbers.includes(t.number) : t.id !== commanderId(world, team),
+  );
+  return { tool: match[2] === "attack" ? "attack_base" : "defend_base", tank_ids: targets.map((t) => t.number) };
+}
+
 export function interpretOffline(
   orderText: string,
   tanks: Tank[],
@@ -521,6 +944,10 @@ export function interpretOffline(
   team: TeamId = "blue",
 ): OrderResult[] {
   const spoken = normalizeSpokenNumbers(orderText);
+  const baseIntent = baseOrderIntent(spoken, tanks, worldState, team);
+  if (baseIntent) return intentsToOrders(worldState, team, [baseIntent]).orders;
+  const plan = planUtterance(spoken, tanks, worldState, team);
+  if (plan) return ordersFromPlan(plan, tanks, team);
   const marked = ordersForPlayerMark(spoken, tanks, worldState, team);
   if (marked) return marked.orders;
   if (isMpRules(worldState.gameMode)) {
@@ -787,10 +1214,7 @@ function interpretOfflineBody(
         ),
       };
     }
-    let chatLine = `#${t.number}: ack, ${verb}.`;
-    if (Math.random() < CONFIG.ai.pushbackChance && kind === "attackNearest") {
-      chatLine = `#${t.number}: copy — pushing up.`;
-    }
+    const chatLine = `#${t.number}: ack, ${verb}.`;
     results.push({
       tankId: t.id,
       goal: kind,
@@ -991,15 +1415,17 @@ Map is top-down: x right, y down; origin top-left. When the order names a place 
 Cover/follow: "4, cover me" / "follow me" → goal escort for the named bodyguard(s), params.targetTankId = the commander's tankId (controlled). Never set a tank to escort itself. "cover 3" → other blues escort tank #3. Scout/recon → goal scout with northward x,y.
 Targeted attack: "3, attack enemy tank #2" / "all attack enemy #5" → goal attackNearest for the named blue(s), params.targetTankId = the living red tank id (red-N).`;
 
-const ORDER_SYSTEM_LITERAL = `You are the company commander’s radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"${goalKindsForPrompt()}","params":{"x":0,"y":0,"targetTankId":"","wreckId":""},"chatLine":"#N: ack..."}]}.
-Interpret the order intelligently. One sentence may give different goals to different tanks. Goals only from that list. tankId must be a living tank of the ordering team (see friendlies). Do not order a tank the speaker did not address. "I / I'll / me" is the human commander (controlledId): do not give that tank a goal unless its number is spoken.
-Map is top-down, origin top-left, y increases south. North y≈0.15*H, south y≈0.85*H, west/left x≈0.12*W, east/right x≈0.88*W. Always include numeric x,y for moveTo.
+const ORDER_SYSTEM_LITERAL = `You are the company commander’s radio officer. Reply with JSON ONLY: {"orders":[{"tankId":"blue-N","goal":"${goalKindsForPrompt()}","params":{"x":0,"y":0,"targetTankId":"","wreckId":"","side":"left|right","risk":"normal|stealth"},"chatLine":"#N: ack..."}]}.
+One utterance is one plan. Goals only from that list. tankId must be a living tank of the ordering team (see friendlies). Do not order a tank the speaker did not address. "I / I'll / me" is the human commander (controlledId): never give that tank a goal unless its number is spoken.
+If parsedPlan is present, keep its goal, addressed tank ids, side, and risk. You may nudge moveTo x,y. You must not turn that plan into attackNearest. Do not add tanks.
+Map is top-down, origin top-left, y increases south. North y≈0.15*H, south y≈0.85*H. "the left" and "the right" are NOT map edges. They are flanks of the commander (commander.x/y, commander.facing) relative to enemyCluster. params.side is "left" or "right". params.risk is "normal" or "stealth". Stealth means prefer a covered route and is still moveTo.
 Examples:
-- "2 move south and shoot at will" → only #2 moveTo south. Bots already fire at enemies in range while moving, so do NOT also set attackNearest.
-- "3 take the right and I'll take the left" → only #3 moveTo the right. The speaker handles the left.
-- "2 and 3 attack 5" / "2 and 3 attack 5 and 6" / "four attack two" → attackNearest only for allies named BEFORE the verb. Every number AFTER the verb is an enemy. One enemy: params.targetTankId. Several enemies: params.targetTankIds lists all of them. Never order an enemy number as a friendly.
+- "2 move south and shoot at will" → only #2 moveTo south, risk normal. Bots already fire in range, so do NOT also set attackNearest.
+- "3 take the right and I'll take the left" → only #3 moveTo, side right, anchor on the commander's right. The speaker keeps the left. Do not order the commander.
+- "4 move stealthily to the mark" → only #4 moveTo the mark, risk stealth, exact.
+- "2 and 3 attack 5" → attackNearest only for allies named BEFORE the verb. Numbers AFTER the verb are enemies. Never order an enemy number as a friendly.
 - "cover me" → escort, params.targetTankId = controlledId, not the bodyguard.
-If a place is relative ("the right", "behind them"), pick concrete x,y from the map and the enemy positions. Keep chat short.`;
+Keep chat short.`;
 
 /** Exported for the order eval suite (roadmap P0). */
 export function sanitizeOrders(
@@ -1009,6 +1435,8 @@ export function sanitizeOrders(
   world?: WorldState,
   team: TeamId = "blue",
 ): OrderResult[] {
+  const baseIntent = orderText && world ? baseOrderIntent(normalizeSpokenNumbers(orderText), tanks, world, team) : null;
+  if (baseIntent && world) return intentsToOrders(world, team, [baseIntent]).orders;
   const living = new Set(friendlies(tanks, team).map((t) => t.id));
   const spot =
     orderText && world ? landmark(orderText, world) : null;
@@ -1133,10 +1561,43 @@ async function interpretWithLlm(
     debugged: w.debugged,
   }));
 
+  const cmdTank = friendlies(tanks, team).find(
+    (t) => t.id === commanderId(worldState, team),
+  );
+  const facing = cmdTank
+    ? commanderFacing(cmdTank, tanks, team)
+    : 0;
+  const cluster = enemyCentroid(tanks, team);
+  const parsedPlan = planUtterance(orderText, tanks, worldState, team);
   const user = JSON.stringify({
     orderText,
     team,
     controlledId: commanderId(worldState, team),
+    commander: cmdTank
+      ? {
+          id: cmdTank.id,
+          number: cmdTank.number,
+          x: Math.round(cmdTank.x),
+          y: Math.round(cmdTank.y),
+          facing,
+        }
+      : null,
+    enemyCluster: cluster
+      ? { x: Math.round(cluster.x), y: Math.round(cluster.y) }
+      : null,
+    parsedPlan: parsedPlan
+      ? {
+          goal: parsedPlan.goal,
+          addressedIds: parsedPlan.addressedIds,
+          side: parsedPlan.side,
+          landmark: parsedPlan.landmark,
+          speakerReservedSide: parsedPlan.speakerReservedSide,
+          risk: parsedPlan.risk,
+          anchor: parsedPlan.anchor,
+          reservedAnchor: parsedPlan.reservedAnchor,
+          enemyNumbers: parsedPlan.enemyNumbers,
+        }
+      : null,
     friendlies: alive,
     enemies,
     wrecks,

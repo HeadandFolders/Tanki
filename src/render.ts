@@ -1,21 +1,20 @@
 import { CONFIG, homeTerritoryBounds, isMpOnline } from "./config";
 import { cardinalAngle, dist, eaglePosition } from "./arena";
+import { beliefFor } from "./belief";
+import {
+  applyCamera,
+  minimapRect,
+  visibleRect,
+  worldToMinimap,
+  type Camera,
+} from "./camera";
 import { canSeeTank } from "./fog";
-import type { DeathFx, Tank, TeamId, Wall, WorldState } from "./types";
+import { goalState } from "./interrupt-stack";
+import type { BaseState, DeathFx, Tank, TeamId, Wall, WorldState } from "./types";
 
 /** Online red sits on the north edge; rotate the view so that base is at the bottom. */
 export function viewerHomeAtBottom(mode: WorldState["gameMode"], team: TeamId): boolean {
   return isMpOnline(mode) && team === "red";
-}
-
-/** Screen canvas pixels → world pixels. Identity unless the view is rotated 180°. */
-export function screenToWorld(
-  x: number,
-  y: number,
-  flipped: boolean,
-): { x: number; y: number } {
-  if (!flipped) return { x, y };
-  return { x: CONFIG.canvasWidth - x, y: CONFIG.canvasHeight - y };
 }
 
 /** Screen arrows → world arrows when the map is shown rotated 180°. */
@@ -34,41 +33,55 @@ export function invertArrowKeys(keys: Iterable<string>): string[] {
 /** True while world drawing is under the 180° online-red view. */
 let viewFlipped = false;
 
+/** World-space rect currently drawn; off-screen tiles and walls are skipped. */
+let view = { x0: 0, y0: 0, x1: 0, y1: 0 };
+
+function inView(x: number, y: number, w: number, h: number): boolean {
+  return x + w >= view.x0 && x <= view.x1 && y + h >= view.y0 && y <= view.y1;
+}
+
+/** `mouseX, mouseY` are world coordinates (already through the camera). */
 export function renderWorld(
   ctx: CanvasRenderingContext2D,
   world: WorldState,
+  cam: Camera,
   mouseX: number,
   mouseY: number,
   viewerTeam: "blue" | "red" = "blue",
   marking = false,
+  editing = false,
 ): void {
-  const W = CONFIG.canvasWidth;
-  const H = CONFIG.canvasHeight;
+  const VW = CONFIG.viewWidth;
+  const VH = CONFIG.viewHeight;
   const viewerControlledId =
     viewerTeam === "red" ? world.remoteControlledId : world.controlledId;
-  viewFlipped = viewerHomeAtBottom(world.gameMode, viewerTeam);
+  viewFlipped = cam.flipped;
+  const r = visibleRect(cam);
+  const slack = CONFIG.tileSize * 2;
+  view = { x0: r.x0 - slack, y0: r.y0 - slack, x1: r.x1 + slack, y1: r.y1 + slack };
 
   ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#101010";
+  ctx.fillRect(0, 0, VW, VH);
 
   ctx.save();
-  if (viewFlipped) {
-    ctx.translate(W, H);
-    ctx.rotate(Math.PI);
-  }
+  applyCamera(ctx, cam);
 
-  drawFloor(ctx, W, H);
+  drawFloor(ctx, CONFIG.canvasWidth, CONFIG.canvasHeight);
   drawHomeTint(ctx, viewerTeam);
   drawWalls(ctx, world);
-  drawEagle(ctx, world);
+  drawBases(ctx, world);
+  if (!world.bases) drawEagle(ctx, world);
 
   for (const w of world.wrecks) {
+    if (!inView(w.x - 12, w.y - 12, 24, 24)) continue;
     if (!shouldShowWorldPos(world, w.x, w.y)) continue;
     drawWreck(ctx, w.x, w.y, w.label, w.marked, w.debugged, w.debugResult);
   }
 
   for (const t of world.tanks) {
     if (!t.alive) continue;
+    if (!inView(t.x - 30, t.y - 30, 60, 60)) continue;
     const friendly = t.team === viewerTeam;
     // Gold command mark is local-only. Enemy hulls stay one shared look.
     const commanded = friendly && t.id === viewerControlledId;
@@ -80,6 +93,7 @@ export function renderWorld(
   drawDeathFx(ctx, world);
 
   for (const p of world.projectiles) {
+    if (!inView(p.x - 2, p.y - 2, 4, 4)) continue;
     if (p.team !== viewerTeam && !shouldShowHostile(world, p.x, p.y)) continue;
     drawBullet(ctx, p.x, p.y);
   }
@@ -90,8 +104,17 @@ export function renderWorld(
   drawPlayerMark(ctx, world, viewerTeam);
   if (marking) drawMapX(ctx, mouseX, mouseY, 0.45);
 
+  if (editing) {
+    for (const w of world.walls) {
+      if (w.kind === "border" || !inView(w.x, w.y, w.w, w.h)) continue;
+      ctx.strokeStyle = "rgba(255, 225, 74, 0.85)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
+    }
+  }
+
   const me = world.tanks.find((t) => t.id === viewerControlledId && t.alive);
-  if (me) {
+  if (me && !editing) {
     ctx.strokeStyle = "rgba(248,240,96,0.45)";
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
@@ -105,6 +128,8 @@ export function renderWorld(
   ctx.restore();
   viewFlipped = false;
 
+  drawBaseHud(ctx, world, viewerTeam);
+
   // End-of-match banner only (ready gate uses the HTML overlay).
   if (
     world.outcome === "win" ||
@@ -112,7 +137,7 @@ export function renderWorld(
     world.outcome === "draw"
   ) {
     ctx.fillStyle = "rgba(0,0,0,0.65)";
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, VW, VH);
     ctx.fillStyle = CONFIG.colors.accent;
     ctx.font = "bold 40px monospace";
     ctx.textAlign = "center";
@@ -122,20 +147,172 @@ export function renderWorld(
         : world.outcome === "lose"
           ? "GAME OVER"
           : "DRAW";
-    ctx.fillText(msg, W / 2, H / 2);
+    ctx.fillText(msg, VW / 2, VH / 2);
     ctx.font = "14px monospace";
     ctx.fillStyle = "#ddd";
-    ctx.fillText("PRESS RESTART", W / 2, H / 2 + 32);
+    if (world.outcomeReason) ctx.fillText(world.outcomeReason, VW / 2, VH / 2 + 27);
+    ctx.fillText("PRESS RESTART", VW / 2, VH / 2 + 53);
     ctx.textAlign = "left";
   }
+}
+
+function drawBaseHud(ctx: CanvasRenderingContext2D, world: WorldState, viewerTeam: TeamId): void {
+  if (!world.bases) return;
+  ctx.save();
+  const width = 190;
+  for (const [i, team] of (["blue", "red"] as const).entries()) {
+    const base = world.bases[team];
+    const x = CONFIG.viewWidth / 2 + (i === 0 ? -width - 12 : 12);
+    ctx.fillStyle = "rgba(0,0,0,0.85)";
+    ctx.fillRect(x - 8, 10, width + 16, 48);
+    ctx.textAlign = "left";
+    ctx.font = "bold 12px monospace";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(`${team.toUpperCase()} BASE  ${Math.ceil(base.hp)}/${base.maxHp}`, x, 28);
+    ctx.fillStyle = "#333";
+    ctx.fillRect(x, 36, width, 12);
+    ctx.fillStyle = team === "blue" ? "#e8c040" : "#ec5555";
+    ctx.fillRect(x, 36, width * base.hp / base.maxHp, 12);
+  }
+  const age = world.time - world.bases[viewerTeam].lastAlertAt;
+  if (age >= 0 && age < 2) {
+    ctx.textAlign = "center";
+    ctx.font = "bold 20px monospace";
+    ctx.fillStyle = "rgba(30,0,0,0.9)";
+    ctx.fillRect(CONFIG.viewWidth / 2 - 145, 66, 290, 34);
+    ctx.fillStyle = "#ff7777";
+    ctx.fillText("Base under attack!", CONFIG.viewWidth / 2, 90);
+    if (age < 0.5) {
+      ctx.strokeStyle = `rgba(255,30,30,${0.8 * (1 - age / 0.5)})`;
+      ctx.lineWidth = 18;
+      ctx.strokeRect(9, 9, CONFIG.viewWidth - 18, CONFIG.viewHeight - 18);
+    }
+  }
+  ctx.restore();
+}
+
+/** Wall outline is static per layout; rebuilt only when the wall array changes. */
+let minimapCache: { walls: Wall[]; w: number; h: number; img: HTMLCanvasElement } | null = null;
+
+function minimapWalls(world: WorldState): HTMLCanvasElement | null {
+  const r = minimapRect();
+  if (
+    minimapCache &&
+    minimapCache.walls === world.walls &&
+    minimapCache.w === r.w &&
+    minimapCache.h === r.h
+  ) {
+    return minimapCache.img;
+  }
+  if (typeof document === "undefined") return null;
+  const img = document.createElement("canvas");
+  img.width = r.w;
+  img.height = r.h;
+  const c = img.getContext("2d")!;
+  c.fillStyle = "rgba(20,20,20,0.9)";
+  c.fillRect(0, 0, r.w, r.h);
+  for (const w of world.walls) {
+    c.fillStyle = w.kind === "border" ? "#8a8a90" : w.kind === "steel" ? "#c0c0c8" : "#b05028";
+    c.fillRect(w.x * r.scale, w.y * r.scale, Math.max(1, w.w * r.scale), Math.max(1, w.h * r.scale));
+  }
+  minimapCache = { walls: world.walls, w: r.w, h: r.h, img };
+  return img;
+}
+
+/**
+ * Full-map overview drawn on the sidebar panel: walls, friendly hulls, the
+ * team's mark, and enemies only where the viewer could know about them
+ * (clear mode, live sight, or belief).
+ */
+export function renderMinimap(
+  ctx: CanvasRenderingContext2D,
+  world: WorldState,
+  cam: Camera,
+  viewerTeam: TeamId,
+): void {
+  const r = minimapRect();
+  ctx.imageSmoothingEnabled = false;
+  ctx.save();
+  if (cam.flipped) {
+    ctx.translate(r.w, r.h);
+    ctx.rotate(Math.PI);
+  }
+  const img = minimapWalls(world);
+  if (img) ctx.drawImage(img, 0, 0);
+  else {
+    ctx.fillStyle = "rgba(20,20,20,0.9)";
+    ctx.fillRect(0, 0, r.w, r.h);
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(240,208,48,0.7)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, r.w - 1, r.h - 1);
+  ctx.restore();
+
+  const dot = (wx: number, wy: number, color: string, size = 3) => {
+    const p = worldToMinimap(cam, wx, wy);
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(p.x - size / 2), Math.round(p.y - size / 2), size, size);
+  };
+
+  const viewerControlledId =
+    viewerTeam === "red" ? world.remoteControlledId : world.controlledId;
+  const belief = beliefFor(world, viewerTeam);
+  const now = world.time;
+  for (const t of world.tanks) {
+    if (!t.alive) continue;
+    if (t.team === viewerTeam) {
+      dot(t.x, t.y, t.id === viewerControlledId ? "#fff0a0" : "#e0b020", 4);
+      continue;
+    }
+    if (world.shareMode === "clear" || isEnemyVisible(world, t)) {
+      dot(t.x, t.y, "#e04040", 4);
+      continue;
+    }
+    const c = belief.contacts.find((k) => k.enemyId === t.id);
+    if (c && now - c.seenAt <= CONFIG.ai.beliefTtlSec) {
+      dot(c.x, c.y, "rgba(224,64,64,0.55)", 3);
+    }
+  }
+
+  const mark = world.playerMarks[viewerTeam];
+  if (mark) {
+    const p = worldToMinimap(cam, mark.x, mark.y);
+    ctx.strokeStyle = CONFIG.colors.marker;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(p.x - 3, p.y - 3);
+    ctx.lineTo(p.x + 3, p.y + 3);
+    ctx.moveTo(p.x + 3, p.y - 3);
+    ctx.lineTo(p.x - 3, p.y + 3);
+    ctx.stroke();
+  }
+
+  const v = visibleRect(cam);
+  const a = worldToMinimap(cam, v.x0, v.y0);
+  const b = worldToMinimap(cam, v.x1, v.y1);
+  ctx.strokeStyle = "rgba(255,255,255,0.6)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(
+    Math.min(a.x, b.x) + 0.5,
+    Math.min(a.y, b.y) + 0.5,
+    Math.abs(b.x - a.x),
+    Math.abs(b.y - a.y),
+  );
 }
 
 function drawFloor(ctx: CanvasRenderingContext2D, W: number, H: number): void {
   ctx.fillStyle = CONFIG.colors.floor;
   ctx.fillRect(0, 0, W, H);
   const s = CONFIG.tileSize;
-  for (let y = 0; y < H; y += s) {
-    for (let x = 0; x < W; x += s) {
+  const y0 = Math.max(0, Math.floor(view.y0 / s) * s);
+  const y1 = Math.min(H, view.y1);
+  const x0 = Math.max(0, Math.floor(view.x0 / s) * s);
+  const x1 = Math.min(W, view.x1);
+  for (let y = y0; y < y1; y += s) {
+    for (let x = x0; x < x1; x += s) {
       if ((x / s + y / s) % 2 === 0) {
         ctx.fillStyle = CONFIG.colors.floorAlt;
         ctx.fillRect(x, y, s, s);
@@ -170,10 +347,96 @@ function drawFrontline(ctx: CanvasRenderingContext2D, team: TeamId): void {
 
 function drawWalls(ctx: CanvasRenderingContext2D, world: WorldState): void {
   for (const w of world.walls) {
+    if (w.baseTeam || !inView(w.x, w.y, w.w, w.h)) continue;
     if (w.kind === "brick") drawBrickBlock(ctx, w);
     else if (w.kind === "steel") drawSteelBlock(ctx, w);
     else drawBorderBlock(ctx, w);
   }
+}
+
+const baseDestructionStarted = new WeakMap<BaseState, number>();
+
+function drawBases(ctx: CanvasRenderingContext2D, world: WorldState): void {
+  for (const base of Object.values(world.bases ?? {})) {
+    if (!inView(base.x - 50, base.y - 50, base.w + 100, base.h + 100)) continue;
+    if (base.alive) drawBase(ctx, world, base);
+    else if (base.destroyedAt != null) {
+      const now = performance.now();
+      const started = baseDestructionStarted.get(base) ?? now;
+      baseDestructionStarted.set(base, started);
+      // Match adjudication freezes simulation time before the explosion finishes.
+      const age = Math.max(world.time - base.destroyedAt, (now - started) / 1000);
+      if (age <= CONFIG.baseDestructionSec) drawBaseDestruction(ctx, base, age);
+    }
+  }
+}
+
+function drawBase(ctx: CanvasRenderingContext2D, world: WorldState, base: BaseState): void {
+  const blue = base.team === "blue";
+  ctx.fillStyle = blue ? "#8a6810" : "#873834";
+  ctx.fillRect(base.x, base.y, base.w, base.h);
+  ctx.fillStyle = blue ? "#d5aa2c" : "#c45a50";
+  for (let i = 0; i < 3; i++) {
+    ctx.fillRect(base.x + i * 16 + 2, base.y + 2, 12, 4);
+    ctx.fillRect(base.x + 2, base.y + i * 16 + 2, 4, 12);
+  }
+  ctx.fillStyle = "#202028";
+  ctx.fillRect(base.x + 9, base.y + 9, 30, 30);
+  ctx.fillStyle = blue ? "#f0d060" : "#e87868";
+  const cx = base.x + base.w / 2;
+  const cy = base.y + base.h / 2;
+  if (blue) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 12);
+    ctx.lineTo(cx + 5, cy - 3);
+    ctx.lineTo(cx + 13, cy - 6);
+    ctx.lineTo(cx + 8, cy + 5);
+    ctx.lineTo(cx + 3, cy + 3);
+    ctx.lineTo(cx, cy + 12);
+    ctx.lineTo(cx - 3, cy + 3);
+    ctx.lineTo(cx - 8, cy + 5);
+    ctx.lineTo(cx - 13, cy - 6);
+    ctx.lineTo(cx - 5, cy - 3);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const angle = -Math.PI / 2 + i * Math.PI / 5;
+      const radius = i % 2 === 0 ? 13 : 5;
+      const x = cx + Math.cos(angle) * radius;
+      const y = cy + Math.sin(angle) * radius;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  if (world.time - base.lastHitAt <= CONFIG.baseHitFlashSec) {
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.fillRect(base.x, base.y, base.w, base.h);
+  }
+  ctx.fillStyle = "#080808";
+  ctx.fillRect(base.x, base.y - 9, base.w, 5);
+  ctx.fillStyle = blue ? "#e5bd38" : "#d85c50";
+  ctx.fillRect(base.x + 1, base.y - 8, (base.w - 2) * base.hp / base.maxHp, 3);
+}
+
+function drawBaseDestruction(ctx: CanvasRenderingContext2D, base: BaseState, age: number): void {
+  const progress = Math.min(1, age / CONFIG.baseDestructionSec);
+  const cx = base.x + base.w / 2;
+  const cy = base.y + base.h / 2;
+  ctx.save();
+  ctx.globalAlpha = 1 - progress;
+  for (let i = 0; i < 12; i++) {
+    const angle = i * Math.PI / 6;
+    const radius = 8 + progress * (24 + (i % 3) * 9);
+    ctx.fillStyle = i % 2 ? "#e06028" : "#f0d060";
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius, 7 - progress * 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function drawBrickBlock(ctx: CanvasRenderingContext2D, w: Wall): void {
@@ -289,8 +552,15 @@ const TANK_PAT: number[][] = [
 
 function tankBodyColor(t: Tank, friendly: boolean): string {
   const isScout = t.role === "scout";
+  const isHeavy = t.role === "heavy";
   if (!friendly) {
-    return isScout ? CONFIG.colors.enemyScout : CONFIG.colors.enemyTeam;
+    if (isScout) return CONFIG.colors.enemyScout;
+    if (isHeavy) return CONFIG.colors.enemyHeavy;
+    return CONFIG.colors.enemyTeam;
+  }
+  if (isHeavy) {
+    const idx = Math.min(6, Math.max(1, t.number));
+    return CONFIG.colors.playerHeavyByNumber[idx] ?? "#6a5040";
   }
   const idx = Math.min(6, Math.max(1, t.number));
   if (isScout) {
@@ -352,13 +622,14 @@ function drawTank(
   commanded: boolean,
 ): void {
   const isScout = t.role === "scout";
+  const isHeavy = t.role === "heavy";
   const body = commanded ? "#f0c020" : tankBodyColor(t, friendly);
   const tread = commanded ? "#8a5a10" : friendly ? "#4a3810" : "#505058";
   const cabin = commanded ? "#a87818" : friendly ? "#1a1408" : "#2a2a30";
   const barrel = commanded ? "#fff6c8" : friendly ? "#f0e8c0" : "#d0d0d8";
 
   const facing = cardinalAngle(t.angle);
-  const scale = CONFIG.spriteScale;
+  const scale = isHeavy ? CONFIG.spriteScale + 1 : CONFIG.spriteScale;
   const n = TANK_PAT.length;
   const size = n * scale;
   // Specular band sweeping across the hull. Local viewer only.
@@ -408,13 +679,14 @@ function drawTank(
   ctx.fillStyle = "#fffef0";
   ctx.fillText(label, 0, 1);
 
-  ctx.fillStyle = isScout ? "#d8f080" : "#ffe060";
+  const mark = isScout ? "S" : isHeavy ? "H" : "G";
+  ctx.fillStyle = isScout ? "#d8f080" : isHeavy ? "#ffb060" : "#ffe060";
   ctx.font = "bold 10px monospace";
   ctx.textBaseline = "alphabetic";
   ctx.strokeStyle = "#0a0804";
   ctx.lineWidth = 2;
-  ctx.strokeText(isScout ? "S" : "G", 15, -10);
-  ctx.fillText(isScout ? "S" : "G", 15, -10);
+  ctx.strokeText(mark, 15, -10);
+  ctx.fillText(mark, 15, -10);
 
   const pct = t.hp / t.maxHp;
   ctx.fillStyle = "#000";
@@ -472,7 +744,7 @@ function drawDeathHusk(ctx: CanvasRenderingContext2D, fx: DeathFx): void {
     maxHp: 1,
     alive: false,
     cooldown: 0,
-    goal: { kind: "idle" },
+    ...goalState({ kind: "idle" }),
     standStillTimer: 0,
     reportProgress: 0,
     debugProgress: 0,
@@ -582,8 +854,12 @@ function drawFog(ctx: CanvasRenderingContext2D, world: WorldState): void {
     }
   }
 
-  for (let r = 0; r < world.fogRows; r++) {
-    for (let c = 0; c < world.fogCols; c++) {
+  const r0 = Math.max(0, Math.floor(view.y0 / cell));
+  const r1 = Math.min(world.fogRows - 1, Math.ceil(view.y1 / cell));
+  const c0 = Math.max(0, Math.floor(view.x0 / cell));
+  const c1 = Math.min(world.fogCols - 1, Math.ceil(view.x1 / cell));
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
       const i = r * world.fogCols + c;
       if (live.has(i)) continue;
       const explored = world.fogExplored[i] === 1;

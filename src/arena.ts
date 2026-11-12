@@ -1,168 +1,108 @@
-import { CONFIG } from "./config";
-import type { Wall, WallKind } from "./types";
+import { prepareBaseWarWalls, restoreBaseWarWalls } from "./arena-bases";
+import { ensureTwoRoutes, layoutHash } from "./arena-routes";
+import { DENSE_WALLS, REFERENCE_WALLS, STANDARD_WALLS } from "./arena-layouts";
+import { buildLargeWalls, largeArenaZones, type ArenaZone } from "./arena-large";
+import { ARENA_SPECS, CONFIG, setWorldSize, type ArenaId } from "./config";
+import type { Wall } from "./types";
 
-const T = () => CONFIG.tileSize;
-
-function rect(
-  tx: number,
-  ty: number,
-  tw: number,
-  th: number,
-  kind: WallKind,
-): Wall {
-  const s = T();
-  return { x: tx * s, y: ty * s, w: tw * s, h: th * s, kind };
-}
-
-export type ArenaDensity = "standard" | "dense";
+export type ArenaDensity = ArenaId;
 
 /**
- * Battle City–style tile arena: stone border, brick chokes, steel hardpoints,
- * eagle nest at southern home. `dense` adds extra walls / choke geometry
- * (Multiplayer · Offline).
+ * Every stance a tank can occupy has two disjoint routes to every other stance.
+ * Reference is the default map. Dense is the multiplayer fill. Large is the
+ * generated 144x90 map (seeded). A saved edit is opened again if it would
+ * leave a dead end or a one-tank chokepoint. Sets the world size.
  */
-export function buildArena(density: ArenaDensity = "standard"): Wall[] {
-  const s = T();
-  const cols = Math.floor(CONFIG.canvasWidth / s);
-  const rows = Math.floor(CONFIG.canvasHeight / s);
-  const walls: Wall[] = [];
+/** Hash of the layout a peer would build, without disturbing the current world size. */
+export function arenaLayoutHash(arena: ArenaId, seed: number): string {
+  const cols = CONFIG.canvasWidth / CONFIG.tileSize;
+  const rows = CONFIG.canvasHeight / CONFIG.tileSize;
+  const hash = layoutHash(buildArena(arena, seed));
+  setWorldSize(cols, rows);
+  return hash;
+}
 
-  // Outer stone border (2 tiles thick)
-  walls.push(rect(0, 0, cols, 2, "border"));
-  walls.push(rect(0, rows - 2, cols, 2, "border"));
-  walls.push(rect(0, 2, 2, rows - 4, "border"));
-  walls.push(rect(cols - 2, 2, 2, rows - 4, "border"));
+export interface BuildArenaOptions {
+  seed?: number;
+  baseWar?: boolean;
+}
 
-  // Brick maze / chokes (tile coords)
-  const bricks: [number, number, number, number][] = [
-    // central corridor bricks
-    [18, 10, 2, 6],
-    [28, 16, 2, 6],
-    [22, 14, 4, 2],
-    // left bunker
-    [6, 8, 6, 2],
-    [6, 8, 2, 5],
-    // right bunker
-    [36, 22, 6, 2],
-    [40, 18, 2, 6],
-    // north islands
-    [20, 5, 6, 2],
-    [12, 6, 2, 3],
-    // south approaches (above home)
-    [16, 28, 8, 2],
-    [30, 28, 6, 2],
-    // flank lanes
-    [4, 16, 5, 2],
-    [39, 14, 5, 2],
-    [10, 20, 2, 4],
-    [36, 10, 2, 4],
-    // mid scatter
-    [24, 20, 4, 2],
-    [14, 12, 3, 2],
-    [32, 8, 3, 2],
-  ];
+export function buildArena(
+  arena: ArenaId = "standard",
+  options: number | BuildArenaOptions = CONFIG.largeArena.seed,
+): Wall[] {
+  const seed = typeof options === "number" ? options : (options.seed ?? CONFIG.largeArena.seed);
+  const baseWar = typeof options !== "number" && options.baseWar === true;
+  const spec = ARENA_SPECS[arena];
+  setWorldSize(spec.cols, spec.rows);
+  const base =
+    arena === "reference"
+      ? REFERENCE_WALLS
+      : arena === "dense"
+        ? DENSE_WALLS
+        : arena === "large"
+          ? buildLargeWalls(seed)
+          : STANDARD_WALLS;
+  let laid = withSavedLayout(
+    base.map((w) => ({ ...w })),
+    arena,
+  );
+  if (baseWar) laid = prepareBaseWarWalls(laid, arena);
+  const routed = ensureTwoRoutes(laid).map((w) => ({ ...w }));
+  return baseWar ? restoreBaseWarWalls(routed, arena) : routed;
+}
 
-  if (density === "dense") {
-    bricks.push(
-      // extra mid chokes / corridors
-      [16, 18, 2, 5],
-      [30, 12, 2, 5],
-      [24, 10, 2, 3],
-      [20, 22, 6, 2],
-      [26, 26, 2, 3],
-      // tighter flanks
-      [8, 14, 2, 4],
-      [38, 20, 2, 4],
-      [12, 24, 4, 2],
-      [34, 6, 4, 2],
-      // pocket walls near spawn approaches
-      [18, 32, 3, 2],
-      [28, 32, 3, 2],
-      [22, 6, 2, 2],
-      [10, 10, 3, 2],
-      [35, 16, 3, 2],
-      // right-half fill — match left density with chokes/corridors;
-      // leave N/S spawn bands (~rows 2–8 red, ~38–48 blue) with gaps
-      [44, 5, 5, 2],
-      [50, 5, 2, 4],
-      [54, 6, 6, 2],
-      [62, 5, 2, 5],
-      [66, 6, 5, 2],
-      [72, 7, 2, 4],
-      [44, 10, 2, 5],
-      [48, 12, 4, 2],
-      [54, 10, 2, 4],
-      [58, 12, 6, 2],
-      [66, 10, 2, 5],
-      [70, 12, 4, 2],
-      [46, 16, 5, 2],
-      [52, 16, 2, 5],
-      [56, 18, 4, 2],
-      [62, 16, 2, 6],
-      [66, 18, 5, 2],
-      [72, 16, 2, 5],
-      [44, 20, 2, 4],
-      [48, 22, 6, 2],
-      [56, 22, 2, 5],
-      [60, 24, 5, 2],
-      [68, 22, 2, 5],
-      [72, 24, 3, 2],
-      [46, 26, 4, 2],
-      [50, 28, 2, 4],
-      [54, 28, 5, 2],
-      [62, 28, 2, 4],
-      [66, 30, 6, 2],
-      [74, 28, 2, 3],
-      [44, 32, 5, 2],
-      [52, 32, 2, 3],
-      [58, 34, 5, 2],
-      [66, 34, 2, 3],
-      [70, 34, 4, 2],
-    );
+/** Named zone anchors of the arena; empty for the hand-authored band maps. */
+export function arenaZones(arena: ArenaId, seed: number): ArenaZone[] {
+  return arena === "large" ? largeArenaZones(seed) : [];
+}
+
+const WALL_LAYOUT_KEY = "tanki-wall-layout-v1";
+
+/** Edits are stored per arena so a drag on one map never clobbers another. */
+function layoutKey(arena: ArenaId): string {
+  return `${WALL_LAYOUT_KEY}:${arena}`;
+}
+
+/** Remember dragged structures for one arena. The stone border is not stored. */
+export function saveWallLayout(walls: Wall[], arena: ArenaId): void {
+  if (typeof localStorage === "undefined") return;
+  const interior = walls
+    .filter((w) => w.kind !== "border")
+    .map((w) => ({ x: w.x, y: w.y, w: w.w, h: w.h, kind: w.kind }));
+  localStorage.setItem(
+    layoutKey(arena),
+    JSON.stringify({ map: arena, walls: interior }),
+  );
+}
+
+export function clearWallLayout(arena: ArenaId): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.removeItem(layoutKey(arena));
+}
+
+function withSavedLayout(walls: Wall[], arena: ArenaId): Wall[] {
+  if (typeof localStorage === "undefined") return walls;
+  try {
+    const raw = localStorage.getItem(layoutKey(arena));
+    if (!raw) return walls;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return walls;
+    const saved = parsed as { map?: string; walls?: unknown };
+    if (saved.map !== arena || !Array.isArray(saved.walls)) return walls;
+    const interior: Wall[] = [];
+    for (const item of saved.walls) {
+      if (!item || typeof item !== "object") continue;
+      const w = item as Wall;
+      if (w.kind !== "brick" && w.kind !== "steel") continue;
+      if (!(w.w > 0) || !(w.h > 0)) continue;
+      interior.push({ x: w.x, y: w.y, w: w.w, h: w.h, kind: w.kind });
+    }
+    if (interior.length === 0) return walls;
+    return [...walls.filter((w) => w.kind === "border"), ...interior];
+  } catch {
+    return walls;
   }
-
-  for (const [x, y, w, h] of bricks) {
-    walls.push(rect(x, y, w, h, "brick"));
-  }
-
-  // Steel hardpoints
-  const steel: [number, number, number, number][] = [
-    [22, 8, 2, 2],
-    [26, 22, 2, 2],
-    [8, 24, 2, 2],
-    [38, 12, 2, 2],
-    [20, 18, 2, 2],
-  ];
-  if (density === "dense") {
-    steel.push(
-      [16, 14, 2, 2],
-      [32, 20, 2, 2],
-      [24, 16, 2, 2],
-      [12, 18, 2, 2],
-      // right-half hardpoints
-      [48, 8, 2, 2],
-      [58, 8, 2, 2],
-      [70, 10, 2, 2],
-      [50, 18, 2, 2],
-      [64, 20, 2, 2],
-      [74, 18, 2, 2],
-      [48, 28, 2, 2],
-      [60, 30, 2, 2],
-      [70, 28, 2, 2],
-    );
-  }
-  for (const [x, y, w, h] of steel) {
-    walls.push(rect(x, y, w, h, "steel"));
-  }
-
-  // Eagle nest brick U at bottom center (home)
-  const ex = Math.floor(cols / 2) - 3;
-  const ey = rows - 7;
-  walls.push(rect(ex, ey, 2, 4, "brick"));
-  walls.push(rect(ex + 4, ey, 2, 4, "brick"));
-  walls.push(rect(ex, ey + 3, 6, 1, "brick"));
-
-  return walls;
 }
 
 /** World position of the eagle emblem (visual + landmark). */
@@ -173,12 +113,151 @@ export function eaglePosition(): { x: number; y: number } {
   };
 }
 
+const WALL_CELL = 96;
+let activeWalls: Wall[] | null = null;
+let activeBuckets: Map<number, Wall[]> | null = null;
+let wallQueryStamp = 1;
+const wallSeen = new WeakMap<Wall, number>();
+
+function wallBucketKey(ix: number, iy: number): number {
+  return ix * 73856093 + iy * 19349663;
+}
+
+/** True while `usingWallIndex` is running for this exact wall array. */
+export function wallIndexCovers(walls: Wall[]): boolean {
+  return activeWalls === walls && activeBuckets !== null;
+}
+
+/**
+ * Rebuild a uniform grid for `walls` and run `fn`. Segment and circle tests
+ * against that same array then touch only the cells the query crosses.
+ */
+export function usingWallIndex<T>(walls: Wall[], fn: () => T): T {
+  if (activeWalls === walls && activeBuckets) return fn();
+  const prevWalls = activeWalls;
+  const prevBuckets = activeBuckets;
+  const buckets = wallBuckets(walls);
+  activeWalls = walls;
+  activeBuckets = buckets;
+  try {
+    return fn();
+  } finally {
+    activeWalls = prevWalls;
+    activeBuckets = prevBuckets;
+  }
+}
+
+const bucketCache = new WeakMap<Wall[], { print: number; buckets: Map<number, Wall[]> }>();
+
+/** Cheap O(n) fingerprint so in-place edits (map editor drags) still invalidate. */
+export function wallsFingerprint(walls: Wall[]): number {
+  let f = walls.length;
+  for (const w of walls) f = (f * 31 + w.x * 3 + w.y * 7 + w.w * 11 + w.h * 13) | 0;
+  return f;
+}
+
+function wallBuckets(walls: Wall[]): Map<number, Wall[]> {
+  const print = wallsFingerprint(walls);
+  const hit = bucketCache.get(walls);
+  if (hit && hit.print === print) return hit.buckets;
+  const buckets = new Map<number, Wall[]>();
+  for (const w of walls) {
+    const x0 = Math.floor(w.x / WALL_CELL);
+    const y0 = Math.floor(w.y / WALL_CELL);
+    const x1 = Math.floor((w.x + w.w) / WALL_CELL);
+    const y1 = Math.floor((w.y + w.h) / WALL_CELL);
+    for (let ix = x0; ix <= x1; ix++) {
+      for (let iy = y0; iy <= y1; iy++) {
+        const key = wallBucketKey(ix, iy);
+        const list = buckets.get(key);
+        if (list) list.push(w);
+        else buckets.set(key, [w]);
+      }
+    }
+  }
+  bucketCache.set(walls, { print, buckets });
+  return buckets;
+}
+
+function considerWall(w: Wall): boolean {
+  if (wallSeen.get(w) === wallQueryStamp) return false;
+  wallSeen.set(w, wallQueryStamp);
+  return true;
+}
+
+function forEachSegmentCell(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  visit: (ix: number, iy: number) => void,
+): void {
+  let ix = Math.floor(x0 / WALL_CELL);
+  let iy = Math.floor(y0 / WALL_CELL);
+  const ixEnd = Math.floor(x1 / WALL_CELL);
+  const iyEnd = Math.floor(y1 / WALL_CELL);
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const stepX = dx === 0 ? 0 : dx > 0 ? 1 : -1;
+  const stepY = dy === 0 ? 0 : dy > 0 ? 1 : -1;
+  const dtX = dx === 0 ? Infinity : WALL_CELL / Math.abs(dx);
+  const dtY = dy === 0 ? Infinity : WALL_CELL / Math.abs(dy);
+  let tMaxX =
+    dx === 0
+      ? Infinity
+      : ((dx > 0 ? (ix + 1) * WALL_CELL : ix * WALL_CELL) - x0) / dx;
+  let tMaxY =
+    dy === 0
+      ? Infinity
+      : ((dy > 0 ? (iy + 1) * WALL_CELL : iy * WALL_CELL) - y0) / dy;
+  visit(ix, iy);
+  for (let n = 0; n < 80 && (ix !== ixEnd || iy !== iyEnd); n++) {
+    if (Math.abs(tMaxX - tMaxY) <= 1e-9) {
+      visit(ix + stepX, iy);
+      visit(ix, iy + stepY);
+      tMaxX += dtX;
+      tMaxY += dtY;
+      ix += stepX;
+      iy += stepY;
+    } else if (tMaxX < tMaxY) {
+      tMaxX += dtX;
+      ix += stepX;
+    } else {
+      tMaxY += dtY;
+      iy += stepY;
+    }
+    visit(ix, iy);
+  }
+}
+
 export function circleHitsWall(
   x: number,
   y: number,
   r: number,
   walls: Wall[],
 ): boolean {
+  if (activeBuckets && activeWalls === walls) {
+    wallQueryStamp++;
+    const x0 = Math.floor((x - r) / WALL_CELL);
+    const y0 = Math.floor((y - r) / WALL_CELL);
+    const x1 = Math.floor((x + r) / WALL_CELL);
+    const y1 = Math.floor((y + r) / WALL_CELL);
+    for (let ix = x0; ix <= x1; ix++) {
+      for (let iy = y0; iy <= y1; iy++) {
+        const list = activeBuckets.get(wallBucketKey(ix, iy));
+        if (!list) continue;
+        for (const w of list) {
+          if (!considerWall(w)) continue;
+          const nearestX = Math.max(w.x, Math.min(x, w.x + w.w));
+          const nearestY = Math.max(w.y, Math.min(y, w.y + w.h));
+          const dx = x - nearestX;
+          const dy = y - nearestY;
+          if (dx * dx + dy * dy < r * r) return true;
+        }
+      }
+    }
+    return false;
+  }
   for (const w of walls) {
     const nearestX = Math.max(w.x, Math.min(x, w.x + w.w));
     const nearestY = Math.max(w.y, Math.min(y, w.y + w.h));
@@ -196,6 +275,20 @@ export function segmentHitsWall(
   y1: number,
   walls: Wall[],
 ): boolean {
+  if (activeBuckets && activeWalls === walls) {
+    wallQueryStamp++;
+    let hit = false;
+    forEachSegmentCell(x0, y0, x1, y1, (ix, iy) => {
+      if (hit) return;
+      const list = activeBuckets!.get(wallBucketKey(ix, iy));
+      if (!list) return;
+      for (const w of list) {
+        if (!considerWall(w)) continue;
+        if (segIntersectsRect(x0, y0, x1, y1, w.x, w.y, w.w, w.h)) hit = true;
+      }
+    });
+    return hit;
+  }
   for (const w of walls) {
     if (segIntersectsRect(x0, y0, x1, y1, w.x, w.y, w.w, w.h)) return true;
   }

@@ -1,10 +1,43 @@
+/** Arena ids. "large" is the generated 144x90 map; the others are 80x50. */
+export type ArenaId = "reference" | "standard" | "dense" | "large";
+
+export const ARENA_SPECS: Record<ArenaId, { cols: number; rows: number }> = {
+  reference: { cols: 80, rows: 50 },
+  standard: { cols: 80, rows: 50 },
+  dense: { cols: 80, rows: 50 },
+  large: { cols: 144, rows: 90 },
+};
+
+/** Current world extent in px. Set by buildArena(); read through CONFIG getters. */
+const WORLD = { width: 1280, height: 800 };
+
+export function setWorldSize(cols: number, rows: number): void {
+  WORLD.width = cols * CONFIG.tileSize;
+  WORLD.height = rows * CONFIG.tileSize;
+}
+
 /** All tunable gameplay values live here. */
 export const CONFIG = {
-  canvasWidth: 1280,
-  canvasHeight: 800,
+  /** World width in px (arena extent, not the screen). */
+  get canvasWidth(): number {
+    return WORLD.width;
+  },
+  /** World height in px (arena extent, not the screen). */
+  get canvasHeight(): number {
+    return WORLD.height;
+  },
+  /** On-screen canvas size; the camera maps the world into this. */
+  viewWidth: 1280,
+  viewHeight: 800,
   /** Battle City–style tile grid */
   tileSize: 16,
   matchDurationSec: 5 * 60,
+  matchTimeLimitSec: 600,
+  baseHp: 2000,
+  baseDamageMultiplier: 0.25,
+  baseHitFlashSec: 0.12,
+  baseDestructionSec: 0.9,
+  baseAttackAlertCooldownSec: 5,
   /** Seconds of 3-2-1 after Start before the match goes live. */
   startCountdownSec: 3,
 
@@ -42,6 +75,20 @@ export const CONFIG = {
       fireCooldown: 0.16,
       projectileSpeed: 480,
       projectileLife: 0.9,
+      fightRange: 95,
+    },
+    /** Heavy/Light mode. Same vision as a gunner; slower shot, thicker hull, harder hit. */
+    heavy: {
+      count: 3,
+      speed: 130,
+      maxHp: 220,
+      visionRadius: 95,
+      debugRate: 0.12,
+      canShoot: true,
+      damage: 46,
+      fireCooldown: 0.72,
+      projectileSpeed: 420,
+      projectileLife: 1.05,
       fightRange: 95,
     },
   },
@@ -96,6 +143,30 @@ export const CONFIG = {
     denseArena: true,
   },
 
+  /**
+   * Headless batch measurement (`npm run sim`). Nothing in the live game reads
+   * these; they define how a batch match is stepped and where the middle area
+   * is, so the numbers a batch reports are comparable across runs.
+   */
+  sim: {
+    /** Fixed step rate for batch matches. The live loop uses frame delta; tests do not. */
+    hz: 30,
+    /** Matches in a batch when --matches is omitted. */
+    defaultMatches: 20,
+    /**
+     * A match still playing here is stopped and counted as an over-length
+     * draw. Keep it under the mode's own clock or the engine decides first.
+     */
+    maxLengthSec: 300,
+    /**
+     * Middle area: a band across the full map width, centred on the map, this
+     * fraction of map height. 0.4 of 800px is the middle 320px.
+     */
+    middleBandFraction: 0.4,
+    /** Base HP is sampled every this many match seconds. */
+    baseSampleSec: 5,
+  },
+
   /** Two-device LAN multiplayer (WebSocket relay + host-authoritative sim). */
   net: {
     /** Dedicated WS/HTTP port (Vite stays on 4847). */
@@ -104,6 +175,33 @@ export const CONFIG = {
     snapshotHz: 18,
     /** Default room when none typed. */
     defaultRoom: "TANK",
+    /** Arena offered for MP matches by default. */
+    arenaDefault: "dense" as ArenaId,
+  },
+
+  /** Follow camera (world larger than the screen). */
+  camera: {
+    /** Exponential follow rate (1/s); higher snaps harder. */
+    followRate: 7,
+    zoomDefault: 1,
+    zoomMin: 0.6,
+    zoomMax: 1.6,
+    /** Wheel zoom step per notch (multiplicative). */
+    zoomStep: 1.12,
+    /** Minimap panel backing width in px; height follows the arena aspect. */
+    minimapWidth: 360,
+  },
+
+  /** Generated 144x90 arena (point-symmetric, bricks only). */
+  largeArena: {
+    cols: 144,
+    rows: 90,
+    /** Layout seed; host and guest must agree (sent over the relay). */
+    seed: 20261111,
+    /** Spawn-to-center travel window reported by eval-arena (seconds, shooter speed). */
+    spawnToCenterSec: [10, 15] as const,
+    /** Deliberate 2-tile squeezes allowed by eval-arena (tiles of width 2). */
+    maxSqueezeTiles: 40,
   },
 
   ai: {
@@ -121,7 +219,37 @@ export const CONFIG = {
     /** Sprint toward VIP when farther than this. */
     escortCatchup: 110,
     retreatHpFraction: 0.32,
+    retreatResumeHpFraction: 0.45,
     pathStep: 36,
+    /** Reuse a tank's polyline until this timer, a nearby enemy, or a 25% cost jump. */
+    routeCommitSec: 0.4,
+    /** How long a wanted-but-zero fitBodyStep displacement counts as stuck (0.4-0.6s window). */
+    stuckAfterSec: 0.5,
+    /** Retry the reroute once per stuckAfterSec window, then hold and say so. */
+    stuckGiveUpSec: 2,
+    /** Allies this close are treated as blockers when the step was not body-fitted. */
+    stuckAllyProbe: 40,
+    /** Fresh A* plans allowed per simulation step; the rest keep their last route. */
+    routePlansPerFrame: 3,
+    /** An enemy must move this far before their position counts as a new risk. */
+    routeRiskMove: 56,
+    /** Look ahead along the polyline so the hull does not aim at every corner. */
+    routeLookahead: 52,
+    /**
+     * Danger field: each enemy adds K / d² (d in path cells, floored at 1) to
+     * cells inside its shot reach. A cell it can see also pays a flat toll, so
+     * a long sightline is never free. Crossing a watched lane ~5 cells from a
+     * gun costs about as much as a 12–15 cell detour behind cover.
+     */
+    dangerK: 90,
+    /** Flat extra steps for a cell an enemy has a clear shot at. */
+    dangerLosBase: 3,
+    /** Share of K / d² still paid behind cover, so hugging a gun's wall is not free. */
+    dangerHiddenFrac: 0.12,
+    /** Smallest danger radius in px; a longer shot reach overrides it. */
+    dangerRadius: 300,
+    /** Open ground (no nearby wall) costs this many extra steps even without a current shot. */
+    exposureOpenSteps: 1.6,
     pushbackChance: 0.12,
     /** Soft separation; keep below seek speed to avoid corner-shiver. */
     separation: 70,
@@ -184,6 +312,24 @@ export const CONFIG = {
     },
   },
 
+  /**
+   * EXPERIMENTAL local command parser (Cactus Needle), run between the phrase
+   * reader and the LLM API. Off by default; `?needle=1` turns it on for a page.
+   */
+  needle: {
+    use_needle_sidecar: false,
+    /** Execute a Needle reading only at or above this confidence. */
+    threshold: 0.8,
+    /** Fall through to the LLM path if Needle has not answered by then. */
+    timeoutMs: 40,
+    /** How far ahead of the player a relative move ("move left") lands. */
+    relativeMoveDistance: 160,
+    /** Comparison records kept in memory for the dump hotkey. */
+    logSize: 200,
+    /** Lines shown in the command overlay. */
+    overlaySize: 20,
+  },
+
   colors: {
     // Battle City palette — darker friendlies so white # labels pop
     playerTeam: "#c09010",
@@ -209,6 +355,16 @@ export const CONFIG = {
     ] as const,
     enemyTeam: "#909098",
     enemyScout: "#707078",
+    enemyHeavy: "#6a6a78",
+    playerHeavyByNumber: [
+      "#000000",
+      "#8a6848",
+      "#6a5040",
+      "#7a5844",
+      "#5a4838",
+      "#846050",
+      "#645040",
+    ] as const,
     brickLight: "#e07038",
     brickDark: "#a04020",
     brickMortar: "#602010",
@@ -245,9 +401,16 @@ export function homeTerritoryBounds(team: "blue" | "red"): {
 
 /** Vision/share modes. `clear` = no fog; map and enemies always visible. */
 export type ShareMode = "auto" | "report" | "none" | "clear";
-export type GameMode = "tdm" | "ctf" | "mp-offline" | "mp-online";
+export type GameMode = "tdm" | "ctf" | "mp-offline" | "mp-online" | "heavy-light" | "base-war";
 /** Mode menu presets shown in the top bar. */
-export type MenuMode = "tdm-nofog" | "tdm" | "ctf" | "mp-offline" | "mp-online";
+export type MenuMode =
+  | "tdm-nofog"
+  | "tdm"
+  | "ctf"
+  | "mp-offline"
+  | "mp-online"
+  | "heavy-light"
+  | "base-war";
 export type Role = keyof typeof CONFIG.roles;
 export type RedDifficulty = "easy" | "normal" | "hard";
 
@@ -263,16 +426,24 @@ export function modesFromMenu(menu: MenuMode): {
       return { share: "report", mode: "tdm" };
     case "ctf":
       return { share: "report", mode: "ctf" };
+    case "base-war":
+      return { share: "clear", mode: "base-war" };
     case "mp-offline":
       return { share: "clear", mode: "mp-offline" };
     case "mp-online":
       return { share: "clear", mode: "mp-online" };
+    case "heavy-light":
+      return { share: "clear", mode: "heavy-light" };
   }
+}
+
+export function isBaseWar(mode: GameMode): boolean {
+  return mode === "base-war";
 }
 
 /** Local/bot only (no network). */
 export function isMpOffline(mode: GameMode): boolean {
-  return mode === "mp-offline";
+  return mode === "mp-offline" || mode === "base-war";
 }
 
 /** Two-device networked match. */
@@ -285,5 +456,5 @@ export function isMpOnline(mode: GameMode): boolean {
  * hold-until-ordered teammates (offline bots or online humans+bots).
  */
 export function isMpRules(mode: GameMode): boolean {
-  return mode === "mp-offline" || mode === "mp-online";
+  return mode === "mp-offline" || mode === "mp-online" || mode === "base-war";
 }

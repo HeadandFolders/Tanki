@@ -209,7 +209,13 @@ wss.on("connection", (ws) => {
         return;
       }
       const seed = (Date.now() ^ (Math.random() * 1e9)) >>> 0;
-      const startMsg: ServerMsg = { type: "start", seed };
+      const startMsg: ServerMsg = {
+        type: "start",
+        seed,
+        arena: msg.arena,
+        arenaSeed: msg.arenaSeed,
+        layoutHash: msg.layoutHash,
+      };
       if (room.host) send(room.host.ws, startMsg);
       if (room.guest) send(room.guest.ws, startMsg);
       return;
@@ -221,7 +227,12 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "order" && peer.role === "guest" && room.host) {
-      send(room.host.ws, { type: "peer-order", text: msg.text });
+      send(room.host.ws, { type: "peer-order", text: msg.text, segmentId: msg.segmentId });
+      return;
+    }
+
+    if (msg.type === "layout" && peer.role === "guest" && room.host) {
+      send(room.host.ws, { type: "peer-layout", hash: msg.hash });
       return;
     }
 

@@ -1,21 +1,28 @@
 import {
   CONFIG,
+  isBaseWar,
   isMpOffline,
   isMpOnline,
   isMpRules,
+  type ArenaId,
   type GameMode,
   type RedDifficulty,
   type ShareMode,
 } from "./config";
 import {
   buildArena,
+  arenaZones,
   dist,
   rotateToward,
   tryMove,
   angleTo,
   unstickFromWalls,
 } from "./arena";
-import { updateTankAi } from "./ai";
+import { baseShotClear, createBaseStates } from "./arena-bases";
+import { beginAiFrame, updateTankAi, warmRoutePlanner } from "./ai";
+import { commanderView, setCommander, updateCommander, type Opponent, type PendingCommanderOrder } from "./ai-commander";
+import { intentsToOrders } from "./command-resolver";
+import type { CommandRecord } from "./command-pipeline";
 import { updateTeamBelief } from "./belief";
 import {
   applyDiscoveryCells,
@@ -26,33 +33,54 @@ import {
   visionTanksForReveal,
   canSeeTank,
 } from "./fog";
-import { interpretOrder } from "./orders";
+import { completeCommandRecord, interpretCommand, markDiedStuck, recordMatchOutcome, refreshCommandRecord } from "./command-pipeline";
 import { createTeams } from "./spawn";
+import { createRandom, nextRandom } from "./random";
+import { assignOrder, finishOrder, orderAcknowledgement, setGoal, stackFor } from "./interrupt-stack";
+import { beginUtterance, failRadio, resetRadio, type UtteranceMeter } from "./radio";
 import type {
+  BaseState,
   ChatLine,
   DeathFx,
   InterpretContext,
+  OrderResult,
   Projectile,
   Tank,
   WorldState,
   Wreck,
 } from "./types";
 
-let wreckSeq = 0;
-let deathFxSeq = 0;
-
 export function createWorld(
   shareMode: ShareMode = CONFIG.shareModeDefault,
   gameMode: GameMode = CONFIG.gameModeDefault,
   redDifficulty: RedDifficulty = CONFIG.ai.redDifficultyDefault,
   seedOverride?: number,
+  opponent: Opponent = "normal",
+  arena?: ArenaId,
+  arenaSeed: number = CONFIG.largeArena.seed,
 ): WorldState {
+  // Screenshot layout for TDM / CTF / No Fog. Multiplayer keeps the dense maze
+  // unless the host picked another MP arena.
+  const arenaId: ArenaId =
+    arena ??
+    (isMpRules(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "reference");
+  // Walls first: buildArena sets the world size the fog grid is sized from.
+  const walls = buildArena(arenaId, { seed: arenaSeed, baseWar: isBaseWar(gameMode) });
+  warmRoutePlanner(walls);
   const fog = createFogGrid();
   const seed =
     seedOverride != null
       ? seedOverride >>> 0
       : (Date.now() ^ (Math.random() * 1e9)) >>> 0;
-  const tanks = createTeams(seed, gameMode === "ctf", shareMode, gameMode);
+  const random = createRandom(seed);
+  const tanks = createTeams(
+    () => nextRandom(random),
+    gameMode === "ctf",
+    shareMode,
+    gameMode,
+    walls,
+    arenaId,
+  );
   const controlled =
     tanks.find((t) => t.team === "blue" && t.role === "shooter") ??
     tanks.find((t) => t.team === "blue")!;
@@ -61,18 +89,16 @@ export function createWorld(
       tanks.find((t) => t.team === "red")!)
     : null;
 
-  wreckSeq = 0;
-  deathFxSeq = 0;
-
-  const density =
-    isMpRules(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
-
   const world: WorldState = {
     time: 0,
-    matchLeft: CONFIG.matchDurationSec,
+    matchLeft: isBaseWar(gameMode) ? CONFIG.matchTimeLimitSec : CONFIG.matchDurationSec,
     shareMode,
     gameMode,
-    walls: buildArena(density),
+    arenaId,
+    arenaSeed,
+    zones: arenaZones(arenaId, arenaSeed),
+    walls,
+    bases: isBaseWar(gameMode) ? createBaseStates(arenaId) : undefined,
     tanks,
     projectiles: [],
     wrecks: [],
@@ -85,13 +111,20 @@ export function createWorld(
     controlledId: controlled.id,
     remoteControlledId: remoteControlled?.id ?? null,
     outcome: "ready",
+    outcomeReason: null,
     chat: [],
     events: [],
+    orderEvents: [],
     nextWreckLabel: 0,
     rngSeed: seed,
+    random,
+    wreckSeq: 0,
+    deathFxSeq: 0,
     teamBelief: { contacts: [] },
+    redTeamBelief: { contacts: [] },
     redDifficulty,
   };
+  if (isMpOffline(gameMode)) setCommander(world, "red", opponent);
 
   revealHomeTerritory(world);
   if (isMpOnline(gameMode)) {
@@ -105,6 +138,9 @@ export function createWorld(
       "Stand by. Multiplayer · Online. Host or Join from the panel below.",
       "sys",
     );
+  } else if (isBaseWar(gameMode)) {
+    pushEvent(world, "Base War — destroy the enemy base or eliminate all enemy tanks. Ten-minute limit.", "sys");
+    pushChat(world, "Stand by. Base War. Allies hold until ordered; defend your base.", "sys");
   } else if (isMpOffline(gameMode)) {
     pushEvent(
       world,
@@ -157,7 +193,12 @@ export function startMatch(world: WorldState): void {
   if (world.outcome !== "ready" && world.outcome !== "countdown") return;
   world.outcome = "playing";
   world.time = 0;
-  world.matchLeft = CONFIG.matchDurationSec;
+  world.matchLeft = isBaseWar(world.gameMode) ? CONFIG.matchTimeLimitSec : CONFIG.matchDurationSec;
+  world.outcomeReason = null;
+  for (const team of ["blue", "red"] as const) {
+    const commander = world.commanders?.[team];
+    if (commander) setCommander(world, team, commander.difficulty, commander.seed, commander.profile);
+  }
   pushEvent(world, "Match started.", "warn");
   pushChat(world, "Net live. Give orders.", "sys");
 }
@@ -270,20 +311,40 @@ export async function sendOrder(
   orderText: string,
   ctx: InterpretContext = {},
   team: "blue" | "red" = "blue",
+  parsed?: PendingCommanderOrder & { view: WorldState },
+  utterance?: { segmentId?: string },
 ): Promise<void> {
   if (world.outcome !== "playing") return;
+  if (parsed) {
+    const { record, view } = parsed;
+    const resolved = intentsToOrders(view, team, [record.intent!], "ai_commander");
+    record.notice = resolved.notice;
+    record.appliedAt = world.time;
+    record.latency_ms = (parsed.executeAt - record.issuedAt!) * 1000;
+    const living = applyResolvedOrders(world, resolved.orders, record, team, view);
+    record.tanks = living.map((order) => order.tankId);
+    pushEvent(world, `AI commander (${team}): ${record.raw_text} — ${record.reason}`, "sys");
+    completeCommandRecord(world, record, living, world.tanks, (world.time - record.issuedAt!) * 1000);
+    return;
+  }
+  const meter: UtteranceMeter = { at: performance.now(), count: 0 };
+  if (!beginUtterance(world, orderText, team, utterance?.segmentId, meter)) return;
+  const intakeAt = meter.at;
   pushEvent(world, `Order (${team}): ${orderText}`, "sys");
-  const bundle = await interpretOrder(
+  const { bundle, record } = await interpretCommand(
     orderText,
     world.tanks,
     world,
     ctx,
     team,
   );
-  if (bundle.notice) {
-    pushEvent(world, bundle.notice, "warn");
-    pushChat(world, bundle.notice, "warn");
-  }
+  if (world.outcome !== "playing") return;
+  record.repeat_count = meter.count;
+  meter.attach = (count) => {
+    record.repeat_count = count;
+    refreshCommandRecord(record);
+  };
+  if (bundle.notice) pushEvent(world, bundle.notice, "warn");
   if (bundle.llmError) {
     // Event log only — keep team chat free of API noise
     pushEvent(
@@ -298,27 +359,50 @@ export async function sendOrder(
     "sys",
   );
 
-  // One company ack in chat; per-tank detail stays in the event log
-  const living = bundle.results.filter((r) => {
-    const tank = world.tanks.find((t) => t.id === r.tankId);
-    return tank && tank.alive;
-  });
-  if (living.length) {
-    const sample = living[0];
-    const sameGoal = living.every((r) => r.goal === sample.goal);
-    const ack = sameGoal
-      ? `Company: ${living.length} tank(s) — ${sample.chatLine.replace(/^#\d+:\s*/, "")}`
-      : `Company: ${living.length} tank(s) ack.`;
-    pushChat(world, ack, "ally");
+  const living = applyResolvedOrders(world, bundle.results, record, team, undefined, intakeAt);
+  if (!living.length) {
+    failRadio(world, team);
+    // "Company: say again" is the answer to the utterance; it counts as the ack.
+    record.t_ack_ms = Math.round((performance.now() - intakeAt) * 10) / 10;
   }
+  completeCommandRecord(world, record, living, world.tanks, performance.now() - intakeAt);
+}
 
+function applyResolvedOrders(
+  world: WorldState,
+  results: OrderResult[],
+  record: CommandRecord,
+  team: "blue" | "red",
+  view: WorldState = world,
+  intakeAt?: number,
+): OrderResult[] {
+  const living = results.filter((r) => {
+    const tank = world.tanks.find((t) => t.id === r.tankId);
+    return tank && tank.alive && tank.team === team;
+  });
+  const eventStart = world.orderEvents?.length ?? 0;
+  const acknowledgements: string[] = [];
   for (const r of living) {
     const tank = world.tanks.find((t) => t.id === r.tankId)!;
-    tank.goal = {
+    const stack = stackFor(tank);
+    const routineCopyDue = world.time - stack.lastCopyAt >= 2;
+    assignOrder(view, tank, {
       kind: r.goal,
       params: r.params ?? {},
       source: "player",
-    };
+      commandId: record.id,
+      noRetreat: r.noRetreat,
+      commandSource: record.which_path_executed,
+      ...(record.issuer === "ai_commander" ? { issuer: "ai_commander" as const } : {}),
+    }, true);
+    const acknowledgement = orderAcknowledgement(view, tank);
+    if (acknowledgement.startsWith("negative")) {
+      resetRadio(world, team);
+      acknowledgements.push(`#${tank.number} ${acknowledgement}`);
+    } else if (stack.status === "active" && routineCopyDue) {
+      acknowledgements.push(`#${tank.number} ${acknowledgement}`);
+      stack.lastCopyAt = world.time;
+    }
     tank.lastOrderChat = r.chatLine;
     const px = r.params?.x;
     const py = r.params?.y;
@@ -330,6 +414,17 @@ export async function sendOrder(
       "sys",
     );
   }
+  if (acknowledgements.length) {
+    world.chat.push({ t: world.time, team, text: `Company: ${acknowledgements.join("; ")}`, kind: "ally" });
+    if (world.chat.length > 80) world.chat.shift();
+    // The first captioned answer is the ack; stamp once.
+    if (record.t_ack_ms == null && intakeAt != null) {
+      record.t_ack_ms = Math.round((performance.now() - intakeAt) * 10) / 10;
+    }
+  }
+  record.orderEvents = (world.orderEvents ?? []).slice(eventStart).filter((event) => event.commandId === record.id);
+  record.interrupts = record.orderEvents.filter((event) => event.type === "interrupted").length;
+  return living;
 }
 
 export interface InputState {
@@ -352,17 +447,30 @@ export function stepWorld(
   if (world.outcome !== "playing") return;
 
   world.time += dt;
+  beginAiFrame();
   world.matchLeft -= dt;
   if (world.matchLeft <= 0) {
     world.matchLeft = 0;
-    world.outcome = "draw";
-    pushEvent(world, "Time expired — draw.", "warn");
-    pushChat(world, "Clock zero. No code confirmed. Draw.", "warn");
+    if (isBaseWar(world.gameMode)) resolveBaseWarTimeout(world);
+    else {
+      world.outcome = "draw";
+      pushEvent(world, "Time expired — draw.", "warn");
+      pushChat(world, "Clock zero. No code confirmed. Draw.", "warn");
+    }
+    closeMatchOrders(world);
     return;
   }
 
   // AI team belief before brains (share modes feed contacts, not only player map)
   updateTeamBelief(world);
+  for (const team of ["blue", "red"] as const) {
+    const commander = world.commanders?.[team];
+    if (commander) updateCommander(world, commander);
+  }
+  const botViews = {
+    blue: world.commanders?.blue ? commanderView(world, world.commanders.blue) : world,
+    red: world.commanders?.red ? commanderView(world, world.commanders.red) : world,
+  };
 
   // Expire markers
   world.markers = world.markers.filter(
@@ -389,19 +497,19 @@ export function stepWorld(
     tank.cooldown = Math.max(0, tank.cooldown - dt);
 
     const isLocalControlled =
-      tank.team === "blue" && tank.id === world.controlledId;
+      tank.team === "blue" && tank.id === world.controlledId && !world.commanders?.blue;
     const isRemoteControlled =
       !!guestInput &&
       !!world.remoteControlledId &&
       tank.team === "red" &&
-      tank.id === world.remoteControlledId;
+      tank.id === world.remoteControlledId && !world.commanders?.red;
 
     if (isLocalControlled) {
       updatePlayer(world, tank, dt, localInput);
     } else if (isRemoteControlled && guestInput) {
       updatePlayer(world, tank, dt, guestInput);
     } else {
-      const ai = updateTankAi(world, tank, dt, false);
+      const ai = updateTankAi(botViews[tank.team], tank, dt, false);
       if (ai.wantShoot && CONFIG.roles[tank.role].canShoot) {
         tryShoot(world, tank, ai.aimAngle, false);
       }
@@ -431,7 +539,21 @@ export function stepWorld(
   updateProjectiles(world, dt);
   updateVision(world);
   updateSightings(world);
+  for (const tank of world.tanks.filter((t) => t.alive)) {
+    const stack = stackFor(tank);
+    if (stack.interrupt) continue;
+    if (stack.base.kind === "attackNearest" && stack.preyId && world.tanks.some((t) => t.id === stack.preyId && !t.alive)) {
+      finishOrder(world, tank, "success", "prey_dead_hold", "target down, holding");
+    } else if (stack.base.kind === "attackBase" && !world.bases?.[tank.team === "blue" ? "red" : "blue"]?.alive) {
+      finishOrder(world, tank, "success", "order_complete", "base down, holding");
+    }
+  }
   checkOutcome(world);
+  if (world.outcome !== "playing") closeMatchOrders(world);
+}
+
+function closeMatchOrders(world: WorldState): void {
+  for (const tank of world.tanks) finishOrder(world, tank, "expired", "match_ended", "match ended, order closed");
 }
 
 function updateDeathFx(world: WorldState): void {
@@ -510,13 +632,22 @@ function tryShoot(
 
   // AI: only open fire if this tank can see someone (player may always shoot).
   if (!isPlayer) {
+    // Fog modes gate on vision. No-fog multiplayer already gated the chosen shot
+    // on range + line of sight in the brain, so gate on the same gun range: a
+    // tighter number here meant hulls aimed at enemies they refused to shoot.
+    const reach = isMpRules(world.gameMode)
+      ? Math.max(stats.fightRange, CONFIG.mpOffline.shootRange)
+      : stats.visionRadius + 40;
     const sees = world.tanks.some(
       (e) =>
         e.team !== tank.team &&
         e.alive &&
-        dist(tank.x, tank.y, e.x, e.y) < CONFIG.roles[tank.role].visionRadius + 40,
+        dist(tank.x, tank.y, e.x, e.y) < reach,
     );
-    if (!sees) return;
+    const base = world.bases?.[tank.team === "blue" ? "red" : "blue"];
+    const seesBase = tank.goal.kind === "attackBase" && base &&
+      baseShotClear(tank, base, world.walls, CONFIG.mpOffline.shootRange);
+    if (!sees && !seesBase) return;
   }
 
   tank.cooldown = stats.fireCooldown;
@@ -544,6 +675,18 @@ function updateProjectiles(world: WorldState, dt: number): void {
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     if (p.life <= 0) continue;
+
+    const base = Object.values(world.bases ?? {}).find((candidate) =>
+      candidate.alive &&
+      p.x >= candidate.x - CONFIG.bulletRadius &&
+      p.x <= candidate.x + candidate.w + CONFIG.bulletRadius &&
+      p.y >= candidate.y - CONFIG.bulletRadius &&
+      p.y <= candidate.y + candidate.h + CONFIG.bulletRadius,
+    );
+    if (base) {
+      applyBaseDamage(world, base, p.damage, p.team);
+      continue;
+    }
 
     // wall collide
     let hitWall = false;
@@ -575,6 +718,24 @@ function updateProjectiles(world: WorldState, dt: number): void {
   world.projectiles = next;
 }
 
+export function applyBaseDamage(
+  world: WorldState,
+  base: BaseState,
+  damage: number,
+  sourceTeam: "blue" | "red",
+): void {
+  if (!base.alive) return;
+  base.lastHitAt = world.time;
+  if (sourceTeam === base.team) return;
+  base.lastDamagedAt = world.time;
+  if (world.time - base.lastAlertAt >= CONFIG.baseAttackAlertCooldownSec) base.lastAlertAt = world.time;
+  base.hp = Math.max(0, base.hp - damage * CONFIG.baseDamageMultiplier);
+  if (base.hp > 0) return;
+  base.alive = false;
+  base.destroyedAt = world.time;
+  pushEvent(world, `${base.team === "blue" ? "Friendly" : "Enemy"} base destroyed.`, "warn");
+}
+
 function applyDamage(
   world: WorldState,
   tank: Tank,
@@ -587,6 +748,11 @@ function applyDamage(
   if (tank.hp <= 0) {
     tank.hp = 0;
     tank.alive = false;
+    // Read the command id before finishOrder mutates the stack.
+    const commandId = stackFor(tank).base.commandId;
+    if (tank.stuckState?.stuck) markDiedStuck(world, commandId);
+    delete tank.stuckState;
+    finishOrder(world, tank, "expired", "tank_destroyed", "tank down, order ended");
     if (isMpRules(world.gameMode)) {
       spawnDeathFx(world, tank);
     } else {
@@ -611,9 +777,9 @@ function applyDamage(
 
 /** Blink twice then vanish — no persistent wreck gameplay in mp-offline. */
 function spawnDeathFx(world: WorldState, tank: Tank): void {
-  deathFxSeq++;
+  world.deathFxSeq++;
   const fx: DeathFx = {
-    id: `death-${deathFxSeq}`,
+    id: `death-${world.deathFxSeq}`,
     team: tank.team,
     tankNumber: tank.number,
     role: tank.role,
@@ -628,9 +794,9 @@ function spawnDeathFx(world: WorldState, tank: Tank): void {
 function spawnWreck(world: WorldState, tank: Tank): void {
   const label = String.fromCharCode(65 + (world.nextWreckLabel % 26));
   world.nextWreckLabel++;
-  wreckSeq++;
+  world.wreckSeq++;
   const wreck: Wreck = {
-    id: `wreck-${wreckSeq}`,
+    id: `wreck-${world.wreckSeq}`,
     label,
     team: tank.team,
     tankNumber: tank.number,
@@ -693,11 +859,11 @@ function handleReportIn(world: WorldState, tank: Tank): void {
   const n = applyDiscoveryCells(world, cells);
   tank.reportProgress = 0;
   tank.standStillTimer = 0;
-  tank.goal = {
+  setGoal(world, tank, {
     kind: "holdPosition",
     params: { x: tank.x, y: tank.y },
     source: "system",
-  };
+  }, "success", "order_complete", "report complete, holding");
 
   pushEvent(
     world,
@@ -810,7 +976,7 @@ function tickDebug(
       // continue to next marked
       const more = world.wrecks.some((w) => w.marked && !w.debugged);
       if (!more) {
-        tank.goal = { kind: "holdPosition", params: { x: tank.x, y: tank.y } };
+        setGoal(world, tank, { kind: "holdPosition", params: { x: tank.x, y: tank.y } }, "success", "order_complete", "wreck checked, holding");
       }
     }
   }
@@ -868,7 +1034,7 @@ function updateSightings(world: WorldState): void {
         if (e.team !== "red" || !e.alive) continue;
         if (!canSeeTank(t, e, world.walls)) continue;
         // throttle chat contacts
-        if (Math.random() < 0.002) {
+        if (nextRandom(world.random) < 0.002) {
           pushChat(
             world,
             `#${t.number}: contact! grid ${Math.round(e.x)},${Math.round(e.y)}`,
@@ -880,8 +1046,62 @@ function updateSightings(world: WorldState): void {
   }
 }
 
+function finishBaseWar(
+  world: WorldState,
+  outcome: "win" | "lose" | "draw",
+  reason: string,
+): void {
+  world.outcome = outcome;
+  world.outcomeReason = reason;
+  pushEvent(world, `${reason} — ${outcome === "draw" ? "draw" : outcome === "win" ? "victory" : "defeat"}.`, "warn");
+  pushChat(world, `${reason} ${outcome === "draw" ? "Draw." : outcome === "win" ? "We win." : "Defeat."}`, "warn");
+  recordMatchOutcome(world, outcome, reason);
+}
+
+function resolveBaseWarTimeout(world: WorldState): void {
+  const blueBase = world.bases!.blue;
+  const redBase = world.bases!.red;
+  const blueHp = blueBase.hp / blueBase.maxHp;
+  const redHp = redBase.hp / redBase.maxHp;
+  if (Math.abs(blueHp - redHp) > 1e-9) {
+    finishBaseWar(world, blueHp > redHp ? "win" : "lose", "Time up: base HP");
+    return;
+  }
+  const blueAlive = world.tanks.filter((tank) => tank.team === "blue" && tank.alive).length;
+  const redAlive = world.tanks.filter((tank) => tank.team === "red" && tank.alive).length;
+  if (blueAlive !== redAlive) {
+    finishBaseWar(world, blueAlive > redAlive ? "win" : "lose", "Time up: surviving tanks");
+    return;
+  }
+  finishBaseWar(world, "draw", "Time up: draw");
+}
+
+function checkBaseWarOutcome(world: WorldState): void {
+  const blueAlive = world.tanks.some((tank) => tank.team === "blue" && tank.alive);
+  const redAlive = world.tanks.some((tank) => tank.team === "red" && tank.alive);
+  const blueBaseAlive = world.bases!.blue.alive;
+  const redBaseAlive = world.bases!.red.alive;
+  const blueWins = !redAlive || !redBaseAlive;
+  const redWins = !blueAlive || !blueBaseAlive;
+  if (blueWins && redWins) {
+    finishBaseWar(world, "draw", "Simultaneous destruction");
+    return;
+  }
+  if (blueWins) {
+    finishBaseWar(world, "win", redBaseAlive ? "All tanks eliminated" : "Base destroyed");
+    return;
+  }
+  if (redWins) {
+    finishBaseWar(world, "lose", blueBaseAlive ? "All tanks eliminated" : "Base destroyed");
+  }
+}
+
 function checkOutcome(world: WorldState): void {
   if (world.outcome !== "playing") return;
+  if (isBaseWar(world.gameMode)) {
+    checkBaseWarOutcome(world);
+    return;
+  }
   const blueAlive = world.tanks.some((t) => t.team === "blue" && t.alive);
   const redAlive = world.tanks.some((t) => t.team === "red" && t.alive);
   if (!blueAlive) {

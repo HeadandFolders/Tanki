@@ -6,6 +6,7 @@ export const GOAL_KINDS = [
   "moveTo",
   "holdPosition",
   "attackNearest",
+  "attackBase",
   "escort",
   "retreat",
   "reportIn",
@@ -21,6 +22,7 @@ export type GoalKind = (typeof GOAL_KINDS)[number];
 /** Goals that count as an explicit movement/formation order (high priority). */
 export const ORDERED_MOVE_GOALS: ReadonlySet<GoalKind> = new Set([
   "moveTo",
+  "attackBase",
   "spreadOut",
   "holdPosition",
   "escort",
@@ -42,5 +44,5 @@ export function isGoalKind(value: unknown): value is GoalKind {
 
 /** Pipe-separated list for LLM system prompts. */
 export function goalKindsForPrompt(): string {
-  return GOAL_KINDS.filter((g) => g !== "idle").join("|");
+  return GOAL_KINDS.filter((g) => g !== "idle" && g !== "attackBase").join("|");
 }

@@ -1,0 +1,98 @@
+:root {
+  color-scheme: dark;
+  font-family: "Courier New", "Lucida Console", monospace;
+}
+
+body {
+  margin: 0;
+  padding: 16px 20px;
+  background: #050505;
+  color: #e8e8e8;
+  font-size: 0.8rem;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  color: #f0d030;
+  text-transform: uppercase;
+}
+
+.hint {
+  margin: 0 0 10px;
+  color: #888890;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: #151a22;
+  border: 1px solid #303038;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid #1c1c22;
+  vertical-align: top;
+}
+
+th {
+  color: #888890;
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+}
+
+.empty {
+  color: #888890;
+}
+
+.handler-parser {
+  color: #5fd35f;
+  font-weight: bold;
+}
+
+.handler-keyword {
+  color: #c9a24a;
+  font-weight: bold;
+}
+
+.handler-needle {
+  color: #f0b030;
+  font-weight: bold;
+}
+
+.handler-api {
+  color: #5aa8ff;
+  font-weight: bold;
+}
+
+.janna-pass {
+  color: #5fd35f;
+  font-weight: bold;
+}
+
+.janna-fail {
+  color: #e35d5d;
+  font-weight: bold;
+}
+
+.janna-none {
+  color: #888890;
+}

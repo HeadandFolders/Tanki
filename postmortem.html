@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Command post-mortem — Tank Hunt</title>
+    <link rel="stylesheet" href="/src/postmortem.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Command post-mortem</h1>
+      <p class="hint">
+        Every recognized radio command and what handled it. Kept in this browser across restarts.
+        Score each order in the in-game <strong>Janna eval</strong> list: blank (unreported), red (fail), green (success).
+        With <code>npm run dev</code> running, each line is also appended to
+        <code>logs/command-postmortem.log</code>.
+      </p>
+      <div class="actions">
+        <span id="count"></span>
+        <button id="download" type="button">Download .txt</button>
+        <button id="clear" type="button">Clear log</button>
+      </div>
+    </header>
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Mode</th>
+          <th>Team</th>
+          <th>Command</th>
+          <th>Handled by</th>
+          <th>Janna Eval</th>
+          <th>Goals</th>
+          <th>ms</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script type="module" src="/src/postmortem.ts"></script>
+  </body>
+</html>

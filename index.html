@@ -19,6 +19,8 @@
               <option value="tdm-nofog" selected>TDM No Fog (all-clear)</option>
               <option value="tdm">TDM Fog</option>
               <option value="ctf">Capture the Code</option>
+              <option value="heavy-light">Heavy/Light</option>
+              <option value="base-war">Base War (vs scripted commander)</option>
               <option value="mp-offline">Multiplayer · Offline</option>
               <option value="mp-online">Multiplayer · Online</option>
             </select>
@@ -40,6 +42,12 @@
       <main class="layout">
         <div class="canvas-wrap">
           <canvas id="game" width="1280" height="800" tabindex="0"></canvas>
+          <div id="radio-overlay" class="radio-overlay" aria-hidden="true" hidden></div>
+          <div id="map-edit-bar" class="map-edit-bar" hidden>
+            <span>Drag the structures. The border stays put.</span>
+            <button id="map-edit-done" type="button">Done</button>
+            <button id="map-edit-reset" type="button">Reset</button>
+          </div>
           <div id="countdown-overlay" class="countdown-overlay" hidden>
             <div id="countdown-num" class="countdown-num">3</div>
             <p class="countdown-caption">Get ready</p>
@@ -69,15 +77,45 @@
                     <strong>Capture the Code</strong>
                     <span>Debug the enemy code-carrier wreck to win.</span>
                   </button>
+                  <button type="button" class="gate-mode" data-mode="heavy-light" aria-pressed="false">
+                    <strong>Heavy/Light</strong>
+                    <span>No scouts. 3 heavies and 3 gunners a side. Heavies reload slower, take more hits, and hit harder. No fog.</span>
+                  </button>
+                  <button type="button" class="gate-mode" data-mode="base-war" aria-pressed="false">
+                    <strong>Base War (vs scripted commander)</strong>
+                    <span>Offline. Destroy the enemy base or eliminate their tanks. Defend yours. No fog, no respawns. Ten-minute limit.</span>
+                  </button>
                   <button type="button" class="gate-mode" data-mode="mp-offline" aria-pressed="false">
                     <strong>Multiplayer · Offline</strong>
-                    <span>Local/bot TDM — no fog, all gunners, hold until ordered, wipe the enemy team.</span>
+                    <span>Local/bot TDM — no fog, all gunners, wipe the enemy team. Scripted commander opponent by default.</span>
                   </button>
                   <button type="button" class="gate-mode" data-mode="mp-online" aria-pressed="false">
                     <strong>Multiplayer · Online</strong>
                     <span>Two devices on LAN — Host / Join. Same rules as Offline (no fog, gunners, wipe).</span>
                   </button>
                 </div>
+              </div>
+
+              <div id="mp-opponent-panel" hidden>
+                <label class="gate-llm-field" for="mp-opponent">
+                  <span>Opponent</span>
+                  <select id="mp-opponent">
+                    <option value="easy">Scripted commander (easy)</option>
+                    <option value="normal" selected>Scripted commander (normal)</option>
+                    <option value="hard">Scripted commander (hard)</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+              </div>
+
+              <div id="mp-arena-panel" hidden>
+                <label class="gate-llm-field" for="mp-arena">
+                  <span>Arena</span>
+                  <select id="mp-arena">
+                    <option value="dense" selected>Dense (80×50)</option>
+                    <option value="large">Large (144×90)</option>
+                  </select>
+                </label>
               </div>
 
               <div id="mp-net-panel" class="gate-section mp-net-panel" hidden>
@@ -152,6 +190,7 @@
                 <button id="recheck-llm" type="button">Test connection</button>
                 <button id="start-round" type="button" disabled>Start</button>
                 <button id="start-offline" type="button" class="gate-offline">Play offline</button>
+                <button id="edit-map" type="button">Edit map</button>
               </div>
             </div>
           </div>
@@ -159,8 +198,13 @@
 
         <aside class="panel">
           <section>
-            <h2>Team</h2>
-            <ul id="roster"></ul>
+            <h2>Map</h2>
+            <canvas
+              id="minimap"
+              width="360"
+              height="225"
+              title="Whole-arena overview · hold F and click to mark a spot"
+            ></canvas>
           </section>
 
           <section>
@@ -199,15 +243,20 @@
             </label>
           </section>
 
-          <section>
-            <h2>Team chat</h2>
-            <div id="chat" class="log"></div>
+          <section class="radio-strip" aria-label="Team radio">
+            <h2>Team radio</h2>
+            <div id="chat" class="log" role="log" aria-live="polite" aria-relevant="additions"></div>
           </section>
 
-          <section>
-            <h2>Event log</h2>
-            <div id="events" class="log"></div>
+          <section class="janna-eval-section">
+            <h2>Janna · parse only</h2>
+            <div class="command-history-head">
+              <span>parse: blank → incorrect → correct</span>
+              <a href="/postmortem.html" target="_blank" rel="noopener">Post-mortem</a>
+            </div>
+            <div id="command-history" class="command-history" aria-live="polite"></div>
           </section>
+          <div id="events" class="log" hidden></div>
         </aside>
       </main>
     </div>

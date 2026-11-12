@@ -140,6 +140,10 @@ body {
   gap: 8px;
 }
 
+.gate-section[hidden] {
+  display: none;
+}
+
 .gate-modes {
   display: grid;
   gap: 8px;
@@ -388,6 +392,37 @@ body {
   cursor: wait;
 }
 
+#edit-map {
+  padding: 10px 14px;
+  background: #142028;
+  border-color: #3ee0ff;
+  color: #bff6ff;
+}
+
+.map-edit-bar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(6, 10, 16, 0.92);
+  border: 2px solid #3ee0ff;
+  color: #d8f8ff;
+  font-size: 13px;
+}
+
+.map-edit-bar[hidden] {
+  display: none;
+}
+
+.map-edit-bar button {
+  padding: 6px 10px;
+}
+
 #start-offline {
   padding: 8px 12px;
   background: transparent;
@@ -420,6 +455,72 @@ body {
   justify-content: center;
   background: #111;
   border: 4px solid #888890;
+}
+
+.command-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  max-height: 55%;
+  overflow: hidden;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.78);
+  font: 12px/1.45 ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.command-overlay[hidden] {
+  display: none;
+}
+
+.command-overlay > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.command-overlay-head {
+  color: #e0e0e0;
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+
+.radio-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.78);
+  border-left: 3px solid var(--accent);
+  font: 12px/1.45 ui-monospace, Consolas, monospace;
+  color: #cfe3ff;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.radio-overlay[hidden] {
+  display: none;
+}
+
+.radio-overlay .line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radio-overlay .ally {
+  color: #9ec0ff;
+}
+
+.radio-overlay .warn {
+  color: #f0c674;
 }
 
 #game {
@@ -463,50 +564,146 @@ body {
   line-height: 1.35;
 }
 
-#roster {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 4px;
+#minimap {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #101010;
+  border: 1px solid rgba(240, 208, 48, 0.35);
+  cursor: crosshair;
+  image-rendering: pixelated;
 }
 
-#roster li {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 6px;
-  border: 1px solid transparent;
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-#roster li.active {
-  border-color: var(--blue);
-  background: rgba(240, 208, 48, 0.12);
-}
-
-#roster li.dead {
-  opacity: 0.45;
-  text-decoration: line-through;
-}
-
-#roster .role {
-  color: var(--muted);
-}
-
-#roster .role.scout,
 .roles-legend .scout {
   color: #9ad7ff;
 }
 
-#roster .role.shooter,
 .roles-legend .shooter {
   color: #ffd39a;
 }
 
+.roles-legend .heavy {
+  color: #ffb060;
+}
+
 .roles-legend {
   margin-top: 6px;
+}
+
+.janna-eval-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.command-history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0 0 4px;
+  font-size: 0.66rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.command-history-head a {
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.command-history {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: #0c1118;
+  padding: 4px 6px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.command-history:empty::before {
+  content: "No commands yet. Janna scores the parse only; reason codes describe tank outcomes.";
+  color: var(--muted);
+}
+
+.command-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.janna-eval-box {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #6a6a72;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.janna-eval-box:hover {
+  border-color: var(--ink);
+}
+
+.command-history-row[data-janna="fail"] .janna-eval-box {
+  background: #e35d5d;
+  border-color: #e35d5d;
+}
+
+.command-history-row[data-janna="pass"] .janna-eval-box {
+  background: #5fd35f;
+  border-color: #5fd35f;
+}
+
+.command-history-reasons {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f0c674;
+  font-size: 0.62rem;
+}
+
+.command-history-reasons:empty {
+  display: none;
+}
+
+.command-history-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-history-tag {
+  flex: none;
+  font-weight: bold;
+}
+
+.handler-parser {
+  color: #5fd35f;
+}
+
+.handler-keyword {
+  color: #c9a24a;
+}
+
+.handler-needle {
+  color: #f0b030;
+}
+
+.handler-api {
+  color: #5aa8ff;
 }
 
 #order-form {
@@ -589,6 +786,28 @@ button:hover {
   background: #1a1a20;
 }
 
+.radio-strip {
+  flex: none;
+}
+
+.radio-strip h2 {
+  margin-bottom: 4px;
+}
+
+.radio-strip .log {
+  min-height: 2.7em;
+  max-height: 5.5em;
+}
+
+.radio-strip .log:empty::before {
+  content: "Company radio ready.";
+  color: var(--muted);
+}
+
+.handler-failed {
+  color: #e35d5d;
+}
+
 .log {
   min-height: 64px;
   max-height: 120px;
@@ -618,9 +837,12 @@ button:hover {
 }
 
 @media (max-width: 900px) {
+  /* Stacked: the document must actually grow, otherwise the panel below the
+     map is unreachable — html and body would stay 100vh scroll boxes. */
   html,
   body {
-    overflow: auto;
+    height: auto;
+    overflow: visible;
   }
 
   #app {
@@ -636,6 +858,7 @@ button:hover {
 
   .canvas-wrap {
     min-height: 50vh;
+    aspect-ratio: 1280 / 800;
   }
 
   .panel {

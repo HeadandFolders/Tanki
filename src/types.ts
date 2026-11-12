@@ -1,4 +1,13 @@
-import type { GameMode, RedDifficulty, Role, ShareMode } from "./config";
+import type { RouteCommit } from "./ai";
+import type { AiCommanderState } from "./ai-commander";
+import type { DriveTrack } from "./motion";
+import type { StuckState } from "./stuck";
+import type { RandomState } from "./random";
+import type { InterruptStack, OrderEvent } from "./interrupt-stack";
+import type { CommandSource } from "./command-schema";
+import type { CommandRecord } from "./command-pipeline";
+import type { ArenaId, GameMode, RedDifficulty, Role, ShareMode } from "./config";
+import type { ArenaZone } from "./arena-large";
 import type { GoalKind } from "./goals";
 
 export type { RedDifficulty };
@@ -16,13 +25,22 @@ export interface Goal {
     y?: number;
     targetTankId?: string;
     /** Named enemies for "2 and 3 attack 5 and 6". Each attacker hunts the nearest. */
-    targetTankIds?: string[];
+    targetTankIds?: readonly string[];
     wreckId?: string;
     /** Stop on this point instead of fanning out or holding short of it. */
     exact?: boolean;
+    /** Flank relative to the commander facing the enemy cluster. */
+    side?: "left" | "right";
+    /** stealth = prefer a covered route. Still a moveTo; bots already shoot in range. */
+    risk?: "normal" | "stealth";
   };
   /** Default system; set to player when radio/text order applied. */
   source?: GoalSource;
+  /** Which parser produced this goal from a radio/text order. Display only. */
+  commandSource?: CommandSource;
+  issuer?: "human" | "ai_commander";
+  noRetreat?: boolean;
+  commandId?: number;
 }
 
 /** Shared fog-of-war contact for AI (share modes feed this, not only the map). */
@@ -32,6 +50,7 @@ export interface TeamContact {
   y: number;
   seenAt: number;
   seenBy: string;
+  observed?: Pick<Tank, "number" | "team" | "role" | "hp" | "maxHp" | "angle">;
 }
 
 export interface TeamBelief {
@@ -42,7 +61,10 @@ export interface OrderResult {
   tankId: string;
   goal: GoalKind;
   params?: Goal["params"];
+  noRetreat?: boolean;
   chatLine: string;
+  /** Which parser produced this order. */
+  commandSource?: CommandSource;
 }
 
 export interface Vec2 {
@@ -62,7 +84,13 @@ export interface Tank {
   maxHp: number;
   alive: boolean;
   cooldown: number;
-  goal: Goal;
+  readonly goal: Readonly<Goal> & { readonly params?: Readonly<NonNullable<Goal["params"]>> };
+  orderStack?: InterruptStack;
+  routeCommit?: RouteCommit;
+  driveTrack?: DriveTrack;
+  stuckState?: StuckState;
+  wallSlide?: number;
+  redFocus?: { id: string; until: number };
   lastOrderChat?: string;
   standStillTimer: number;
   reportProgress: number;
@@ -121,6 +149,7 @@ export interface SightingMarker {
 }
 
 export interface ChatLine {
+  team?: TeamId;
   t: number;
   text: string;
   kind: "ally" | "sys" | "warn";
@@ -134,6 +163,22 @@ export interface Wall {
   w: number;
   h: number;
   kind: WallKind;
+  baseTeam?: TeamId;
+}
+
+export interface BaseState {
+  team: TeamId;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
+  lastHitAt: number;
+  lastDamagedAt: number;
+  lastAlertAt: number;
+  destroyedAt: number | null;
 }
 
 export interface WorldState {
@@ -141,7 +186,14 @@ export interface WorldState {
   matchLeft: number;
   shareMode: ShareMode;
   gameMode: GameMode;
+  /** Which arena the walls came from; keys wall edits and the net handshake. */
+  arenaId: ArenaId;
+  /** Layout seed (only the generated "large" arena reads it). */
+  arenaSeed: number;
+  /** Named zone anchors of this arena; empty on the hand-authored band maps. */
+  zones: ArenaZone[];
   walls: Wall[];
+  bases?: Record<TeamId, BaseState>;
   tanks: Tank[];
   projectiles: Projectile[];
   wrecks: Wreck[];
@@ -161,12 +213,20 @@ export interface WorldState {
   remoteControlledId: string | null;
   /** ready = menu; countdown = 3-2-1; playing = live match */
   outcome: "ready" | "countdown" | "playing" | "win" | "lose" | "draw";
+  outcomeReason?: string | null;
   chat: ChatLine[];
   events: ChatLine[];
+  orderEvents?: OrderEvent[];
+  humanCommands?: CommandRecord[];
   nextWreckLabel: number;
   rngSeed: number;
+  random: RandomState;
+  wreckSeq: number;
+  deathFxSeq: number;
   /** AI-facing shared contacts (P1: share modes affect team belief). */
   teamBelief: TeamBelief;
+  redTeamBelief?: TeamBelief;
+  commanders?: Partial<Record<TeamId, AiCommanderState>>;
   /** Red AI aggression tier for measurable “strong” baselines. */
   redDifficulty: RedDifficulty;
 }
@@ -184,7 +244,7 @@ export interface InterpretContext {
 
 export interface InterpretBundle {
   results: OrderResult[];
-  source: "llm" | "mock";
+  source: "llm" | "mock" | "needle";
   ms: number;
   /** Set when an LLM attempt failed and results came from offline fallback. */
   llmError?: string;

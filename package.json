@@ -10,6 +10,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4848",
     "eval:orders": "tsx scripts/eval-orders.ts",
+    "eval:commander": "tsx scripts/eval-commander.ts",
+    "eval:replay": "tsx scripts/check-goal-writes.ts && tsx scripts/eval-replay.ts",
+    "eval:radio": "tsx scripts/eval-radio.ts",
+    "eval:stuck": "tsx scripts/eval-stuck.ts",
+    "sim": "tsx scripts/sim-matches.ts",
     "test": "npm run eval:orders"
   },
   "devDependencies": {
@@ -20,6 +25,7 @@
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "cactus-needle": "^0.3.0",
     "ws": "^8.22.0"
   }
 }

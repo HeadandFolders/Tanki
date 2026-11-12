@@ -4,10 +4,14 @@
  */
 import assert from "node:assert/strict";
 import { beliefViewers, updateTeamBelief } from "../src/belief.ts";
+import { CONFIG } from "../src/config.ts";
 import { createWorld } from "../src/game.ts";
 import { GOAL_KINDS, isGoalKind } from "../src/goals.ts";
 import {
   interpretOffline,
+  lateralOffset,
+  phraseReaderHandles,
+  planUtterance,
   sanitizeOrders,
 } from "../src/orders.ts";
 import type { OrderResult, Tank, WorldState } from "../src/types.ts";
@@ -63,6 +67,13 @@ console.log("Offline interpret gold cases");
 {
   const world = createWorld("report", "tdm", "normal");
   const tanks = world.tanks;
+
+  check("cover / retreat skip the LLM wait", () => {
+    assert.equal(phraseReaderHandles("everyone cover me"), true);
+    assert.equal(phraseReaderHandles("2 cover me"), true);
+    assert.equal(phraseReaderHandles("Six retreat."), true);
+    assert.equal(phraseReaderHandles("5 attack 6"), false);
+  });
 
   check("cover me → escort commander", () => {
     const r = interpretOffline("cover me", tanks, world);
@@ -285,6 +296,26 @@ console.log("Offline interpret gold cases");
   });
 }
 
+console.log("Base War gold cases");
+{
+  const world = createWorld("clear", "base-war", "normal", 1, "off");
+  for (const [phrase, goal, numbers] of [
+    ["everyone attack the base", "attackBase", [2, 3, 4, 5, 6]],
+    ["2 and 3 attack their base", "attackBase", [2, 3]],
+    ["4 defend the base", "holdPosition", [4]],
+    ["everyone defend", "holdPosition", [2, 3, 4, 5, 6]],
+  ] as const) {
+    check(phrase, () => {
+      assert.ok(phraseReaderHandles(phrase));
+      const results = interpretOffline(phrase, world.tanks, world);
+      expectGoal(results, goal, numbers.length);
+      assert.deepEqual(results.map((r) => world.tanks.find((t) => t.id === r.tankId)!.number), numbers);
+      assert.deepEqual(sanitizeOrders(results, world.tanks, phrase, world), results);
+      if (goal === "holdPosition") assert.ok(results.every((r) => r.params?.x != null && r.params?.y != null));
+    });
+  }
+}
+
 console.log("sanitizeOrders");
 {
   const world = createWorld("clear", "tdm");
@@ -408,28 +439,97 @@ console.log("Fog spawn defaults");
     }
   });
 
-  check("mp: move south and shoot at will only moves", () => {
+  check("3 take the right and I'll take the left", () => {
+    const w = createWorld("clear", "mp-online");
+    const phrase = "3 take the right and I'll take the left";
+    const plan = planUtterance(phrase, w.tanks, w);
+    assert.ok(plan);
+    assert.equal(plan!.side, "right");
+    assert.equal(plan!.speakerReservedSide, "left");
+    assert.equal(plan!.risk, "normal");
+    assert.equal(plan!.goal, "moveTo");
+    assert.ok(plan!.anchor && plan!.reservedAnchor);
+    const cmd = w.tanks.find((t) => t.id === w.controlledId)!;
+    assert.ok(lateralOffset(plan!.facing, cmd, plan!.anchor!) > 30);
+    assert.ok(lateralOffset(plan!.facing, cmd, plan!.reservedAnchor!) < -30);
+    assert.ok(!plan!.addressedIds.includes(cmd.id));
+    const r = interpretOffline(phrase, w.tanks, w);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].goal, "moveTo");
+    assert.equal(r[0].params?.side, "right");
+    assert.equal(r[0].params?.risk, "normal");
+    assert.equal(r[0].params?.x, plan!.anchor!.x);
+    assert.equal(r[0].params?.y, plan!.anchor!.y);
+    const tank = w.tanks.find((t) => t.id === r[0].tankId);
+    assert.equal(tank?.number, 3);
+    assert.notEqual(r[0].tankId, w.controlledId);
+  });
+
+  check("2 move south and shoot at will stays a move", () => {
     const w = createWorld("clear", "mp-online");
     const r = interpretOffline("2 move south and shoot at will", w.tanks, w);
     assert.equal(r.length, 1);
     assert.equal(r[0].goal, "moveTo");
+    assert.notEqual(r[0].goal, "attackNearest");
+    assert.equal(r[0].params?.risk, "normal");
     const tank = w.tanks.find((t) => t.id === r[0].tankId);
     assert.equal(tank?.number, 2);
+    assert.notEqual(r[0].tankId, w.controlledId);
     assert.ok((r[0].params?.y ?? 0) > 500);
   });
 
-  check("mp: take the right does not also order the speaker left", () => {
+  check("2 and 3 attack 5 orders only those allies", () => {
     const w = createWorld("clear", "mp-online");
-    const r = interpretOffline(
-      "3 take the right and I'll take the left",
-      w.tanks,
-      w,
+    const r = interpretOffline("2 and 3 attack 5", w.tanks, w);
+    assert.equal(r.length, 2);
+    const nums = r
+      .map((o) => w.tanks.find((t) => t.id === o.tankId)?.number)
+      .sort();
+    assert.deepEqual(nums, [2, 3]);
+    const red5 = w.tanks.find(
+      (t) => t.team === "red" && t.number === 5 && t.alive,
     );
+    assert.ok(red5);
+    for (const o of r) {
+      assert.equal(o.goal, "attackNearest");
+      assert.equal(o.params?.targetTankId, red5!.id);
+      assert.notEqual(o.tankId, w.controlledId);
+    }
+  });
+
+  check("4 move stealthily to the mark is a stealth moveTo", () => {
+    const w = createWorld("clear", "mp-online");
+    w.playerMarks.blue = { x: 300, y: 220 };
+    const r = interpretOffline("4 move stealthily to the mark", w.tanks, w);
     assert.equal(r.length, 1);
     assert.equal(r[0].goal, "moveTo");
+    assert.equal(r[0].params?.risk, "stealth");
+    assert.equal(r[0].params?.exact, true);
+    assert.equal(r[0].params?.x, 300);
+    assert.equal(r[0].params?.y, 220);
     const tank = w.tanks.find((t) => t.id === r[0].tankId);
-    assert.equal(tank?.number, 3);
-    assert.ok((r[0].params?.x ?? 0) > 900);
+    assert.equal(tank?.number, 4);
+    assert.notEqual(r[0].tankId, w.controlledId);
+  });
+
+  check("heavy-light: 3 heavies and 3 gunners, no scouts", () => {
+    const w = createWorld("clear", "heavy-light");
+    for (const team of ["blue", "red"] as const) {
+      const side = w.tanks.filter((t) => t.team === team);
+      assert.equal(side.filter((t) => t.role === "heavy").length, 3);
+      assert.equal(side.filter((t) => t.role === "shooter").length, 3);
+      assert.equal(side.filter((t) => t.role === "scout").length, 0);
+      assert.ok(side.filter((t) => t.number <= 3).every((t) => t.role === "heavy"));
+      assert.ok(side.filter((t) => t.number >= 4).every((t) => t.role === "shooter"));
+    }
+    assert.ok(CONFIG.roles.heavy.maxHp > CONFIG.roles.shooter.maxHp);
+    assert.ok(CONFIG.roles.heavy.damage > CONFIG.roles.shooter.damage);
+    assert.ok(CONFIG.roles.heavy.fireCooldown > CONFIG.roles.shooter.fireCooldown * 2);
+    const r = interpretOffline("heavies attack", w.tanks, w);
+    assert.equal(r.length, 3);
+    for (const o of r) {
+      assert.equal(w.tanks.find((t) => t.id === o.tankId)?.role, "heavy");
+    }
   });
 
   check("world has teamBelief + redDifficulty", () => {

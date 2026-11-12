@@ -2,11 +2,23 @@ import {
   CONFIG,
   isMpOnline,
   modesFromMenu,
+  type ArenaId,
   type GameMode,
   type MenuMode,
   type ShareMode,
 } from "./config";
+import { arenaLayoutHash, clearWallLayout, saveWallLayout } from "./arena";
+import { layoutHash } from "./arena-routes";
 import { apiKeySource, resolveApiKey } from "./api-key";
+import {
+  createCamera,
+  followCamera,
+  minimapRect,
+  minimapToWorld,
+  screenToWorld,
+  snapCamera,
+  zoomCamera,
+} from "./camera";
 import {
   beginCountdown,
   controlledTank,
@@ -32,22 +44,28 @@ import {
 } from "./orders";
 import {
   invertArrowKeys,
+  renderMinimap,
   renderWorld,
-  screenToWorld,
   viewerHomeAtBottom,
 } from "./render";
 import { createVoiceRadio } from "./voice";
+import { mountCommandOverlay } from "./command-overlay";
+import { mountCommandHistory } from "./command-history";
+import { beginUtterance, hasPartialCommandIntent, resetRadio } from "./radio";
+import { needleSidecarEnabled, setNeedleSidecarEnabled } from "./needle-sidecar";
 import { NetClient } from "./net/client";
 import type { NetInput, NetTeam } from "./net/protocol";
 import { applySnap, worldToSnap } from "./net/snapshot";
-import type { LlmBackend, WorldState } from "./types";
+import type { ChatLine, LlmBackend, Wall, WorldState } from "./types";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
 const timerEl = document.querySelector("#timer")!;
 const matchStateEl = document.querySelector("#match-state")!;
-const rosterEl = document.querySelector("#roster")!;
+const minimapEl = document.querySelector<HTMLCanvasElement>("#minimap")!;
+const minimapCtx = minimapEl.getContext("2d")!;
 const chatEl = document.querySelector("#chat")!;
+const radioOverlayEl = document.querySelector<HTMLDivElement>("#radio-overlay")!;
 const eventsEl = document.querySelector("#events")!;
 const orderForm = document.querySelector<HTMLFormElement>("#order-form")!;
 const orderInput = document.querySelector<HTMLInputElement>("#order-input")!;
@@ -63,6 +81,10 @@ const countdownNumEl = document.querySelector<HTMLElement>("#countdown-num")!;
 const countdownCaptionEl = document.querySelector<HTMLElement>(".countdown-caption")!;
 const llmStatusEl = document.querySelector<HTMLElement>("#llm-status")!;
 const startRoundBtn = document.querySelector<HTMLButtonElement>("#start-round")!;
+const editMapBtn = document.querySelector<HTMLButtonElement>("#edit-map")!;
+const mapEditBar = document.querySelector<HTMLElement>("#map-edit-bar")!;
+const mapEditDoneBtn = document.querySelector<HTMLButtonElement>("#map-edit-done")!;
+const mapEditResetBtn = document.querySelector<HTMLButtonElement>("#map-edit-reset")!;
 const startOfflineBtn = document.querySelector<HTMLButtonElement>("#start-offline")!;
 const recheckLlmBtn = document.querySelector<HTMLButtonElement>("#recheck-llm")!;
 const gateApiKeyInput = document.querySelector<HTMLInputElement>("#gate-api-key")!;
@@ -72,6 +94,10 @@ const menuBtn = document.querySelector<HTMLButtonElement>("#menu-btn")!;
 const gateModeBtns = [
   ...document.querySelectorAll<HTMLButtonElement>("#gate-modes .gate-mode"),
 ];
+const mpOpponentPanel = document.querySelector<HTMLElement>("#mp-opponent-panel")!;
+const mpOpponentSelect = document.querySelector<HTMLSelectElement>("#mp-opponent")!;
+const mpArenaPanel = document.querySelector<HTMLElement>("#mp-arena-panel")!;
+const mpArenaSelect = document.querySelector<HTMLSelectElement>("#mp-arena")!;
 const mpNetPanel = document.querySelector<HTMLElement>("#mp-net-panel")!;
 const mpRoomInput = document.querySelector<HTMLInputElement>("#mp-room")!;
 const mpUrlInput = document.querySelector<HTMLInputElement>("#mp-url")!;
@@ -176,13 +202,17 @@ const net = new NetClient({
       mpStartBtn.disabled = true;
     }
   },
-  onStart: (seed) => {
+  onStart: (seed, arena, arenaSeed, hostHash) => {
     const resolved = modesFromMenu("mp-online");
-    world = createWorld(resolved.share, resolved.mode, "normal", seed);
-    chatCursor = 0;
-    eventCursor = 0;
-    chatEl.innerHTML = "";
-    eventsEl.innerHTML = "";
+    mpArenaSelect.value = arena;
+    world = createWorld(resolved.share, resolved.mode, "normal", seed, "normal", arena, arenaSeed);
+    const hash = layoutHash(world.walls);
+    if (localTeam === "red") net.sendLayout(hash);
+    if (hash !== hostHash) {
+      layoutMismatch(hash, hostHash);
+      return;
+    }
+    resetLogs();
     gateProbe = { kind: "offline_chosen" };
     pushEvent(
       world,
@@ -195,7 +225,15 @@ const net = new NetClient({
   },
   onState: (snap) => {
     if (localTeam !== "red") return;
+    const oldChat = world.chat;
+    const oldEvents = world.events;
     applySnap(world, snap, "red");
+    // Snapshot tails are reconstructed objects. Retain identity for their shared
+    // suffix/prefix so the radio does not replay the same captions every frame.
+    world.chat = retainLogIdentity(oldChat, world.chat);
+    world.events = retainLogIdentity(oldEvents, world.events);
+    if (world.chat.some((line) => !oldChat.includes(line) && line.team === localTeam &&
+      /say again|negative|lost|unable|order closed/i.test(line.text))) resetRadio(world, localTeam);
     // Keep guest's selected tank from snapshot remote id
     if (world.remoteControlledId) {
       const t = world.tanks.find((x) => x.id === world.remoteControlledId);
@@ -213,17 +251,34 @@ const net = new NetClient({
       switchToNumber(world, input.controlledNumber, "red");
     }
   },
-  onPeerOrder: (text) => {
-    void sendOrder(world, text, hostLlmContext(), "red");
+  onPeerOrder: (text, segmentId) => {
+    void sendOrder(world, text, hostLlmContext(), "red", undefined, { segmentId });
+    flushLogs();
   },
   onPeerMark: (x, y) => {
     placePlayerMark(world, "red", x, y);
     flushLogs();
   },
+  onPeerLayout: (hash) => {
+    const mine = layoutHash(world.walls);
+    if (hash !== mine) layoutMismatch(mine, hash);
+  },
   onLog: (line) => {
     if (world) pushEvent(world, line, "sys");
   },
 });
+
+/** Both peers must rasterize the same walls; local wall edits are the usual cause. */
+function layoutMismatch(mine: string, theirs: string): void {
+  showRoundGate();
+  setMpStatus(
+    `Arena layout mismatch (mine ${mine}, peer ${theirs}). ` +
+      "Clear wall edits (map editor → Reset) on both sides and Start again.",
+    "err",
+  );
+  pushEvent(world, "Online start aborted: arena layouts differ between host and guest.", "warn");
+  flushLogs();
+}
 
 /** Apply Mode-menu preset to the Share select, then return resolved modes. */
 function applyMenuPreset(): { share: ShareMode; mode: GameMode } {
@@ -240,12 +295,54 @@ function currentModes(): { share: ShareMode; mode: GameMode } {
   };
 }
 
+function currentOpponent(): "easy" | "normal" | "hard" | "off" {
+  const value = mpOpponentSelect.value;
+  return value === "easy" || value === "hard" || value === "off" ? value : "normal";
+}
+
+/** Arena pick applies to the multiplayer modes only; others keep their fixed layouts. */
+function currentArena(): ArenaId | undefined {
+  const menu = modeSelect.value;
+  if (menu !== "mp-offline" && menu !== "mp-online" && menu !== "base-war") return undefined;
+  return mpArenaSelect.value === "large" ? "large" : "dense";
+}
+
 /** Hard-refresh always lands on TDM No Fog unless the user already changed the select. */
 modeSelect.value = CONFIG.menuModeDefault;
 const boot = applyMenuPreset();
-let world: WorldState = createWorld(boot.share, boot.mode);
+let world: WorldState = createWorld(boot.share, boot.mode, "normal", undefined, currentOpponent(), currentArena());
 let countdownTimer: number | null = null;
 let countdownLeft = 0;
+
+mountCommandOverlay(canvas.parentElement!);
+mountCommandHistory(
+  document.querySelector<HTMLElement>("#command-history")!,
+  () => world.gameMode,
+);
+if (new URLSearchParams(location.search).get("needle") === "1") {
+  setNeedleSidecarEnabled(true);
+}
+if (needleSidecarEnabled()) {
+  pushEvent(world, "Needle sidecar: loading local model…", "sys");
+  let lastShown = -1;
+  void import("./needle-browser")
+    .then((m) =>
+      m.loadBrowserNeedle((pct) => {
+        const step = pct == null ? -1 : Math.floor(pct / 25) * 25;
+        if (step <= lastShown) return;
+        lastShown = step;
+        pushEvent(world, `Needle sidecar: model ${step}%`, "sys");
+      }),
+    )
+    .then(() => pushEvent(world, "Needle sidecar: ready.", "sys"))
+    .catch((err: unknown) =>
+      pushEvent(
+        world,
+        `Needle sidecar failed to load (${err instanceof Error ? err.message : String(err)}) — LLM path only.`,
+        "warn",
+      ),
+    );
+}
 
 // Prefill placeholders from file/env (password fields stay empty unless user types)
 const bootKey = resolveApiKey("");
@@ -357,7 +454,7 @@ function renderGateStatus(): void {
     llmStatusEl.classList.add("llm-off");
     llmStatusEl.innerHTML =
       `<strong>Offline mode</strong>` +
-      `<span>Keyword parser only — no cloud LLM this match.</span>`;
+      `<span>Phrase reader only — unrecognized orders are not applied.</span>`;
     startRoundBtn.textContent = "Start";
     return;
   }
@@ -412,6 +509,14 @@ async function runLlmProbe(): Promise<void> {
 
 function syncGateModeButtons(): void {
   const current = modeSelect.value;
+  shareSelect.disabled = current === "base-war";
+  if (current === "base-war") shareSelect.value = "clear";
+  mpOpponentPanel.hidden = current !== "mp-offline" && current !== "base-war";
+  const off = mpOpponentSelect.querySelector<HTMLOptionElement>('option[value="off"]')!;
+  off.disabled = current === "base-war";
+  off.hidden = current === "base-war";
+  if (current === "base-war" && mpOpponentSelect.value === "off") mpOpponentSelect.value = "normal";
+  mpArenaPanel.hidden = current !== "mp-offline" && current !== "mp-online" && current !== "base-war";
   for (const btn of gateModeBtns) {
     const on = btn.dataset.mode === current;
     btn.setAttribute("aria-pressed", on ? "true" : "false");
@@ -432,12 +537,8 @@ function selectMenuMode(menu: MenuMode, rebuild: boolean): void {
   }
   if (rebuild) {
     // Rebuild the paused match with the new mode (still behind the menu)
-    world = createWorld(resolved.share, resolved.mode);
-    chatCursor = 0;
-    eventCursor = 0;
-    chatEl.innerHTML = "";
-    eventsEl.innerHTML = "";
-    refreshRoster();
+    world = createWorld(resolved.share, resolved.mode, "normal", undefined, currentOpponent(), currentArena());
+    resetLogs();
     flushLogs();
   }
 }
@@ -485,10 +586,9 @@ function finishCountdown(): void {
   const modeNote =
     gateProbe.kind === "ok"
       ? `LLM live (${gateProbe.provider}).`
-      : "Keyword mock orders (offline).";
+      : "Phrase reader orders (offline).";
   pushEvent(world, `Match started — ${modeNote}`, "warn");
   flushLogs();
-  refreshRoster();
   canvas.focus();
 }
 
@@ -582,37 +682,127 @@ mpStartBtn.addEventListener("click", () => {
     return;
   }
   gateProbe = { kind: "offline_chosen" };
-  net.sendStart();
+  const arena = currentArena() ?? CONFIG.net.arenaDefault;
+  net.sendStart(arena, CONFIG.largeArena.seed, arenaLayoutHash(arena, CONFIG.largeArena.seed));
 });
 
 const keys = new Set<string>();
-let mouseX = CONFIG.canvasWidth / 2;
-let mouseY = CONFIG.canvasHeight / 2;
+let mouseX = CONFIG.viewWidth / 2;
+let mouseY = CONFIG.viewHeight / 2;
 let shooting = false;
+let mapEditing = false;
+let dragWall: Wall | null = null;
+let dragOffX = 0;
+let dragOffY = 0;
 let lastTs = performance.now();
-let chatCursor = 0;
-let eventCursor = 0;
+let seenChat = new WeakSet<ChatLine>();
+let seenEvents = new WeakSet<ChatLine>();
+let logWorld: WorldState | null = null;
+let logTeam: NetTeam | null = null;
+const cam = createCamera();
+/** World the camera was last snapped to; a new world re-centers on the hull. */
+let camWorld: WorldState | null = null;
 
 function canvasCoords(ev: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
-  const x = ((ev.clientX - rect.left) / rect.width) * CONFIG.canvasWidth;
-  const y = ((ev.clientY - rect.top) / rect.height) * CONFIG.canvasHeight;
+  const x = ((ev.clientX - rect.left) / rect.width) * CONFIG.viewWidth;
+  const y = ((ev.clientY - rect.top) / rect.height) * CONFIG.viewHeight;
   return { x, y };
 }
 
-/** Online red's map is drawn rotated; convert the cursor into world space. */
+/** Cursor → world space through the camera (zoom, pan, online-red 180° flip). */
 function pointerWorld(): { x: number; y: number } {
-  return screenToWorld(
-    mouseX,
-    mouseY,
-    viewerHomeAtBottom(world.gameMode, localTeam),
-  );
+  return screenToWorld(cam, mouseX, mouseY);
+}
+
+function localHull(): { x: number; y: number } | undefined {
+  const id = localTeam === "red" ? world.remoteControlledId : world.controlledId;
+  return world.tanks.find((t) => t.id === id);
+}
+
+function updateCamera(dt: number): void {
+  cam.flipped = viewerHomeAtBottom(world.gameMode, localTeam);
+  if (camWorld !== world) {
+    camWorld = world;
+    const me = localHull();
+    snapCamera(cam, me?.x ?? CONFIG.canvasWidth / 2, me?.y ?? CONFIG.canvasHeight / 2);
+    return;
+  }
+  if (mapEditing) {
+    // Arrows pan the editor view (screen axes, so the flip is honored).
+    const s = (cam.flipped ? -1 : 1) * (600 / cam.zoom) * dt;
+    let dx = 0;
+    let dy = 0;
+    if (keys.has("arrowleft")) dx -= s;
+    if (keys.has("arrowright")) dx += s;
+    if (keys.has("arrowup")) dy -= s;
+    if (keys.has("arrowdown")) dy += s;
+    if (dx || dy) snapCamera(cam, cam.x + dx, cam.y + dy);
+    return;
+  }
+  const me = localHull();
+  if (me) followCamera(cam, me.x, me.y, dt);
+}
+
+function pickStructure(x: number, y: number): Wall | null {
+  let best: Wall | null = null;
+  let bestArea = Infinity;
+  for (const w of world.walls) {
+    if (w.kind === "border") continue;
+    if (x < w.x || y < w.y || x > w.x + w.w || y > w.y + w.h) continue;
+    const area = w.w * w.h;
+    if (area < bestArea) {
+      best = w;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
+function moveStructure(wall: Wall, x: number, y: number): void {
+  const s = CONFIG.tileSize;
+  const pad = s * 2;
+  let nx = Math.round(x / s) * s;
+  let ny = Math.round(y / s) * s;
+  nx = Math.max(pad, Math.min(CONFIG.canvasWidth - pad - wall.w, nx));
+  ny = Math.max(pad, Math.min(CONFIG.canvasHeight - pad - wall.h, ny));
+  wall.x = nx;
+  wall.y = ny;
+}
+
+function enterMapEdit(): void {
+  mapEditing = true;
+  dragWall = null;
+  roundGate.hidden = true;
+  mapEditBar.hidden = false;
+  canvas.focus();
+}
+
+function leaveMapEdit(): void {
+  const wasEditing = mapEditing;
+  dragWall = null;
+  if (wasEditing) saveWallLayout(world.walls, world.arenaId);
+  mapEditing = false;
+  mapEditBar.hidden = true;
+  canvas.style.cursor = "";
+  if (wasEditing && world.outcome === "ready") {
+    const { share, mode } = currentModes();
+    world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena());
+  }
 }
 
 canvas.addEventListener("mousemove", (ev) => {
   const p = canvasCoords(ev);
   mouseX = p.x;
   mouseY = p.y;
+  if (!mapEditing) return;
+  const worldPt = pointerWorld();
+  if (dragWall) {
+    moveStructure(dragWall, worldPt.x - dragOffX, worldPt.y - dragOffY);
+    canvas.style.cursor = "grabbing";
+    return;
+  }
+  canvas.style.cursor = pickStructure(worldPt.x, worldPt.y) ? "grab" : "default";
 });
 
 canvas.addEventListener("mousedown", (ev) => {
@@ -621,36 +811,33 @@ canvas.addEventListener("mousedown", (ev) => {
   mouseX = p.x;
   mouseY = p.y;
 
+  if (ev.button === 0 && mapEditing) {
+    const worldPt = pointerWorld();
+    const hit = pickStructure(worldPt.x, worldPt.y);
+    if (hit) {
+      dragWall = hit;
+      dragOffX = worldPt.x - hit.x;
+      dragOffY = worldPt.y - hit.y;
+      canvas.style.cursor = "grabbing";
+    }
+    return;
+  }
+
   if (ev.button === 0) {
-    const worldPt = screenToWorld(
-      p.x,
-      p.y,
-      viewerHomeAtBottom(world.gameMode, localTeam),
-    );
+    if (keys.has("f")) {
+      dropMark(pointerWorld());
+      return;
+    }
+    const worldPt = pointerWorld();
     const friendly = world.tanks.find(
       (t) =>
         t.team === localTeam &&
         t.alive &&
         Math.hypot(t.x - worldPt.x, t.y - worldPt.y) <= CONFIG.tankRadius + 6,
     );
-    if (keys.has("f")) {
-      if (world.outcome === "playing" || world.outcome === "countdown") {
-        const placed = placePlayerMark(world, localTeam, worldPt.x, worldPt.y);
-        if (
-          isMpOnline(world.gameMode) &&
-          localTeam === "red" &&
-          net.info.connected
-        ) {
-          net.sendMark(placed.x, placed.y);
-        }
-        flushLogs();
-      }
-      return;
-    }
     if (friendly) {
       if (localTeam === "red") guestControlledNumber = friendly.number;
       switchToTank(world, friendly.id, localTeam);
-      refreshRoster();
       return;
     }
     if (markWreckAt(world, worldPt.x, worldPt.y)) {
@@ -661,8 +848,55 @@ canvas.addEventListener("mousedown", (ev) => {
   }
 });
 
+/** Hold-F mark, dropped either under the cursor on the map or on the panel. */
+function dropMark(target: { x: number; y: number }): void {
+  if (world.outcome !== "playing" && world.outcome !== "countdown") return;
+  const placed = placePlayerMark(world, localTeam, target.x, target.y);
+  if (isMpOnline(world.gameMode) && localTeam === "red" && net.info.connected) {
+    net.sendMark(placed.x, placed.y);
+  }
+  flushLogs();
+}
+
+minimapEl.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0 || !keys.has("f")) return;
+  const rect = minimapEl.getBoundingClientRect();
+  const r = minimapRect();
+  const spot = minimapToWorld(
+    cam,
+    ((ev.clientX - rect.left) / rect.width) * r.w,
+    ((ev.clientY - rect.top) / rect.height) * r.h,
+  );
+  if (spot) dropMark(spot);
+});
+
 window.addEventListener("mouseup", () => {
   shooting = false;
+  if (!dragWall) return;
+  dragWall = null;
+  if (mapEditing) saveWallLayout(world.walls, world.arenaId);
+});
+
+canvas.addEventListener(
+  "wheel",
+  (ev) => {
+    ev.preventDefault();
+    zoomCamera(cam, Math.sign(ev.deltaY));
+  },
+  { passive: false },
+);
+
+editMapBtn.addEventListener("click", () => enterMapEdit());
+mapEditDoneBtn.addEventListener("click", () => {
+  leaveMapEdit();
+  showRoundGate();
+});
+mapEditResetBtn.addEventListener("click", () => {
+  clearWallLayout(world.arenaId);
+  dragWall = null;
+  const { share, mode } = currentModes();
+  world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena());
+  flushLogs();
 });
 
 window.addEventListener("keydown", (ev) => {
@@ -695,7 +929,6 @@ window.addEventListener("keydown", (ev) => {
     } else {
       switchToNumber(world, n, "blue");
     }
-    refreshRoster();
   }
 });
 
@@ -708,22 +941,21 @@ window.addEventListener("keyup", (ev) => {
 });
 
 shareSelect.addEventListener("change", () => {
+  if (world.gameMode === "base-war") shareSelect.value = "clear";
   world.shareMode = shareSelect.value as ShareMode;
 });
 
 function restartMatch(fromMenu = false): void {
+  leaveMapEdit();
   const { share, mode } = fromMenu ? applyMenuPreset() : currentModes();
-  world = createWorld(share, mode);
-  chatCursor = 0;
-  eventCursor = 0;
-  chatEl.innerHTML = "";
-  eventsEl.innerHTML = "";
-  refreshRoster();
+  world = createWorld(share, mode, "normal", undefined, currentOpponent(), currentArena());
+  resetLogs();
   flushLogs();
   showRoundGate();
 }
 
 function openGameMenu(): void {
+  leaveMapEdit();
   cancelCountdown();
   // Pause live / countdown back to ready so mode/key can be changed
   if (world.outcome === "playing" || world.outcome === "countdown") {
@@ -742,6 +974,15 @@ modeSelect.addEventListener("change", () => {
   syncGateModeButtons();
   syncMpPanel();
   restartMatch(true);
+});
+mpOpponentSelect.addEventListener("change", () => {
+  if (roundGate.hidden || (modeSelect.value !== "mp-offline" && modeSelect.value !== "base-war")) return;
+  // Replace the paused world so pending commander orders cannot survive a change.
+  selectMenuMode(modeSelect.value as MenuMode, true);
+});
+mpArenaSelect.addEventListener("change", () => {
+  if (roundGate.hidden || currentArena() === undefined) return;
+  selectMenuMode(modeSelect.value as MenuMode, true);
 });
 for (const btn of gateModeBtns) {
   btn.addEventListener("click", () => {
@@ -826,12 +1067,14 @@ function hostLlmContext(): {
   };
 }
 
-async function dispatchOrder(
+async function submitOrder(
   text: string,
   via: "typed" | "voice" | "phrase",
+  segmentId?: string,
 ): Promise<void> {
   const cleaned = text.trim();
-  if (!cleaned) return;
+  // Keep hot-mic chatter out of the parser, radio, and diagnostic event log.
+  if (!cleaned || !hasPartialCommandIntent(cleaned)) return;
   if (world.outcome === "ready" || world.outcome === "countdown") {
     pushEvent(
       world,
@@ -863,23 +1106,26 @@ async function dispatchOrder(
       ? `Radio pipeline: ${via} → ${providerLabel(liveLlm.backend)}/${liveLlm.model} (${src}) → bots`
       : key
         ? `Radio pipeline: ${via} → LLM (${src}) → bots`
-        : `Radio pipeline: ${via} → keyword mock → bots`,
+        : `Radio pipeline: ${via} → phrase reader → bots`,
     "sys",
   );
 
-  const beforeEvents = world.events.length;
+  const beforeEvents = new Set(world.events);
   // Guest sends orders to host for authoritative apply
   if (isMpOnline(world.gameMode) && localTeam === "red" && net.info.connected) {
-    net.sendOrder(cleaned);
+    if (!beginUtterance(world, cleaned, localTeam, segmentId)) return;
+    net.sendOrder(cleaned, { segmentId });
     pushEvent(world, `Order sent to host: ${cleaned}`, "sys");
     flushLogs();
     return;
   }
-  await sendOrder(world, cleaned, llmCtx, localTeam);
-  const fresh = world.events.slice(beforeEvents);
+  const pending = sendOrder(world, cleaned, llmCtx, localTeam, undefined, { segmentId });
+  flushLogs(); // beginUtterance emits standby synchronously, before the parser awaits.
+  await pending;
+  const fresh = world.events.filter((e) => !beforeEvents.has(e));
   const llmFail = fresh.find((e) => e.text.startsWith("LLM unavailable"));
   if (llmFail && key) {
-    // Probe was stale/wrong — lock to keyword mock for the rest of the match
+    // Probe was stale/wrong — lock to phrase reader for the rest of the match
     const detail = llmFail.text
       .replace(/^LLM unavailable \(/, "")
       .replace(/\) — keyword parse\.$/, "");
@@ -891,7 +1137,6 @@ async function dispatchOrder(
   }
   if (via === "voice") orderInput.value = "";
   flushLogs();
-  refreshRoster();
 }
 
 orderForm.addEventListener("submit", async (ev) => {
@@ -899,13 +1144,12 @@ orderForm.addEventListener("submit", async (ev) => {
   const text = orderInput.value.trim();
   if (!text) return;
   orderInput.value = "";
-  await dispatchOrder(text, "typed");
+  await submitOrder(text, "typed");
 });
 
 const radio = createVoiceRadio({
-  onFinalOrder: (text) => {
-    // STT final → LLM/mock → bot goals
-    void dispatchOrder(text, "voice");
+  onOrder: (text, segmentId) => {
+    void submitOrder(text, "voice", segmentId);
   },
   onStatus: (status, detail) => {
     voiceBtn.classList.toggle("live", status === "listening");
@@ -924,7 +1168,7 @@ const radio = createVoiceRadio({
         detail ??
         (key
           ? "Listening… STT → LLM → bots"
-          : "Listening… STT → mock (set key in src/api-key.local.ts)");
+          : "Listening… STT → phrase reader (cloud key optional)");
       return;
     }
     if (status === "error") {
@@ -933,7 +1177,7 @@ const radio = createVoiceRadio({
       return;
     }
     voiceBtn.textContent = "Radio: off";
-    voiceStatusEl.textContent = "Radio LIVE → STT → LLM/mock → bots";
+    voiceStatusEl.textContent = "Radio LIVE → STT → LLM/phrases → bots";
   },
 });
 
@@ -945,44 +1189,16 @@ document.querySelectorAll<HTMLButtonElement>("#phrases [data-order]").forEach(
   (btn) => {
     btn.addEventListener("click", () => {
       const order = btn.getAttribute("data-order");
-      if (order) void dispatchOrder(order, "phrase");
+      if (order) void submitOrder(order, "phrase");
     });
   },
 );
 
-function refreshRoster(): void {
-  const activeId =
-    localTeam === "red" ? world.remoteControlledId : world.controlledId;
-  const mine = world.tanks
-    .filter((t) => t.team === localTeam)
-    .sort((a, b) => a.number - b.number);
-  rosterEl.innerHTML = mine
-    .map((t) => {
-      const carrier =
-        world.gameMode === "ctf" && t.isCodeCarrier ? " ★" : "";
-      const goal = t.alive ? t.goal.kind : "down";
-      const roleClass = t.role === "scout" ? "scout" : "shooter";
-      const roleLabel = t.role === "scout" ? "S scout" : "G gunner";
-      return `<li class="${t.id === activeId ? "active" : ""} ${
-        t.alive ? "" : "dead"
-      }" data-id="${t.id}">
-        <span>#${t.number}${carrier} <span class="role ${roleClass}">${roleLabel}</span></span>
-        <span>${t.alive ? `${Math.ceil(t.hp)}hp · ${goal}` : "down"}</span>
-      </li>`;
-    })
-    .join("");
-
-  rosterEl.querySelectorAll("li").forEach((li) => {
-    li.addEventListener("click", () => {
-      const id = li.getAttribute("data-id");
-      if (id) {
-        const t = world.tanks.find((x) => x.id === id);
-        if (t && localTeam === "red") guestControlledNumber = t.number;
-        switchToTank(world, id, localTeam);
-        refreshRoster();
-      }
-    });
-  });
+/** The panel canvas follows the arena aspect, so a new arena resizes it. */
+function syncMinimapSurface(): void {
+  const r = minimapRect();
+  if (minimapEl.width !== r.w) minimapEl.width = r.w;
+  if (minimapEl.height !== r.h) minimapEl.height = r.h;
 }
 
 function appendLog(
@@ -993,6 +1209,7 @@ function appendLog(
   div.className = `line ${line.kind}`;
   div.textContent = line.text;
   el.appendChild(div);
+  while (el.children.length > 80) el.firstElementChild?.remove();
   el.scrollTop = el.scrollHeight;
 }
 
@@ -1004,17 +1221,62 @@ function revealsEnemyCommander(text: string): boolean {
   );
 }
 
+function retainLogIdentity(old: ChatLine[], next: ChatLine[]): ChatLine[] {
+  const equal = (a: ChatLine, b: ChatLine) =>
+    a.text === b.text && a.kind === b.kind && a.team === b.team && a.t === b.t;
+  for (let overlap = Math.min(old.length, next.length); overlap > 0; overlap--) {
+    const offset = old.length - overlap;
+    if (next.slice(0, overlap).every((line, i) => equal(old[offset + i]!, line))) {
+      return [...old.slice(offset), ...next.slice(overlap)];
+    }
+  }
+  return next;
+}
+
+function resetLogs(): void {
+  seenChat = new WeakSet();
+  seenEvents = new WeakSet();
+  logWorld = world;
+  logTeam = localTeam;
+  chatEl.replaceChildren();
+  eventsEl.replaceChildren();
+}
+
+/** Barks must be readable over the map, not only in a sidebar that a short window pushes off-screen. */
+const RADIO_OVERLAY_SEC = 8;
+function renderRadioOverlay(privateLine: (line: ChatLine) => boolean): void {
+  const recent: ChatLine[] = [];
+  for (let i = world.chat.length - 1; i >= 0 && recent.length < 3; i--) {
+    const line = world.chat[i]!;
+    if (privateLine(line) || world.time - line.t > RADIO_OVERLAY_SEC) continue;
+    recent.unshift(line);
+  }
+  radioOverlayEl.replaceChildren();
+  radioOverlayEl.hidden = recent.length === 0;
+  for (const line of recent) {
+    const div = document.createElement("div");
+    div.className = `line ${line.kind}`;
+    div.textContent = line.text;
+    radioOverlayEl.appendChild(div);
+  }
+}
+
 function flushLogs(): void {
-  while (chatCursor < world.chat.length) {
-    const line = world.chat[chatCursor++]!;
-    if (revealsEnemyCommander(line.text)) continue;
-    appendLog(chatEl, line);
-  }
-  while (eventCursor < world.events.length) {
-    const line = world.events[eventCursor++]!;
-    if (revealsEnemyCommander(line.text)) continue;
-    appendLog(eventsEl, line);
-  }
+  if (logWorld !== world || logTeam !== localTeam) resetLogs();
+  const privateLine = (line: ChatLine) =>
+    Boolean(line.team && line.team !== localTeam) || revealsEnemyCommander(line.text);
+  const flush = (lines: ChatLine[], seen: WeakSet<ChatLine>, el: Element) => {
+    for (const line of lines) {
+      if (seen.has(line)) continue;
+      seen.add(line);
+      if (privateLine(line)) continue;
+      appendLog(el, line);
+    }
+  };
+  // Object identity survives the capped arrays shifting; a numeric cursor does not.
+  flush(world.chat, seenChat, chatEl);
+  flush(world.events, seenEvents, eventsEl);
+  renderRadioOverlay(privateLine);
 }
 
 function frame(ts: number): void {
@@ -1024,10 +1286,11 @@ function frame(ts: number): void {
   const online = isMpOnline(world.gameMode) && net.info.connected;
   const isGuest = online && localTeam === "red";
   const isHost = online && localTeam === "blue";
+  updateCamera(dt);
+  const aim = pointerWorld();
 
   if (isGuest && world.outcome === "playing") {
     // Guest does not simulate — send world-space input (view is rotated 180°).
-    const aim = pointerWorld();
     const payload: NetInput = {
       keys: invertArrowKeys(keys),
       mouseX: aim.x,
@@ -1040,7 +1303,7 @@ function frame(ts: number): void {
     stepWorld(
       world,
       dt,
-      { keys, mouseX, mouseY, shooting },
+      { keys, mouseX: aim.x, mouseY: aim.y, shooting },
       isHost ? latestPeerInput : null,
     );
     if (isHost && world.outcome === "playing") {
@@ -1053,11 +1316,12 @@ function frame(ts: number): void {
     }
   }
 
-  const aim = pointerWorld();
   const marking =
     keys.has("f") &&
     (world.outcome === "playing" || world.outcome === "countdown");
-  renderWorld(ctx, world, aim.x, aim.y, localTeam, marking);
+  renderWorld(ctx, world, cam, aim.x, aim.y, localTeam, marking, mapEditing);
+  syncMinimapSurface();
+  renderMinimap(minimapCtx, world, cam, localTeam);
 
   timerEl.textContent = formatTime(world.matchLeft);
   const me =
@@ -1067,9 +1331,13 @@ function frame(ts: number): void {
   const modeLabel =
     world.gameMode === "ctf"
       ? "CTF"
-      : world.gameMode === "mp-online"
+      : world.gameMode === "heavy-light"
+        ? "Heavy/Light"
+        : world.gameMode === "mp-online"
         ? `MP Online (${localTeam})`
-        : world.gameMode === "mp-offline"
+        : world.gameMode === "base-war"
+          ? "Base War"
+          : world.gameMode === "mp-offline"
           ? "MP Offline"
           : world.shareMode === "clear"
             ? "TDM No Fog"
@@ -1086,14 +1354,12 @@ function frame(ts: number): void {
     matchStateEl.textContent = world.outcome.toUpperCase();
   }
 
-  if (Math.floor(world.time * 4) % 2 === 0) refreshRoster();
   flushLogs();
 
   requestAnimationFrame(frame);
 }
 
 syncMpPanel();
-refreshRoster();
 flushLogs();
 showRoundGate();
 requestAnimationFrame(frame);

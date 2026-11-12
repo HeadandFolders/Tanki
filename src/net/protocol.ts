@@ -1,5 +1,7 @@
 /** Wire protocol for host-authoritative LAN multiplayer. */
 
+import type { ArenaId } from "../config";
+
 export type NetRole = "host" | "guest";
 export type NetTeam = "blue" | "red";
 
@@ -58,17 +60,18 @@ export interface NetStateSnap {
   tanks: NetTankSnap[];
   projectiles: NetProjSnap[];
   deathFx: NetDeathSnap[];
-  chat: { text: string; kind: string }[];
-  events: { text: string; kind: string }[];
+  chat: { t: number; text: string; kind: string; team?: NetTeam }[];
+  events: { t: number; text: string; kind: string; team?: NetTeam }[];
 }
 
 export type ClientMsg =
   | { type: "hello"; role: NetRole; room: string; name?: string }
   | { type: "input"; input: NetInput }
-  | { type: "order"; text: string }
+  | { type: "order"; text: string; segmentId?: string }
   | { type: "mark"; x: number; y: number }
   | { type: "ready" }
-  | { type: "start" }
+  | { type: "start"; arena: ArenaId; arenaSeed: number; layoutHash: string }
+  | { type: "layout"; hash: string }
   | { type: "state"; state: NetStateSnap }
   | { type: "ping"; t: number };
 
@@ -88,10 +91,11 @@ export type ServerMsg =
       guestReady: boolean;
       guestConnected: boolean;
     }
-  | { type: "start"; seed: number }
+  | { type: "start"; seed: number; arena: ArenaId; arenaSeed: number; layoutHash: string }
+  | { type: "peer-layout"; hash: string }
   | { type: "state"; state: NetStateSnap }
   | { type: "peer-input"; input: NetInput }
-  | { type: "peer-order"; text: string }
+  | { type: "peer-order"; text: string; segmentId?: string }
   | { type: "peer-mark"; x: number; y: number }
   | { type: "error"; message: string }
   | { type: "pong"; t: number };

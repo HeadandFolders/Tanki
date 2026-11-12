@@ -93,7 +93,7 @@ export interface VoiceRadio {
 }
 
 export function createVoiceRadio(opts: {
-  onFinalOrder: (text: string) => void;
+  onOrder: (text: string, segmentId?: string) => void;
   onStatus: (status: VoiceStatus, detail?: string) => void;
   lang?: string;
 }): VoiceRadio {
@@ -116,6 +116,8 @@ export function createVoiceRadio(opts: {
   let lastHeard = "";
   let restartTimer: number | null = null;
   let starting = false;
+  const radioId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let recognitionSession = 0;
 
   const setStatus = (s: VoiceStatus, detail?: string) => {
     status = s;
@@ -123,17 +125,19 @@ export function createVoiceRadio(opts: {
   };
 
   const wire = (r: SpeechRec) => {
+    const sessionId = `${radioId}:${++recognitionSession}`;
     r.continuous = true;
     r.interimResults = true;
     r.lang = opts.lang ?? "en-US";
 
     r.onresult = (ev) => {
+      if (!wantListen || rec !== r) return;
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const piece = ev.results[i]![0]!.transcript.trim();
         if (!piece) continue;
         if (ev.results[i]!.isFinal) {
           lastHeard = piece;
-          opts.onFinalOrder(piece);
+          opts.onOrder(piece, `${sessionId}:${i}`);
         } else {
           lastHeard = piece;
           opts.onStatus("listening", `… ${piece}`);
@@ -142,10 +146,24 @@ export function createVoiceRadio(opts: {
     };
 
     r.onerror = (ev) => {
-      if (ev.error === "aborted") return;
-      if (ev.error === "no-speech") {
-        // keep listening; Chrome often fires this between phrases
-        opts.onStatus("listening", "Listening — speak an order…");
+      if (rec !== r) return;
+      if (ev.error === "aborted" || ev.error === "no-speech") {
+        // keep listening; Chrome often fires these between phrases
+        if (wantListen) opts.onStatus("listening", "Listening — speak an order…");
+        return;
+      }
+      // Chrome's cloud STT drops a "network" error every few sentences.
+      // Treat it as a restart, not as Radio: off.
+      if (ev.error === "network" || ev.error === "audio-capture") {
+        if (wantListen) {
+          opts.onStatus("listening", "Speech hiccup — still listening…");
+          try {
+            rec?.abort();
+          } catch {
+            /* onend restarts */
+          }
+          rec = null;
+        }
         return;
       }
       wantListen = false;
@@ -153,15 +171,31 @@ export function createVoiceRadio(opts: {
     };
 
     r.onend = () => {
+      if (rec !== null && rec !== r) return;
       if (wantListen) {
         if (restartTimer != null) window.clearTimeout(restartTimer);
         restartTimer = window.setTimeout(() => {
-          if (!wantListen || !rec) return;
+          if (!wantListen) return;
           try {
+            // Result indexes restart at zero for each recognition run.
+            rec = new Ctor();
+            wire(rec);
             rec.start();
             setStatus("listening", "Listening — speak an order…");
           } catch {
-            /* already started */
+            rec = null;
+            if (restartTimer != null) window.clearTimeout(restartTimer);
+            restartTimer = window.setTimeout(() => {
+              if (!wantListen) return;
+              try {
+                rec = new Ctor();
+                wire(rec);
+                rec.start();
+                setStatus("listening", "Listening — speak an order…");
+              } catch {
+                /* next onend or the user clicks Radio */
+              }
+            }, 600);
           }
         }, 250);
       } else if (status === "listening") {
@@ -181,11 +215,10 @@ export function createVoiceRadio(opts: {
       return;
     }
 
+    if (!starting) return; // Stopped while awaiting microphone permission.
     wantListen = true;
-    if (!rec) {
-      rec = new Ctor();
-      wire(rec);
-    }
+    rec = new Ctor();
+    wire(rec);
     try {
       rec.start();
       setStatus("listening", "Listening — speak an order…");

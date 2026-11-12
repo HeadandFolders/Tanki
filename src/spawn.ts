@@ -1,69 +1,62 @@
 import {
   CONFIG,
   homeTerritoryBounds,
+  isBaseWar,
   isMpRules,
+  type ArenaId,
   type GameMode,
   type Role,
   type ShareMode,
 } from "./config";
-import { buildArena, findClearPoint, type ArenaDensity } from "./arena";
-import type { Goal, Tank, TeamId } from "./types";
+import { findClearPoint } from "./arena";
+import { goalState } from "./interrupt-stack";
+import { LARGE_SPAWN_TILES } from "./arena-large";
+import { baseWarSpawnPoints } from "./arena-bases";
+import type { Goal, Tank, TeamId, Vec2, Wall } from "./types";
 
-function mulberry32(seed: number): () => number {
-  return () => {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+/** Axis-aligned spawn box per team. Large arena spawns in opposite corner bases. */
+export function spawnBounds(
+  arena: ArenaId,
+  team: TeamId,
+): { x0: number; y0: number; x1: number; y1: number } {
+  const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
+  if (arena === "large") {
+    const t = LARGE_SPAWN_TILES[team];
+    const s = CONFIG.tileSize;
+    return {
+      x0: t.x0 * s + CONFIG.tankRadius,
+      y0: t.y0 * s + CONFIG.tankRadius,
+      x1: (t.x1 + 1) * s - CONFIG.tankRadius,
+      y1: (t.y1 + 1) * s - CONFIG.tankRadius,
+    };
+  }
+  const home = homeTerritoryBounds(team);
+  return {
+    x0: pad,
+    y0: Math.max(home.y0 + 20, pad),
+    x1: CONFIG.canvasWidth - pad,
+    y1: Math.min(home.y1 - 20, CONFIG.canvasHeight - pad),
   };
 }
 
 export function createTeams(
-  seed = Date.now(),
+  rng: () => number,
   withCarriers = false,
   shareMode: ShareMode = CONFIG.shareModeDefault,
   gameMode: GameMode = CONFIG.gameModeDefault,
+  walls: Wall[],
+  arena: ArenaId,
 ): Tank[] {
-  const rng = mulberry32(seed >>> 0);
-  const density: ArenaDensity =
-    isMpRules(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "standard";
-  const walls = buildArena(density);
   const tanks: Tank[] = [];
-  const pad = CONFIG.tileSize * 3 + CONFIG.tankRadius;
-  const W = CONFIG.canvasWidth;
   const fogged = shareMode !== "clear";
-  const mpRules = isMpRules(gameMode);
 
-  const blueHome = homeTerritoryBounds("blue");
-  const redHome = homeTerritoryBounds("red");
-
-  tanks.push(
-    ...spawnTeam(
-      "blue",
-      pad,
-      Math.max(blueHome.y0 + 20, pad),
-      W - pad,
-      Math.min(blueHome.y1 - 20, CONFIG.canvasHeight - pad),
-      rng,
-      walls,
-      fogged,
-      mpRules,
-    ),
-  );
-  tanks.push(
-    ...spawnTeam(
-      "red",
-      pad,
-      Math.max(redHome.y0 + 20, pad),
-      W - pad,
-      Math.min(redHome.y1 - 20, CONFIG.canvasHeight - pad),
-      rng,
-      walls,
-      fogged,
-      mpRules,
-    ),
-  );
+  for (const team of ["blue", "red"] as const) {
+    const b = spawnBounds(arena, team);
+    tanks.push(
+      ...spawnTeam(team, b.x0, b.y0, b.x1, b.y1, rng, walls, fogged, gameMode,
+        isBaseWar(gameMode) ? baseWarSpawnPoints(arena, team) : undefined),
+    );
+  }
 
   if (withCarriers) {
     pickCarrier(tanks, "blue", rng);
@@ -130,15 +123,19 @@ function spawnTeam(
   x1: number,
   y1: number,
   rng: () => number,
-  walls: ReturnType<typeof buildArena>,
+  walls: Wall[],
   fogged: boolean,
-  mpRules: boolean,
+  gameMode: GameMode,
+  fixedSpawns?: Vec2[],
 ): Tank[] {
-  // Multiplayer rules: every tank is a standard gunner (no scout/gunner split).
+  const mpRules = isMpRules(gameMode);
+  // Heavy/Light: hulls 1–3 are heavies, 4–6 are gunners. No scouts.
   const roles: Role[] = mpRules
     ? ["shooter", "shooter", "shooter", "shooter", "shooter", "shooter"]
-    : ["scout", "scout", "shooter", "shooter", "shooter", "shooter"];
-  if (!mpRules) {
+    : gameMode === "heavy-light"
+      ? ["heavy", "heavy", "heavy", "shooter", "shooter", "shooter"]
+      : ["scout", "scout", "shooter", "shooter", "shooter", "shooter"];
+  if (!mpRules && gameMode !== "heavy-light") {
     for (let i = roles.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
       [roles[i], roles[j]] = [roles[j], roles[i]];
@@ -153,7 +150,7 @@ function spawnTeam(
     const row = Math.floor(i / 3);
     const preferX = x0 + ((x1 - x0) * (col + 0.5)) / 3;
     const preferY = y0 + ((y1 - y0) * (row + 0.35)) / 2;
-    const pos = findClearPoint(
+    const pos = fixedSpawns?.[i] ?? findClearPoint(
       preferX,
       preferY,
       CONFIG.tankRadius,
@@ -188,7 +185,7 @@ function spawnTeam(
       maxHp: stats.maxHp,
       alive: true,
       cooldown: 0,
-      goal,
+      ...goalState(goal),
       standStillTimer: 0,
       reportProgress: 0,
       debugProgress: 0,

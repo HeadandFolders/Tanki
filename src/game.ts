@@ -19,6 +19,18 @@ import {
   unstickFromWalls,
 } from "./arena";
 import { baseShotClear, createBaseStates } from "./arena-bases";
+import {
+  armoredDamage,
+  armorBand,
+  fireCooldownOf,
+  getRespawnRate,
+  projectileLifeOf,
+  RESPAWN,
+  TANK_TYPES,
+  turnRateOf,
+  type ArmorBand,
+  type NukeSpec,
+} from "./config/balance";
 import { beginAiFrame, updateTankAi, warmRoutePlanner } from "./ai";
 import { commanderView, setCommander, updateCommander, type Opponent, type PendingCommanderOrder } from "./ai-commander";
 import { intentsToOrders } from "./command-resolver";
@@ -36,7 +48,7 @@ import {
 import { completeCommandRecord, interpretCommand, markDiedStuck, recordMatchOutcome, refreshCommandRecord } from "./command-pipeline";
 import { createTeams } from "./spawn";
 import { createRandom, nextRandom } from "./random";
-import { assignOrder, finishOrder, orderAcknowledgement, setGoal, stackFor } from "./interrupt-stack";
+import { assignOrder, finishOrder, orderAcknowledgement, restoreGoal, setGoal, stackFor } from "./interrupt-stack";
 import { beginUtterance, failRadio, resetRadio, type UtteranceMeter } from "./radio";
 import type {
   BaseState,
@@ -59,11 +71,10 @@ export function createWorld(
   arena?: ArenaId,
   arenaSeed: number = CONFIG.largeArena.seed,
 ): WorldState {
-  // Screenshot layout for TDM / CTF / No Fog. Multiplayer keeps the dense maze
-  // unless the host picked another MP arena.
+  // Multiplayer rules take the default map unless one was picked; TDM / CTF /
+  // No Fog keep the reference screenshot layout.
   const arenaId: ArenaId =
-    arena ??
-    (isMpRules(gameMode) && CONFIG.mpOffline.denseArena ? "dense" : "reference");
+    arena ?? (isMpRules(gameMode) ? CONFIG.arenaDefault : "reference");
   // Walls first: buildArena sets the world size the fog grid is sized from.
   const walls = buildArena(arenaId, { seed: arenaSeed, baseWar: isBaseWar(gameMode) });
   warmRoutePlanner(walls);
@@ -139,17 +150,17 @@ export function createWorld(
       "sys",
     );
   } else if (isBaseWar(gameMode)) {
-    pushEvent(world, "Base War — destroy the enemy base or eliminate all enemy tanks. Ten-minute limit.", "sys");
+    pushEvent(world, "Base War — destroy the enemy base. Killing their hulls only stops them until they respawn at base. Ten-minute limit.", "sys");
     pushChat(world, "Stand by. Base War. Allies hold until ordered; defend your base.", "sys");
   } else if (isMpOffline(gameMode)) {
     pushEvent(
       world,
-      "Multiplayer · Offline — local/bot TDM. No fog. Wipe the enemy team. Allies hold until ordered.",
+      "Multiplayer · Offline — local/bot TDM. No fog. Wipe the enemy team; hulls respawn at base. Allies hold until ordered.",
       "sys",
     );
     pushChat(
       world,
-      "Stand by. Multiplayer · Offline. Gunners only — hold until radio orders.",
+      "Stand by. Multiplayer · Offline. Five hull types a side — hold until radio orders.",
       "sys",
     );
   } else if (gameMode === "tdm") {
@@ -235,9 +246,13 @@ export function switchToTank(
   if (team === "blue") {
     const prev = controlledTank(world);
     world.controlledId = t.id;
-    pushEvent(world, `Control → #${t.number} (${t.role})`, "sys");
+    pushEvent(world, `Control → #${t.number} (${CONFIG.roles[t.role].label})`, "sys");
     if (prev && prev.id !== t.id) {
-      pushChat(world, `#${prev.number}: continuing last order.`, "ally");
+      pushChat(
+        world,
+        `#${prev.number} ${CONFIG.roles[prev.role].label}: continuing last order.`,
+        "ally",
+      );
     }
   } else {
     world.remoteControlledId = t.id;
@@ -396,11 +411,12 @@ function applyResolvedOrders(
       ...(record.issuer === "ai_commander" ? { issuer: "ai_commander" as const } : {}),
     }, true);
     const acknowledgement = orderAcknowledgement(view, tank);
+    const caller = `#${tank.number} ${CONFIG.roles[tank.role].label}`;
     if (acknowledgement.startsWith("negative")) {
       resetRadio(world, team);
-      acknowledgements.push(`#${tank.number} ${acknowledgement}`);
+      acknowledgements.push(`${caller} ${acknowledgement}`);
     } else if (stack.status === "active" && routineCopyDue) {
-      acknowledgements.push(`#${tank.number} ${acknowledgement}`);
+      acknowledgements.push(`${caller} ${acknowledgement}`);
       stack.lastCopyAt = world.time;
     }
     tank.lastOrderChat = r.chatLine;
@@ -495,6 +511,7 @@ export function stepWorld(
   for (const tank of world.tanks) {
     if (!tank.alive) continue;
     tank.cooldown = Math.max(0, tank.cooldown - dt);
+    tank.nukeCooldown = Math.max(0, tank.nukeCooldown - dt);
 
     const isLocalControlled =
       tank.team === "blue" && tank.id === world.controlledId && !world.commanders?.blue;
@@ -510,7 +527,7 @@ export function stepWorld(
       updatePlayer(world, tank, dt, guestInput);
     } else {
       const ai = updateTankAi(botViews[tank.team], tank, dt, false);
-      if (ai.wantShoot && CONFIG.roles[tank.role].canShoot) {
+      if (ai.wantShoot && TANK_TYPES[tank.role].canShoot) {
         tryShoot(world, tank, ai.aimAngle, false);
       }
     }
@@ -535,7 +552,9 @@ export function stepWorld(
     }
   }
 
+  updateRespawns(world, dt);
   updateDeathFx(world);
+  updateRepairs(world, dt);
   updateProjectiles(world, dt);
   updateVision(world);
   updateSightings(world);
@@ -561,6 +580,85 @@ function updateDeathFx(world: WorldState): void {
   world.deathFx = world.deathFx.filter((fx) => world.time - fx.startedAt < dur);
 }
 
+/**
+ * Slow respawn, multiplayer rules only — the wreck modes leave a hull dead for
+ * good. Each waiting hull counts down at its team's respawn rate, which is the
+ * one number the middle zone is going to move.
+ */
+function updateRespawns(world: WorldState, dt: number): void {
+  if (!isMpRules(world.gameMode)) return;
+  for (const tank of world.tanks) {
+    if (tank.alive || tank.respawnLeft === undefined) continue;
+    tank.respawnLeft -= dt * getRespawnRate(tank.team);
+    if (tank.respawnLeft <= 0) respawnTank(world, tank);
+  }
+}
+
+/** The hull comes back whole, same type and number, holding at its own base. */
+function respawnTank(world: WorldState, tank: Tank): void {
+  const stats = TANK_TYPES[tank.role];
+  const at = tank.spawnPos ?? { x: tank.x, y: tank.y };
+  tank.alive = true;
+  tank.respawnLeft = undefined;
+  tank.hp = tank.maxHp;
+  tank.x = at.x;
+  tank.y = at.y;
+  tank.angle = tank.team === "blue" ? -Math.PI / 2 : Math.PI / 2;
+  tank.lastKnownPos = { x: at.x, y: at.y };
+  tank.cooldown = 0;
+  // A respawned carrier warms its round up again rather than arriving with one live.
+  tank.nukeCooldown = stats.nuke?.warmupSec ?? 0;
+  tank.killedBy = undefined;
+  tank.spawnProtectionUntil = world.time + RESPAWN.protectionSec;
+  tank.lastShotAt = -999;
+  tank.standStillTimer = 0;
+  tank.reportProgress = 0;
+  tank.debugProgress = 0;
+  tank.debugTargetId = null;
+  tank.routeCommit = undefined;
+  tank.driveTrack = undefined;
+  tank.stuckState = undefined;
+  // Whatever order it was following died with it; it holds base until named again.
+  restoreGoal(tank, { kind: "holdPosition", source: "system", params: { x: at.x, y: at.y } });
+  pushEvent(
+    world,
+    `${tank.team === "blue" ? "Friendly" : "Enemy"} #${tank.number} ` +
+    `${CONFIG.roles[tank.role].label} respawned at base.`,
+    "sys",
+  );
+}
+
+/**
+ * The hulls a team currently has in the ground and the seconds left on each.
+ * The HUD reads this; nothing in the simulation does.
+ */
+export function respawnQueue(
+  world: WorldState,
+  team: "blue" | "red",
+): { tank: Tank; secondsLeft: number }[] {
+  return world.tanks
+    .filter((tank) => tank.team === team && !tank.alive && tank.respawnLeft !== undefined)
+    .map((tank) => ({ tank, secondsLeft: Math.max(0, tank.respawnLeft!) }));
+}
+
+/**
+ * Engineers heal the company: slow, close range, friendly hulls only, and never
+ * themselves. A wounded tank has somewhere to go instead of only a retreat.
+ */
+function updateRepairs(world: WorldState, dt: number): void {
+  for (const hull of world.tanks) {
+    if (!hull.alive) continue;
+    const stats = TANK_TYPES[hull.role];
+    if (!stats.repairRate || !stats.repairRange) continue;
+    for (const ally of world.tanks) {
+      if (ally === hull || !ally.alive || ally.team !== hull.team) continue;
+      if (ally.hp >= ally.maxHp) continue;
+      if (dist(hull.x, hull.y, ally.x, ally.y) > stats.repairRange) continue;
+      ally.hp = Math.min(ally.maxHp, ally.hp + stats.repairRate * dt);
+    }
+  }
+}
+
 function updatePlayer(
   world: WorldState,
   tank: Tank,
@@ -577,7 +675,7 @@ function updatePlayer(
   tank.y = freed.y;
 
   const keys = asKeySet(input.keys);
-  const speed = CONFIG.roles[tank.role].speed;
+  const speed = TANK_TYPES[tank.role].speed;
   let mx = 0;
   let my = 0;
   if (keys.has("arrowup")) my -= 1;
@@ -601,7 +699,7 @@ function updatePlayer(
     tank.angle = aim;
     tryShoot(world, tank, aim, true);
   } else {
-    tank.angle = rotateToward(tank.angle, aim, CONFIG.tankTurnRate * 1.4 * dt);
+    tank.angle = rotateToward(tank.angle, aim, turnRateOf(tank.role) * 1.4 * dt);
   }
 
   // Player can debug / report by standing near marked wreck (not in mp-offline)
@@ -627,30 +725,34 @@ function tryShoot(
   isPlayer: boolean,
 ): void {
   if (tank.cooldown > 0 || !tank.alive) return;
-  if (!CONFIG.roles[tank.role].canShoot) return;
-  const stats = CONFIG.roles[tank.role];
+  const stats = TANK_TYPES[tank.role];
+  if (!stats.canShoot) return;
+
+  // The nuke is the carrier's real weapon and it is aimed at a base. A human
+  // spends it on the round they are pointing at; a bot only commits it when the
+  // enemy base is inside launch reach with a clear line, so it is never wasted
+  // on a hull. Both then fall back to the deck gun for the long cooldown.
+  const nuke = stats.nuke;
+  if (nuke && tank.nukeCooldown <= 0 && (isPlayer || baseInRange(world, tank, nuke.range))) {
+    launchNuke(world, tank, aimAngle, nuke);
+    return;
+  }
 
   // AI: only open fire if this tank can see someone (player may always shoot).
   if (!isPlayer) {
-    // Fog modes gate on vision. No-fog multiplayer already gated the chosen shot
-    // on range + line of sight in the brain, so gate on the same gun range: a
-    // tighter number here meant hulls aimed at enemies they refused to shoot.
-    const reach = isMpRules(world.gameMode)
-      ? Math.max(stats.fightRange, CONFIG.mpOffline.shootRange)
-      : stats.visionRadius + 40;
+    // Each hull gates on its own gun reach. A shared number made a short-barrel
+    // type shoot at things it should not have been able to hit, and clipped a
+    // long one.
     const sees = world.tanks.some(
       (e) =>
         e.team !== tank.team &&
         e.alive &&
-        dist(tank.x, tank.y, e.x, e.y) < reach,
+        dist(tank.x, tank.y, e.x, e.y) < stats.range,
     );
-    const base = world.bases?.[tank.team === "blue" ? "red" : "blue"];
-    const seesBase = tank.goal.kind === "attackBase" && base &&
-      baseShotClear(tank, base, world.walls, CONFIG.mpOffline.shootRange);
-    if (!sees && !seesBase) return;
+    if (!sees && !baseInRange(world, tank, stats.range)) return;
   }
 
-  tank.cooldown = stats.fireCooldown;
+  tank.cooldown = fireCooldownOf(tank.role);
   tank.lastShotAt = world.time;
   const id = `p-${tank.id}-${world.time}`;
   const proj: Projectile = {
@@ -662,10 +764,91 @@ function tryShoot(
     vx: Math.cos(aimAngle) * stats.projectileSpeed,
     vy: Math.sin(aimAngle) * stats.projectileSpeed,
     damage: stats.damage,
-    life: stats.projectileLife,
+    life: projectileLifeOf(tank.role),
     fromShooter: tank.role === "shooter",
   };
   world.projectiles.push(proj);
+}
+
+/** Enemy base this hull may shoot at right now: ordered to, alive, in reach, clear line. */
+function baseInRange(world: WorldState, tank: Tank, range: number): boolean {
+  if (tank.goal.kind !== "attackBase") return false;
+  const base = world.bases?.[tank.team === "blue" ? "red" : "blue"];
+  return !!base?.alive && baseShotClear(tank, base, world.walls, range);
+}
+
+function launchNuke(
+  world: WorldState,
+  tank: Tank,
+  aimAngle: number,
+  nuke: NukeSpec,
+): void {
+  tank.cooldown = fireCooldownOf(tank.role);
+  tank.nukeCooldown = nuke.cooldownSec;
+  tank.lastShotAt = world.time;
+  world.projectiles.push({
+    id: `nuke-${tank.id}-${world.time}`,
+    team: tank.team,
+    ownerId: tank.id,
+    x: tank.x + Math.cos(aimAngle) * (CONFIG.tankRadius + 4),
+    y: tank.y + Math.sin(aimAngle) * (CONFIG.tankRadius + 4),
+    vx: Math.cos(aimAngle) * nuke.speed,
+    vy: Math.sin(aimAngle) * nuke.speed,
+    damage: nuke.damageVsTank,
+    life: nuke.range / nuke.speed,
+    fromShooter: false,
+    nuke: {
+      blastRadius: nuke.blastRadius,
+      damageVsTank: nuke.damageVsTank,
+      damageVsBase: nuke.damageVsBase,
+    },
+  });
+  pushEvent(
+    world,
+    `${tank.team === "blue" ? "Friendly" : "Enemy"} #${tank.number} ${TANK_TYPES[tank.role].label} launched a nuke.`,
+    "warn",
+  );
+}
+
+/**
+ * Which face of `target` a round arriving along its own travel direction
+ * strikes. A round with no direction (a test fixture dropped on a hull) is not
+ * aimed at any face, so it pays the un-armoured side multiplier.
+ */
+function bandOfHit(
+  target: Tank,
+  shot: { vx: number; vy: number },
+): ArmorBand {
+  if (shot.vx === 0 && shot.vy === 0) return "side";
+  return armorBand(target, Math.atan2(-shot.vy, -shot.vx));
+}
+
+/** Everything the blast touches, from the round's last position outward. */
+function detonate(world: WorldState, round: Projectile): void {
+  const blast = round.nuke!;
+  const base = Object.values(world.bases ?? {}).find(
+    (candidate) =>
+      candidate.alive &&
+      candidate.team !== round.team &&
+      dist(round.x, round.y, candidate.x + candidate.w / 2, candidate.y + candidate.h / 2) <=
+        blast.blastRadius + Math.max(candidate.w, candidate.h) / 2,
+  );
+  if (base) applyBaseDamage(world, base, blast.damageVsBase, round.team, true);
+  for (const tank of world.tanks) {
+    if (!tank.alive || tank.team === round.team) continue;
+    if (dist(round.x, round.y, tank.x, tank.y) > blast.blastRadius + CONFIG.tankRadius) continue;
+    let rel = 1;
+    if (blast.blastRadius > 0) {
+      rel = Math.max(0.35, 1 - dist(round.x, round.y, tank.x, tank.y) / blast.blastRadius);
+    }
+    applyDamage(world, tank, blast.damageVsTank * rel, round.ownerId, bandFromPoint(tank, round));
+  }
+}
+
+/** A blast hits from wherever it is, not along a barrel. */
+function bandFromPoint(target: Tank, at: { x: number; y: number }): ArmorBand {
+  if (at.x === target.x && at.y === target.y) return "side";
+  return armorBand(target, Math.atan2(at.y - target.y, at.x - target.x));
 }
 
 function updateProjectiles(world: WorldState, dt: number): void {
@@ -674,7 +857,10 @@ function updateProjectiles(world: WorldState, dt: number): void {
     p.life -= dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    if (p.life <= 0) continue;
+    if (p.life <= 0) {
+      if (p.nuke) detonate(world, p);
+      continue;
+    }
 
     const base = Object.values(world.bases ?? {}).find((candidate) =>
       candidate.alive &&
@@ -684,7 +870,8 @@ function updateProjectiles(world: WorldState, dt: number): void {
       p.y <= candidate.y + candidate.h + CONFIG.bulletRadius,
     );
     if (base) {
-      applyBaseDamage(world, base, p.damage, p.team);
+      if (p.nuke) detonate(world, p);
+      else applyBaseDamage(world, base, p.damage, p.team);
       continue;
     }
 
@@ -701,14 +888,18 @@ function updateProjectiles(world: WorldState, dt: number): void {
         break;
       }
     }
-    if (hitWall) continue;
+    if (hitWall) {
+      if (p.nuke) detonate(world, p);
+      continue;
+    }
 
     let hit = false;
     for (const t of world.tanks) {
       if (!t.alive) continue;
       if (t.team === p.team && !CONFIG.friendlyFire) continue;
       if (dist(p.x, p.y, t.x, t.y) <= CONFIG.tankRadius + CONFIG.bulletRadius) {
-        applyDamage(world, t, p.damage, p.ownerId);
+        if (p.nuke) detonate(world, p);
+        else applyDamage(world, t, p.damage, p.ownerId, bandOfHit(t, p));
         hit = true;
         break;
       }
@@ -723,13 +914,15 @@ export function applyBaseDamage(
   base: BaseState,
   damage: number,
   sourceTeam: "blue" | "red",
+  direct = false,
 ): void {
   if (!base.alive) return;
   base.lastHitAt = world.time;
   if (sourceTeam === base.team) return;
   base.lastDamagedAt = world.time;
   if (world.time - base.lastAlertAt >= CONFIG.baseAttackAlertCooldownSec) base.lastAlertAt = world.time;
-  base.hp = Math.max(0, base.hp - damage * CONFIG.baseDamageMultiplier);
+  // A nuke is rated in base HP already; shells pay the anti-structure reduction.
+  base.hp = Math.max(0, base.hp - (direct ? damage : damage * CONFIG.baseDamageMultiplier));
   if (base.hp > 0) return;
   base.alive = false;
   base.destroyedAt = world.time;
@@ -740,14 +933,20 @@ function applyDamage(
   world: WorldState,
   tank: Tank,
   damage: number,
-  _sourceId: string,
+  sourceId: string,
+  band: ArmorBand = "side",
 ): void {
-  tank.hp -= damage;
+  // Spawn protection: a hull that just returned cannot be shot down again.
+  if (tank.spawnProtectionUntil !== undefined && world.time < tank.spawnProtectionUntil) return;
+  // Directional armour: the same shell hurts far less off the nose plate than
+  // off the engine deck, so facing your attacker is a real defence.
+  tank.hp -= armoredDamage(tank.role, damage, band);
   tank.debugProgress = 0; // damage interrupts debug
   tank.reportProgress = 0;
   if (tank.hp <= 0) {
     tank.hp = 0;
     tank.alive = false;
+    tank.killedBy = sourceId;
     // Read the command id before finishOrder mutates the stack.
     const commandId = stackFor(tank).base.commandId;
     if (tank.stuckState?.stuck) markDiedStuck(world, commandId);
@@ -755,12 +954,14 @@ function applyDamage(
     finishOrder(world, tank, "expired", "tank_destroyed", "tank down, order ended");
     if (isMpRules(world.gameMode)) {
       spawnDeathFx(world, tank);
+      tank.respawnLeft = RESPAWN.delaySec;
     } else {
       spawnWreck(world, tank);
     }
     pushEvent(
       world,
-      `${tank.team === "blue" ? "Friendly" : "Enemy"} #${tank.number} destroyed.`,
+      `${tank.team === "blue" ? "Friendly" : "Enemy"} #${tank.number} ` +
+      `${CONFIG.roles[tank.role].label} destroyed.`,
       "warn",
     );
     if (tank.team === "blue" && tank.id === world.controlledId) {
@@ -813,7 +1014,7 @@ function spawnWreck(world: WorldState, tank: Tank): void {
   if (tank.team === "red") {
     const viewers = world.tanks.filter((t) => t.team === "blue" && t.alive);
     const seen = viewers.some((v) =>
-      dist(v.x, v.y, wreck.x, wreck.y) <= CONFIG.roles[v.role].visionRadius,
+      dist(v.x, v.y, wreck.x, wreck.y) <= CONFIG.roles[v.role].visionRange,
     );
     if (seen) addMarker(world, "wreck", wreck.x, wreck.y, `Wreck ${label}`);
   }
@@ -865,11 +1066,12 @@ function handleReportIn(world: WorldState, tank: Tank): void {
     source: "system",
   }, "success", "order_complete", "report complete, holding");
 
+  const hull = CONFIG.roles[tank.role].label;
   pushEvent(
     world,
     n > 0
-      ? `#${tank.number}: report in — ${n} cells logged.`
-      : `#${tank.number}: report in — nothing new.`,
+      ? `#${tank.number} ${hull}: report in — ${n} cells logged.`
+      : `#${tank.number} ${hull}: report in — nothing new.`,
     "sys",
   );
 
@@ -880,13 +1082,13 @@ function handleReportIn(world: WorldState, tank: Tank): void {
       addMarker(world, "enemy", e.x, e.y, `Enemy #${e.number}?`);
       pushEvent(
         world,
-        `#${tank.number}: contact near (${Math.round(e.x)},${Math.round(e.y)}).`,
+        `#${tank.number} ${hull}: contact near (${Math.round(e.x)},${Math.round(e.y)}).`,
         "sys",
       );
     }
   }
   for (const w of world.wrecks) {
-    if (dist(tank.x, tank.y, w.x, w.y) <= CONFIG.roles[tank.role].visionRadius) {
+    if (dist(tank.x, tank.y, w.x, w.y) <= CONFIG.roles[tank.role].visionRange) {
       addMarker(world, "wreck", w.x, w.y, `Wreck ${w.label}`);
     }
   }
@@ -989,7 +1191,7 @@ function updateVision(world: WorldState): void {
       world,
       t.x,
       t.y,
-      CONFIG.roles[t.role].visionRadius,
+      CONFIG.roles[t.role].visionRange,
       world.walls,
     );
   }
@@ -1019,7 +1221,7 @@ function updateSightings(world: WorldState): void {
     }
     for (const w of world.wrecks) {
       if (w.team !== "red") continue;
-      if (dist(v.x, v.y, w.x, w.y) <= CONFIG.roles[v.role].visionRadius) {
+      if (dist(v.x, v.y, w.x, w.y) <= CONFIG.roles[v.role].visionRange) {
         addMarker(world, "wreck", w.x, w.y, `Wreck ${w.label}`);
       }
     }
@@ -1077,22 +1279,20 @@ function resolveBaseWarTimeout(world: WorldState): void {
 }
 
 function checkBaseWarOutcome(world: WorldState): void {
-  const blueAlive = world.tanks.some((tank) => tank.team === "blue" && tank.alive);
-  const redAlive = world.tanks.some((tank) => tank.team === "red" && tank.alive);
   const blueBaseAlive = world.bases!.blue.alive;
   const redBaseAlive = world.bases!.red.alive;
-  const blueWins = !redAlive || !redBaseAlive;
-  const redWins = !blueAlive || !blueBaseAlive;
-  if (blueWins && redWins) {
+  // Only a destroyed base wins. A side with no hulls left simply cannot act —
+  // its dead are counting down at base, and the match runs to the clock.
+  if (!blueBaseAlive && !redBaseAlive) {
     finishBaseWar(world, "draw", "Simultaneous destruction");
     return;
   }
-  if (blueWins) {
-    finishBaseWar(world, "win", redBaseAlive ? "All tanks eliminated" : "Base destroyed");
+  if (!redBaseAlive) {
+    finishBaseWar(world, "win", "Base destroyed");
     return;
   }
-  if (redWins) {
-    finishBaseWar(world, "lose", blueBaseAlive ? "All tanks eliminated" : "Base destroyed");
+  if (!blueBaseAlive) {
+    finishBaseWar(world, "lose", "Base destroyed");
   }
 }
 

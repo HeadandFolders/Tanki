@@ -1,4 +1,15 @@
-import type { Wall } from "./types";
+import type { ArenaId } from "./config";
+import type { BasePlacement, Wall } from "./types";
+
+/**
+ * Base placement for the hand-authored layouts, in tiles. Each base backs onto
+ * a border wall, away from the corners, so it has three open faces. Red is the
+ * point mirror of blue, so it only ever needs declaring once. A generated map
+ * declares its own placement in its own module instead (see arena-large.ts).
+ */
+export const AUTHORED_BASES: Partial<Record<ArenaId, BasePlacement>> = {
+  dense: { tile: { tileX: 29, tileY: 45 }, wall: "south" },
+};
 
 export const REFERENCE_WALLS: Wall[] = [
   { x: 0, y: 0, w: 1280, h: 32, kind: "border" },

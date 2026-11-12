@@ -75,6 +75,34 @@ body {
   font-weight: 700;
 }
 
+.base-hp {
+  display: inline-flex;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.base-hp-blue {
+  color: #e8c040;
+}
+
+.base-hp-red {
+  color: #ec5555;
+}
+
+.respawn-hud {
+  display: inline-flex;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.respawn-hud .respawn-label {
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .round-gate {
   position: absolute;
   inset: 0;

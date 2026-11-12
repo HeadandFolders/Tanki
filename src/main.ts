@@ -27,6 +27,7 @@ import {
   markWreckAt,
   placePlayerMark,
   pushEvent,
+  respawnQueue,
   sendOrder,
   startMatch,
   stepWorld,
@@ -62,6 +63,10 @@ const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
 const timerEl = document.querySelector("#timer")!;
 const matchStateEl = document.querySelector("#match-state")!;
+const baseHpEl = document.querySelector<HTMLElement>("#base-hp")!;
+const baseHpBlueEl = document.querySelector<HTMLElement>("#base-hp-blue")!;
+const baseHpRedEl = document.querySelector<HTMLElement>("#base-hp-red")!;
+const respawnHudEl = document.querySelector<HTMLElement>("#respawn-hud")!;
 const minimapEl = document.querySelector<HTMLCanvasElement>("#minimap")!;
 const minimapCtx = minimapEl.getContext("2d")!;
 const chatEl = document.querySelector("#chat")!;
@@ -682,7 +687,7 @@ mpStartBtn.addEventListener("click", () => {
     return;
   }
   gateProbe = { kind: "offline_chosen" };
-  const arena = currentArena() ?? CONFIG.net.arenaDefault;
+  const arena = currentArena() ?? CONFIG.arenaDefault;
   net.sendStart(arena, CONFIG.largeArena.seed, arenaLayoutHash(arena, CONFIG.largeArena.seed));
 });
 
@@ -1201,6 +1206,34 @@ function syncMinimapSurface(): void {
   if (minimapEl.height !== r.h) minimapEl.height = r.h;
 }
 
+/** Both structures' HP in the top bar, the numbers the match is decided on. */
+function renderBaseHp(world: WorldState): void {
+  const bases = world.bases;
+  baseHpEl.hidden = !bases;
+  if (!bases) return;
+  baseHpBlueEl.textContent = `blue base ${Math.ceil(bases.blue.hp)}/${bases.blue.maxHp}${bases.blue.alive ? "" : " · lost"}`;
+  baseHpRedEl.textContent = `red base ${Math.ceil(bases.red.hp)}/${bases.red.maxHp}${bases.red.alive ? "" : " · lost"}`;
+}
+
+/** Company hulls in the ground and the seconds left before each one is back. */
+function renderRespawnHud(world: WorldState): void {
+  const queue = respawnQueue(world, localTeam);
+  respawnHudEl.hidden = queue.length === 0;
+  if (!queue.length) return;
+  const span = (cls: string, text: string): HTMLElement => {
+    const el = document.createElement("span");
+    el.className = cls;
+    el.textContent = text;
+    return el;
+  };
+  respawnHudEl.replaceChildren(
+    span("respawn-label", "respawn"),
+    ...queue.map(({ tank, secondsLeft }) =>
+      span("respawn-item",
+        `#${tank.number} ${CONFIG.roles[tank.role].shortCode} ${Math.ceil(secondsLeft)}s`)),
+  );
+}
+
 function appendLog(
   el: Element,
   line: { text: string; kind: string },
@@ -1324,6 +1357,8 @@ function frame(ts: number): void {
   renderMinimap(minimapCtx, world, cam, localTeam);
 
   timerEl.textContent = formatTime(world.matchLeft);
+  renderBaseHp(world);
+  renderRespawnHud(world);
   const me =
     localTeam === "red"
       ? world.tanks.find((t) => t.id === world.remoteControlledId)
@@ -1348,7 +1383,7 @@ function frame(ts: number): void {
     matchStateEl.textContent = `${modeLabel} · COUNTDOWN`;
   } else if (world.outcome === "playing") {
     matchStateEl.textContent = me
-      ? `${modeLabel} · #${me.number} · ${world.shareMode}`
+      ? `${modeLabel} · #${me.number} ${CONFIG.roles[me.role].label} · ${world.shareMode}`
       : "No tanks";
   } else {
     matchStateEl.textContent = world.outcome.toUpperCase();

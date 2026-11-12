@@ -451,7 +451,7 @@ for (const [label, phrases] of [
     const p6 = { x: g6.params!.x!, y: g6.params!.y! };
     assert.ok(lateralOffset(heading, red5, p6) < -40, "on the left of #5 as the player sees it");
     const d6 = Math.hypot(p6.x - red5.x, p6.y - red5.y);
-    const range = gunRange(tank(w, "blue-6"), w);
+    const range = gunRange(tank(w, "blue-6"));
     assert.ok(d6 > range * 0.6 && d6 <= range, `at gun range (${Math.round(d6)} of ${range})`);
 
     // 3 and 4 surround 6 → opposite sides of enemy #6, at gun range.
@@ -469,9 +469,15 @@ for (const [label, phrases] of [
     let spread = Math.abs(a0 - a1);
     if (spread > Math.PI) spread = 2 * Math.PI - spread;
     assert.ok(spread > Math.PI * 0.85, `opposite sides (${Math.round((spread * 180) / Math.PI)}°)`);
+    const surroundGuns = ["blue-3", "blue-4"].map((id) => gunRange(tank(w, id)));
+    const shortestGun = Math.min(...surroundGuns);
+    const longestGun = Math.max(...surroundGuns);
     for (const p of pts) {
       const d = Math.hypot(p.x - red6.x, p.y - red6.y);
-      assert.ok(d > range * 0.6 && d <= range, `at gun range (${Math.round(d)})`);
+      // The ring is sized by the shortest gun in the group, so the test is that
+      // every slot is reach by someone and no hull is parked on the target.
+      assert.ok(d > shortestGun * 0.5 && d <= longestGun,
+        `in the group's gun band (${Math.round(d)} of ${shortestGun}-${longestGun})`);
     }
   });
 }

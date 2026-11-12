@@ -6,8 +6,8 @@ import type { Goal, Tank, TeamContact, Vec2, WorldState } from "./types";
 
 export type InterruptReason = "panic_melee" | "hp_retreat";
 export type OrderReason = InterruptReason | "los_shot_on_path" | "prey_dead_hold" | "prey_lost" |
-  "escort_slot_blocked" | "stuck" | "order_received" | "order_replaced" | "order_complete" |
-  "order_unsupported" | "escort_lost" | "tank_destroyed" | "match_ended";
+  "escort_slot_blocked" | "stuck" | "order_received" | "order_replaced" |
+  "order_complete" | "order_unsupported" | "escort_lost" | "tank_destroyed" | "match_ended";
 export interface OrderEvent {
   t: number;
   tankId: string;
@@ -76,7 +76,7 @@ function emit(world: WorldState, tank: Tank, type: OrderEvent["type"], reason: O
   audible = true): void {
   const event: OrderEvent = {
     t: world.time, tankId: tank.id, commandId: stackFor(tank).base.commandId,
-    type, reason, caption: `#${tank.number} ${text}`,
+    type, reason, caption: `#${tank.number} ${CONFIG.roles[tank.role].label} ${text}`,
   };
   (world.orderEvents ??= []).push(event);
   if (type === "expired") resetRadio(world, tank.team);

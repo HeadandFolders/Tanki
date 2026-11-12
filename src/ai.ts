@@ -4,6 +4,7 @@ import {
   isMpOffline,
   isMpRules,
 } from "./config";
+import { baseReachOf, turnRateOf } from "./config/balance";
 import {
   angleTo,
   circleHitsWall,
@@ -161,16 +162,14 @@ function routeFoes(world: WorldState, tank: Tank): RouteFoe[] {
   for (const t of world.tanks) {
     if (!t.alive || t.team === tank.team || (!clear && !canSeeTank(tank, t, world.walls))) continue;
     const role = CONFIG.roles[t.role];
-    const gunRange = role.projectileSpeed * role.projectileLife;
-    out.push({ id: t.id, x: t.x, y: t.y, gunRange });
+    out.push({ id: t.id, x: t.x, y: t.y, gunRange: role.range });
   }
   if (!clear) {
     for (const contact of beliefFor(world, tank.team).contacts) {
       if (!contact.observed || world.time - contact.seenAt > CONFIG.ai.beliefTtlSec ||
         out.some((foe) => foe.id === contact.enemyId)) continue;
       const role = CONFIG.roles[contact.observed.role];
-      out.push({ id: contact.enemyId, x: contact.x, y: contact.y,
-        gunRange: role.projectileSpeed * role.projectileLife });
+      out.push({ id: contact.enemyId, x: contact.x, y: contact.y, gunRange: role.range });
     }
   }
   return out;
@@ -1191,7 +1190,7 @@ function steerTo(
     : lookaheadPoint(tank, route.points);
   const dest = route.points[route.points.length - 1] ?? { x: tx, y: ty };
   const ang = angleTo(tank.x, tank.y, waypoint.x, waypoint.y);
-  tank.angle = rotateToward(tank.angle, ang, CONFIG.tankTurnRate * 1.8 * dt);
+  tank.angle = rotateToward(tank.angle, ang, turnRateOf(tank.role) * 1.8 * dt);
   const atIntent = dist(tank.x, tank.y, tx, ty) < 14;
   const pathEndedShort =
     dist(tank.x, tank.y, dest.x, dest.y) < 14 && dist(dest.x, dest.y, tx, ty) > 28;
@@ -1201,7 +1200,7 @@ function steerTo(
   }
   if (pathEndedShort) {
     const seek = angleTo(tank.x, tank.y, tx, ty);
-    tank.angle = rotateToward(tank.angle, seek, CONFIG.tankTurnRate * 1.8 * dt);
+    tank.angle = rotateToward(tank.angle, seek, turnRateOf(tank.role) * 1.8 * dt);
     let moveX = Math.cos(seek) * speed * dt;
     let moveY = Math.sin(seek) * speed * dt;
     if (isMpRules(world.gameMode)) {
@@ -1456,8 +1455,10 @@ function spreadSlot(tank: Tank): { x: number; y: number } {
 }
 
 /**
- * Combat overlay: close to fight range, soft kite if too close, stand-and-shoot
- * in the fight band (no orbit strafe ? stops 1-target pile-on jitter).
+ * Combat overlay: hold the hull's own stand-off band and shoot. `push` hulls
+ * close into the old fight band; everything else keeps the distance its gun
+ * was tuned for, so an artillery hull snipes from its own reach instead of
+ * crowding the target like a gunner does.
  */
 function combatManeuver(
   world: WorldState,
@@ -1466,15 +1467,19 @@ function combatManeuver(
   speed: number,
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
-  const fightRange = CONFIG.roles[tank.role].fightRange;
+  const stats = CONFIG.roles[tank.role];
+  const fightRange = stats.range;
+  const standoffPx = fightRange * stats.standoff;
   const d = dist(tank.x, tank.y, enemy.x, enemy.y);
   const aimAngle = angleTo(tank.x, tank.y, enemy.x, enemy.y);
-  tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * 2 * dt);
+  tank.angle = rotateToward(tank.angle, aimAngle, turnRateOf(tank.role) * 2 * dt);
 
   let moveX = 0;
   let moveY = 0;
-  if (d < CONFIG.ai.kiteRange * 0.75 && !tank.goal.noRetreat) {
-    // Only kite when truly on top of the target ? softer step, no separation tug
+  const tooClose =
+    stats.doctrine === "push" ? d < CONFIG.ai.kiteRange * 0.75 : d < standoffPx;
+  if (tooClose && !tank.goal.noRetreat) {
+    // Only back off through the hull's own band ? softer step, no separation tug
     const away = angleTo(enemy.x, enemy.y, tank.x, tank.y);
     const s = steerTo(
       tank,
@@ -1517,7 +1522,8 @@ function maybeEngageFromBelief(world: WorldState, tank: Tank): void {
   const contact = freshestContact(world);
   if (!contact) return;
   const d = dist(tank.x, tank.y, contact.x, contact.y);
-  if (d > CONFIG.ai.beliefEngageRadius) return;
+  // A short-leash hull does not give up its post for a rumour down the team net.
+  if (d > Math.min(CONFIG.ai.beliefEngageRadius, CONFIG.roles[tank.role].chaseRange)) return;
 
   setGoal(world, tank, {
     kind: "attackNearest",
@@ -1628,10 +1634,7 @@ function nearestOrderedPrey(world: WorldState, tank: Tank): Tank | null {
 
 /** Clear shots only; an active player attack may shoot only its locked prey. */
 function shotTarget(world: WorldState, tank: Tank): Tank | null {
-  const range = Math.max(
-    CONFIG.roles[tank.role].fightRange,
-    isMpRules(world.gameMode) ? CONFIG.mpOffline.shootRange : 0,
-  );
+  const range = CONFIG.roles[tank.role].range;
   const attacking = isPlayerOrder(tank) && tank.goal.kind === "attackNearest";
   const prey = attacking ? orderedPrey(world, tank) : null;
   if (attacking && !prey) return null;
@@ -1658,10 +1661,11 @@ function notePathShot(world: WorldState, tank: Tank, wantShoot: boolean, moving:
   const stack = stackFor(tank);
   const offOrder = tank.goal.kind !== "attackNearest" && tank.goal.kind !== "attackBase";
   const stats = CONFIG.roles[tank.role];
-  // Match the AI fire gate: a requested shot alone need not produce a projectile.
+  // Match the AI fire gate in game.ts tryShoot: the hull shoots what its own
+  // gun can reach, so the caption must not promise a shot it cannot take.
   const canFire = stats.canShoot && world.tanks.some((enemy) =>
     enemy.alive && enemy.team !== tank.team &&
-    dist(tank.x, tank.y, enemy.x, enemy.y) < stats.visionRadius + 40,
+    dist(tank.x, tank.y, enemy.x, enemy.y) < stats.range,
   );
   const shooting = offOrder && wantShoot && canFire;
   const active = shooting && (tank.cooldown <= 0 || stack.deviations.includes("los_shot_on_path"));
@@ -1700,7 +1704,8 @@ function mpOfflineFriendlyBrain(
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
   updateInterruptStack(world, tank);
-  const speed = CONFIG.roles[tank.role].speed;
+  const stats = CONFIG.roles[tank.role];
+  const speed = stats.speed;
   const liveEnemies = liveVisibleEnemies(world, tank);
   const nearestLive = nearest(liveEnemies, tank.x, tank.y);
 
@@ -1827,18 +1832,19 @@ function mpOfflineFriendlyBrain(
     }
   } else if (activeGoal === "attackBase") {
     const base = world.bases?.[tank.team === "blue" ? "red" : "blue"];
+    const baseReach = baseReachOf(tank.role);
     if (!base?.alive) {
       setGoal(world, tank, { ...tank.goal, kind: "holdPosition", params: { x: tank.x, y: tank.y } },
         "success", "order_complete", "base down, holding");
-    } else if (baseShotClear(tank, base, world.walls, CONFIG.mpOffline.shootRange)) {
+    } else if (baseShotClear(tank, base, world.walls, baseReach)) {
       wantShoot = true;
       aimAngle = angleTo(tank.x, tank.y, base.x + base.w / 2, base.y + base.h / 2);
-      tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * 2.6 * dt);
+      tank.angle = rotateToward(tank.angle, aimAngle, turnRateOf(tank.role) * 2.6 * dt);
     } else {
       const cached = tank.routeCommit;
       let stance = cached?.orderKey.startsWith("attackBase|")
         ? { x: cached.intentX, y: cached.intentY } : null;
-      if (!stance || !baseShotClear(stance, base, world.walls, CONFIG.mpOffline.shootRange)) {
+      if (!stance || !baseShotClear(stance, base, world.walls, baseReach)) {
         let best = Infinity;
         const step = CONFIG.tileSize;
         const cx = base.x + base.w / 2;
@@ -1848,7 +1854,7 @@ function mpOfflineFriendlyBrain(
             if (x < 24 || y < 24 || x > CONFIG.canvasWidth - 24 || y > CONFIG.canvasHeight - 24) continue;
             const d = dist(tank.x, tank.y, x, y);
             if (d >= best || circleHitsWall(x, y, CONFIG.tankRadius + 2, world.walls)) continue;
-            if (!baseShotClear({ x, y }, base, world.walls, CONFIG.mpOffline.shootRange - 12)) continue;
+            if (!baseShotClear({ x, y }, base, world.walls, baseReach - 12)) continue;
             stance = { x, y };
             best = d;
           }
@@ -1875,10 +1881,9 @@ function mpOfflineFriendlyBrain(
     if (hunt) {
       const seesHunt = canSeeTank(tank, hunt, world.walls);
       const dHunt = dist(tank.x, tank.y, hunt.x, hunt.y);
-      const fightRange = CONFIG.roles[tank.role].fightRange;
       // Stop and shoot only when the shot line is actually clear.
       // A short Euclidean distance through a wall is not "in range".
-      if (seesHunt && dHunt <= fightRange) {
+      if (seesHunt && dHunt <= stats.range) {
         const fight = combatManeuver(world, tank, hunt, speed, dt);
         moveX = fight.moveX;
         moveY = fight.moveY;
@@ -1961,7 +1966,7 @@ function mpOfflineFriendlyBrain(
       tank.angle = rotateToward(
         tank.angle,
         aimAngle,
-        CONFIG.tankTurnRate * 2.6 * dt,
+        turnRateOf(tank.role) * 2.6 * dt,
       );
     }
   }
@@ -2011,7 +2016,7 @@ function friendlyBrain(
     const fight = combatManeuver(world, tank, nearestLive, speed, dt);
     const abandonOrder =
       !softOrdered &&
-      (dEnemy < CONFIG.ai.attackAggro ||
+      (dEnemy < Math.min(CONFIG.ai.attackAggro, CONFIG.roles[tank.role].chaseRange) ||
         goal === "attackNearest" ||
         goal === "idle");
     // Preserve close-range system combat when no retreat interrupt is active.
@@ -2270,7 +2275,7 @@ function friendlyBrain(
       tank.angle = rotateToward(
         tank.angle,
         aimAngle,
-        CONFIG.tankTurnRate * 2 * dt,
+        turnRateOf(tank.role) * 2 * dt,
       );
     } else {
       setGoal(world, tank, {
@@ -2357,7 +2362,7 @@ function friendlyBrain(
     if (shot) {
       aimAngle = angleTo(tank.x, tank.y, shot.x, shot.y);
       if (moveX === 0 && moveY === 0) {
-        tank.angle = rotateToward(tank.angle, aimAngle, CONFIG.tankTurnRate * 2 * dt);
+        tank.angle = rotateToward(tank.angle, aimAngle, turnRateOf(tank.role) * 2 * dt);
       }
     }
   }

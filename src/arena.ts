@@ -9,8 +9,9 @@ export type ArenaDensity = ArenaId;
 
 /**
  * Every stance a tank can occupy has two disjoint routes to every other stance.
- * Reference is the default map. Dense is the multiplayer fill. Large is the
- * generated 144x90 map (seeded). A saved edit is opened again if it would
+ * Reference is the TDM / CTF map. Large (the default, see CONFIG.arenaDefault)
+ * is the generated 144x90 map and dense the 80x50 multiplayer fill; both are
+ * selectable. A saved edit is opened again if it would
  * leave a dead end or a one-tank chokepoint. Sets the world size.
  */
 /** Hash of the layout a peer would build, without disturbing the current world size. */

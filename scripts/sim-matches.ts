@@ -6,14 +6,15 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { COMMANDER_PROFILES, type CommanderProfile } from "../src/ai-commander.ts";
-import { BASE_WAR_ARENAS } from "../src/arena-bases.ts";
+import { baseWarMap } from "../src/arena-bases.ts";
 import { TOOL_NAMES } from "../src/command-schema.ts";
-import { CONFIG, type ArenaId, type GameMode, type RedDifficulty, type ShareMode } from "../src/config.ts";
+import { CONFIG, type ArenaId, type GameMode, type RedDifficulty, type Role, type ShareMode } from "../src/config.ts";
+import { RESPAWN, TANK_TYPE_IDS } from "../src/config/balance.ts";
 import { matchSeeds, matchSpec, runMatch, TEAMS, type MatchRecord } from "../src/sim/match.ts";
 import { batchParams, summarize, type Summary } from "../src/sim/summary.ts";
 
 const MODES: readonly GameMode[] = ["base-war", "mp-offline", "tdm"];
-const ARENAS: readonly ArenaId[] = ["dense", "large", "reference", "standard"];
+const ARENAS: readonly ArenaId[] = ["large", "dense", "reference", "standard"];
 const SHARES: readonly ShareMode[] = ["clear", "auto", "report", "none"];
 const DIFFICULTIES: readonly RedDifficulty[] = ["easy", "normal", "hard"];
 
@@ -27,7 +28,7 @@ const USAGE = [
   "  --blue PROFILE     tactical|default|rusher|turtle for blue (default tactical)",
   "  --red PROFILE      same options for red (default tactical)",
   "  --mode M           " + MODES.join("|") + " (default base-war; only it has bases to measure)",
-  "  --arena A          " + ARENAS.join("|") + " (default dense)",
+  "  --arena A          " + ARENAS.join("|") + " (also --map; default " + CONFIG.arenaDefault + ")",
   "  --share S          " + SHARES.join("|") + " (default clear, i.e. no fog)",
   "  --difficulty D     " + DIFFICULTIES.join("|") + " order quality for both commanders (default normal)",
   "  --max-length SEC   a match still playing here ends as an over-length draw (default " +
@@ -35,7 +36,9 @@ const USAGE = [
   "  --hz 30|60         fixed simulation step (default " + CONFIG.sim.hz + ")",
   "  --middle-band F    middle area = central F of map height (default " + CONFIG.sim.middleBandFraction + ")",
   "  --base-sample SEC  base HP sample interval (default " + CONFIG.sim.baseSampleSec + "s)",
-  "  --out PATH         JSON write target (default logs/sim-<matchup>-<mode>-<matches>mx<seed>.json)",
+  "  --under-strength N count team time below N living hulls (default " +
+    CONFIG.sim.underStrengthAlive + ")",
+  "  --out PATH         JSON write target (default logs/sim-<matchup>-<mode>-<map>-<matches>mx<seed>.json)",
   "  --rows             also print one row per match",
   "  --help             this text",
 ].join("\n");
@@ -77,13 +80,14 @@ let seed = 1;
 let blue: CommanderProfile = "tactical";
 let red: CommanderProfile = "tactical";
 let mode: GameMode = "base-war";
-let arena: ArenaId = "dense";
+let arena: ArenaId = CONFIG.arenaDefault;
 let share: ShareMode = "clear";
 let difficulty: RedDifficulty = "normal";
 let maxLengthSec = CONFIG.sim.maxLengthSec;
 let hz = CONFIG.sim.hz;
 let middleBand = CONFIG.sim.middleBandFraction;
 let baseSampleSec = CONFIG.sim.baseSampleSec;
+let underStrengthAlive = CONFIG.sim.underStrengthAlive;
 let out = "";
 let rows = false;
 
@@ -97,13 +101,15 @@ for (let i = 0; i < args.length; i++) {
     case "blue": blue = profileOf(valueOf(args, i++, flag), flag); break;
     case "red": red = profileOf(valueOf(args, i++, flag), flag); break;
     case "mode": mode = listOf(valueOf(args, i++, flag), MODES, flag, "mode"); break;
-    case "arena": arena = listOf(valueOf(args, i++, flag), ARENAS, flag, "arena"); break;
+    case "arena":
+    case "map": arena = listOf(valueOf(args, i++, flag), ARENAS, flag, "map"); break;
     case "share": share = listOf(valueOf(args, i++, flag), SHARES, flag, "share mode"); break;
     case "difficulty": difficulty = listOf(valueOf(args, i++, flag), DIFFICULTIES, flag, "difficulty"); break;
     case "max-length": maxLengthSec = numberOf(valueOf(args, i++, flag), flag); break;
     case "hz": hz = numberOf(valueOf(args, i++, flag), flag); break;
     case "middle-band": middleBand = numberOf(valueOf(args, i++, flag), flag); break;
     case "base-sample": baseSampleSec = numberOf(valueOf(args, i++, flag), flag); break;
+    case "under-strength": underStrengthAlive = numberOf(valueOf(args, i++, flag), flag); break;
     case "out": out = valueOf(args, i++, flag); break;
     case "rows": rows = true; break;
     default: fail(`unknown option --${flag}`);
@@ -115,8 +121,11 @@ if (hz !== 30 && hz !== 60) fail("--hz must be 30 or 60");
 if (!(maxLengthSec > 0)) fail("--max-length must be positive");
 if (!(middleBand > 0 && middleBand <= 1)) fail("--middle-band must be in (0, 1]");
 if (!(baseSampleSec > 0)) fail("--base-sample must be positive");
-if (mode === "base-war" && !BASE_WAR_ARENAS[arena]) {
-  fail(`Base War has no bases on the ${arena} arena; use --arena dense or large`);
+if (!Number.isInteger(underStrengthAlive) || underStrengthAlive < 1) {
+  fail("--under-strength must be a whole number of hulls, at least 1");
+}
+if (mode === "base-war" && !baseWarMap(arena)) {
+  fail(`Base War has no bases on the ${arena} map; use --map dense or large`);
 }
 const engineClockSec = mode === "base-war" ? CONFIG.matchTimeLimitSec : CONFIG.matchDurationSec;
 if (maxLengthSec >= engineClockSec) {
@@ -143,12 +152,14 @@ console.log(`  mode=${mode} arena=${arena} share=${share} difficulty=${difficult
 console.log(`  blue=${blue}  red=${red}  seed=${seed}  first match world seed=${matchSeeds(seed, 0).world}`);
 console.log(`  max length=${sec(maxLengthSec)}s  middle band=central ${pct(middleBand)} of map height` +
   `  base HP sample=${sec(baseSampleSec)}s`);
+console.log(`  respawn delay=${RESPAWN.delaySec}s + ${RESPAWN.protectionSec}s protection at own base` +
+  `  under strength=fewer than ${underStrengthAlive} hulls alive`);
 
 const started = performance.now();
 const results: MatchRecord[] = [];
 const spec = matchSpec({
   seed, mode, arena, share, difficulty, hz, maxLengthSec,
-  middleBandFraction: middleBand, baseSampleSec,
+  middleBandFraction: middleBand, baseSampleSec, underStrengthAlive,
   profiles: { blue, red },
 });
 for (let index = 0; index < matches; index++) {
@@ -184,6 +195,46 @@ table("KILLS AND DEATHS", ["team", "kills", "deaths by hull type", "kills/match"
     Object.entries(summary.deaths[team]).map(([role, n]) => `${role} ${n}`).join(", ") || "none",
     summary.kills[team].mean.toFixed(2),
   ]));
+
+table("RESPAWN", ["team", "deaths", "deaths/match", "respawns", "respawns/match",
+  `below ${underStrengthAlive} alive`, "share of match"],
+  TEAMS.map((team) => [
+    team,
+    String(summary.deathsByTeam[team].total),
+    summary.deathsByTeam[team].mean.toFixed(2),
+    String(summary.respawns[team].total),
+    summary.respawns[team].mean.toFixed(2),
+    `${summary.underStrength[team].secondsMean.toFixed(1)}s`,
+    pct(summary.underStrength[team].shareMean),
+  ]));
+if (TEAMS.every((team) => summary.respawns[team].total === 0)) {
+  console.log("  nothing came back: respawns run under the multiplayer rules only" +
+    " (mp-offline, mp-online, base-war), or the batch ended before the delay.");
+}
+
+const typeRows = TANK_TYPE_IDS.map((role) => ({
+  role: role as Role,
+  fielded: TEAMS.reduce((sum, team) => sum + (summary.fielded[team][role] ?? 0), 0),
+  kills: TEAMS.reduce((sum, team) => sum + (summary.killsByRole[team][role] ?? 0), 0),
+  deaths: TEAMS.reduce((sum, team) => sum + (summary.deaths[team][role] ?? 0), 0),
+})).filter((row) => row.fielded > 0);
+const typeKills = typeRows.reduce((sum, row) => sum + row.kills, 0);
+const typeFielded = typeRows.reduce((sum, row) => sum + row.fielded, 0);
+
+table("HULL TYPES (both teams pooled)",
+  ["type", "hulls", "share of fielded", "kills", "share of kills", "deaths", "K/D", "deaths per hull"],
+  typeRows.map((row) => [
+    CONFIG.roles[row.role].label,
+    String(row.fielded),
+    pct(typeFielded ? row.fielded / typeFielded : 0),
+    String(row.kills),
+    pct(typeKills ? row.kills / typeKills : 0),
+    String(row.deaths),
+    row.deaths ? (row.kills / row.deaths).toFixed(2) : row.kills ? "no deaths" : "—",
+    (row.deaths / row.fielded).toFixed(2),
+  ]));
+const unattributed = TEAMS.reduce((sum, team) => sum + summary.kills[team].total, 0) - typeKills;
+if (unattributed > 0) console.log(`  ${unattributed} kills had no hull type`);
 
 table("MIDDLE AREA", ["team", "tank-seconds", "avg tanks there", "share of match with a tank there"],
   TEAMS.map((team) => [
@@ -234,7 +285,7 @@ if (rows) {
 }
 
 const outPath = resolve(out || join("logs",
-  `sim-${blue}-vs-${red}-${mode}-${matches}mx${seed}.json`));
+  `sim-${blue}-vs-${red}-${mode}-${arena}-${matches}mx${seed}.json`));
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, JSON.stringify({ params: summary.params, summary, matches: results }, null, 2));
 console.log(`\nwrote ${outPath}`);

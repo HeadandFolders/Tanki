@@ -114,7 +114,7 @@ function perceivedTank(contact: TeamContact): Tank {
   const observed = contact.observed!;
   return {
     ...observed, id: contact.enemyId, x: contact.x, y: contact.y,
-    alive: true, cooldown: 0, ...goalState({ kind: "idle", source: "system" }),
+    alive: true, cooldown: 0, nukeCooldown: 0, ...goalState({ kind: "idle", source: "system" }),
     standStillTimer: 0, reportProgress: 0, debugProgress: 0,
     debugTargetId: null, lastKnownPos: { x: contact.x, y: contact.y },
     isCodeCarrier: false, lastShotAt: -999,

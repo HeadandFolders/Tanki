@@ -446,7 +446,7 @@ try {
     await sendOrder(world, "2 and 3 hold");
     const copies = () => world.chat.filter((line) => line.text.includes("copy"));
     assert.equal(copies().length, 1);
-    assert.match(copies()[0].text, /Company: #2 copy, holding; #3 copy, holding/);
+    assert.match(copies()[0].text, /Company: #2 Gunner copy, holding; #3 Gunner copy, holding/);
     world.time = 0.5;
     await sendOrder(world, "2 and 3 hold position");
     assert.equal(copies().length, 1, "routine copy bypassed the two-second limit");

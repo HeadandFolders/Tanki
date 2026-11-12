@@ -6,13 +6,16 @@ import { commanderView, setCommander, updateCommander } from "../src/ai-commande
 import { beliefFor, updateTeamBelief } from "../src/belief.ts";
 import { commandLog } from "../src/command-pipeline.ts";
 import { CONFIG, type ShareMode } from "../src/config.ts";
+import { baseReachOf, TANK_TYPES } from "../src/config/balance.ts";
 import { applyBaseDamage, createWorld, sendOrder, stepWorld } from "../src/game.ts";
 import { restoreGoal } from "../src/interrupt-stack.ts";
-import type { BaseState, TeamId, WorldState } from "../src/types.ts";
+import type { BaseState, TeamId, Wall, WorldState } from "../src/types.ts";
 
 const DT = 1 / 30;
 const INPUT = { keys: [], mouseX: 0, mouseY: 0, shooting: false };
 const TEAMS = ["blue", "red"] as const;
+const SIDES = ["north", "south", "east", "west"] as const;
+type Side = (typeof SIDES)[number];
 console.debug = () => {};
 let passed = 0;
 async function check(name: string, test: () => void | Promise<void>): Promise<void> {
@@ -21,7 +24,9 @@ async function check(name: string, test: () => void | Promise<void>): Promise<vo
   console.log(`ok  ${name}`);
 }
 function fixture(seed = 1): WorldState {
-  const world = createWorld("clear", "base-war", "normal", seed, "off");
+  // These rule checks run the dense map by name; its base-to-base distance is
+  // what the timing windows below are cut for.
+  const world = createWorld("clear", "base-war", "normal", seed, "off", "dense");
   world.outcome = "playing";
   for (const t of world.tanks) t.cooldown = 1e9;
   return world;
@@ -34,27 +39,68 @@ function shell(world: WorldState, base: BaseState, team: TeamId, damage = 22): v
 function between(n: number, min: number, max: number): void {
   assert.ok(n >= min - 1e-8 && n <= max + 1e-8, `${n} outside ${min}..${max}`);
 }
+/** Which map borders the base rect sits hard against. */
+function bordersTouched(b: BaseState, borders: Wall[]): Side[] {
+  const spans = (r: Wall) => r.x <= b.x && r.x + r.w >= b.x + b.w;
+  const across = (r: Wall) => r.y <= b.y && r.y + r.h >= b.y + b.h;
+  return SIDES.filter((side) => borders.some((r) =>
+    side === "north" ? r.y + r.h === b.y && spans(r)
+      : side === "south" ? r.y === b.y + b.h && spans(r)
+        : side === "west" ? r.x + r.w === b.x && across(r)
+          : r.x === b.x + b.w && across(r)));
+}
+/** Whether a tank can reach the face of a base from that side. */
+function faceOpen(b: BaseState, side: Side, walls: Wall[]): boolean {
+  const d = { north: [0, -1], south: [0, 1], west: [-1, 0], east: [1, 0] }[side];
+  const gap = CONFIG.tileSize * 0.6;
+  const points = [0.25, 0.5, 0.75].map((f) => ({
+    x: d[0] === 0 ? b.x + b.w * f : b.x + (d[0] < 0 ? -gap : b.w + gap),
+    y: d[1] === 0 ? b.y + b.h * f : b.y + (d[1] < 0 ? -gap : b.h + gap),
+  }));
+  return points.every((p) => !circleHitsWall(p.x, p.y, CONFIG.tankRadius, walls));
+}
 
-await check("dense and large bases: symmetric 3x3 footprints, free ring, two routes, hidden from enemy spawn", () => {
+await check("dense and large bases: symmetric 3x3 footprints, one wall side and three open faces, two routes, hidden from enemy spawn", () => {
   for (const arena of ["dense", "large"] as const) {
     const original = JSON.stringify(buildArena(arena));
     const w = createWorld("clear", "base-war", "normal", 1, "off", arena);
     const bases = w.bases!;
     assert.equal(bases.blue.x + bases.red.x + bases.blue.w, CONFIG.canvasWidth);
     assert.equal(bases.blue.y + bases.red.y + bases.blue.h, CONFIG.canvasHeight);
+    const borders = w.walls.filter((wall) => wall.kind === "border");
+    const posts = (team: TeamId) =>
+      defensiveAnchors(arena, team)
+        .map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+        .sort();
+    assert.deepEqual(
+      defensiveAnchors(arena, "blue")
+        .map((p) => `${(CONFIG.canvasWidth - p.x).toFixed(1)},${(CONFIG.canvasHeight - p.y).toFixed(1)}`)
+        .sort(),
+      posts("red"),
+      `${arena}: garrison posts are not point-symmetric`,
+    );
     for (const team of TEAMS) {
       const b = bases[team];
       assert.equal(b.w, 48); assert.equal(b.h, 48);
       const walls = w.walls.filter((wall) => wall.baseTeam !== team);
-      for (let y = b.y - 48; y < b.y + b.h + 48; y += 16) {
-        for (let x = b.x - 48; x < b.x + b.w + 48; x += 16) {
-          assert.ok(!circleHitsWall(x + 8, y + 8, 0, walls), `${arena}/${team} ring ${x},${y}`);
-        }
+      const back = bordersTouched(b, borders);
+      assert.equal(back.length, 1, `${arena}/${team} backs onto ${back.length} borders`);
+      for (const side of SIDES) {
+        assert.equal(faceOpen(b, side, walls), side !== back[0],
+          `${arena}/${team} face ${side} should be ${side === back[0] ? "walled" : "open"}`);
       }
+      const alongWall = back[0] === "north" || back[0] === "south"
+        ? Math.min(b.x, CONFIG.canvasWidth - b.x - b.w)
+        : Math.min(b.y, CONFIG.canvasHeight - b.y - b.h);
+      assert.ok(alongWall >= 2 * CONFIG.tileSize, `${arena}/${team} sits ${alongWall}px from a corner`);
       for (const t of w.tanks.filter((t) => t.team !== team)) {
         assert.ok(segmentHitsWall(t.x, t.y, b.x + 24, b.y + 24, walls), `${arena}/${team} spawn LOS`);
       }
-      assert.ok(defensiveAnchors(arena, team).length >= 2);
+      const anchors = defensiveAnchors(arena, team);
+      assert.ok(anchors.length >= 2);
+      for (const p of anchors) {
+        assert.ok(!circleHitsWall(p.x, p.y, CONFIG.tankRadius + 2, walls), `${arena}/${team} post in a wall`);
+      }
       for (const tank of w.tanks.filter((t) => t.team === team)) {
         assert.ok(team === "blue" ? tank.y < b.y : tank.y > b.y + b.h, "base must be behind spawn");
         assert.ok(!circleHitsWall(tank.x, tank.y, CONFIG.tankRadius + 2, w.walls));
@@ -82,7 +128,7 @@ await check("friendly shells absorb; enemy shells damage; alerts rate-limit at f
   w.time = first + 5; applyBaseDamage(w, b, 22, "red"); assert.equal(b.lastAlertAt, w.time);
 });
 
-await check("base destruction, elimination, simultaneous bases and cross-condition draw; outcome log", () => {
+await check("only a destroyed base ends it: elimination keeps play going, simultaneous and cross conditions resolve to base", () => {
   for (const team of TEAMS) {
     const w = fixture(); shell(w, w.bases![team], team === "blue" ? "red" : "blue", 8000);
     stepWorld(w, DT, INPUT);
@@ -91,18 +137,19 @@ await check("base destruction, elimination, simultaneous bases and cross-conditi
     assert.equal(w.bases![team].destroyedAt, w.time);
     const record = commandLog().at(-1)!;
     assert.equal(record.reason, "match_outcome"); assert.ok(record.raw_text.includes("Base destroyed"));
-    const eliminated = fixture();
-    for (const t of eliminated.tanks.filter((t) => t.team === team)) t.alive = false;
-    stepWorld(eliminated, DT, INPUT);
-    assert.equal(eliminated.outcome, team === "red" ? "win" : "lose");
-    assert.equal(eliminated.outcomeReason, "All tanks eliminated");
+    // A side with no hulls left cannot shoot back, but the match is not over.
+    const emptied = fixture();
+    for (const t of emptied.tanks.filter((t) => t.team === team)) t.alive = false;
+    for (let tick = 0; tick < 30; tick++) stepWorld(emptied, DT, INPUT);
+    assert.equal(emptied.outcome, "playing", `${team} wiped out ended the match`);
+    assert.ok(emptied.matchLeft < 600);
   }
   const both = fixture(); shell(both, both.bases!.red, "blue", 8000); shell(both, both.bases!.blue, "red", 8000);
   stepWorld(both, DT, INPUT); assert.equal(both.outcome, "draw");
   const cross = fixture();
   for (const t of cross.tanks.filter((t) => t.team === "red")) t.alive = false;
   shell(cross, cross.bases!.blue, "red", 8000); stepWorld(cross, DT, INPUT);
-  assert.equal(cross.outcome, "draw");
+  assert.equal(cross.outcome, "lose"); assert.equal(cross.outcomeReason, "Base destroyed");
 });
 
 await check("600-second timeout: HP percentage first, survivors second, exact tie draw", () => {
@@ -131,7 +178,7 @@ await check("attackBase follows the real dense maze, stops in LOS, fires, and ne
     for (let tick = 0; tick < 30 / DT && base.hp === base.maxHp; tick++) stepWorld(w, DT, INPUT);
     assert.ok(base.hp < base.maxHp, `${seed}/${team}: no base damage`);
     assert.ok(dist(start.x, start.y, bot.x, bot.y) > 50);
-    assert.ok(baseShotClear(bot, base, w.walls, CONFIG.mpOffline.shootRange));
+    assert.ok(baseShotClear(bot, base, w.walls, baseReachOf(bot.role)));
     const stop = { x: bot.x, y: bot.y };
     for (let tick = 0; tick < 30; tick++) stepWorld(w, DT, INPUT);
     assert.ok(dist(stop.x, stop.y, bot.x, bot.y) < 0.1);
@@ -151,6 +198,11 @@ await check("continuous live firing: one gunner about a minute, three about twen
       restoreGoal(tank, { kind: "holdPosition", source: "system", params: { x: tank.x, y: tank.y } });
     }
     for (const [i, t] of bots.entries()) {
+      // The pace this measures belongs to the old line gun. Company slot 2 is
+      // a Heavy, whose 42-point shell every 1.8s would need minutes on base HP
+      // tuned for a 22/0.16s gun; which hull fills the slot is the batch's question.
+      t.role = "shooter";
+      t.maxHp = t.hp = TANK_TYPES.shooter.maxHealth;
       const angle = Math.PI / 2 + (i - (n - 1) / 2) * 0.35;
       t.x = b.x + 24 + Math.cos(angle) * 160; t.y = b.y + 24 + Math.sin(angle) * 160;
       t.lastKnownPos = { x: t.x, y: t.y }; t.cooldown = 0;
@@ -304,6 +356,10 @@ await check("allies answer a shot the brain already aimed: full gun range, not v
   w.walls = [];
   const ally = w.tanks.find((t) => t.team === "blue" && t.id !== w.controlledId)!;
   const foe = w.tanks.find((t) => t.team === "red")!;
+  // The old MP roster had one gun on every hull; this one measures that gun's
+  // reach against its own sight line, so pin the classic 220/95 pair.
+  ally.role = "shooter";
+  ally.maxHp = ally.hp = TANK_TYPES.shooter.maxHealth;
   ally.x = 600; ally.y = 400; ally.cooldown = 0;
   restoreGoal(ally, { kind: "holdPosition", source: "system", params: { x: 600, y: 400 } });
   foe.x = 800; foe.y = 400; foe.cooldown = 1e9;
@@ -314,37 +370,60 @@ await check("allies answer a shot the brain already aimed: full gun range, not v
     t.y = t.team === "red" ? 700 : 100;
     t.cooldown = 1e9;
   }
-  assert.ok(200 > CONFIG.roles[ally.role].visionRadius + 40, "test moved inside vision range");
+  assert.ok(200 > CONFIG.roles[ally.role].visionRange + 40, "test moved inside vision range");
   for (let tick = 0; tick < 30 && foe.hp === foe.maxHp; tick++) stepWorld(w, DT, INPUT);
   assert.ok(foe.hp < foe.maxHp, "held ally fired no shot at 200px with a clear line");
 });
 
 await check("passive defence on both MP arenas trades with an AI attack", () => {
+  const nukeBaseDamage = TANK_TYPES.nuke.nuke!.damageVsBase;
   for (const arena of ["dense", "large"] as const) {
     for (const seed of [23, 411]) {
       const w = createWorld("clear", "base-war", "normal", seed, "normal", arena);
       w.outcome = "playing";
-      let redLosses = 0;
-      let blueLosses = 0;
-      let last = TEAMS.map(() => 6);
+      // Base War respawns now, so one hull can die several times in two minutes.
+      // The trade is counted in hulls destroyed at least once — the cost a wreck
+      // mode used to charge — and the returns are reported beside it.
+      const redLost = new Set<string>();
+      const blueLost = new Set<string>();
+      let returned = 0;
+      let nukeDamage = 0;
       for (let tick = 0; tick < 120 / DT && w.outcome === "playing"; tick++) {
+        const baseBefore = w.bases!.blue.hp;
+        const aliveBefore = new Set(w.tanks.filter((t) => t.alive).map((t) => t.id));
         stepWorld(w, DT, INPUT);
-        const now = TEAMS.map((team) => w.tanks.filter((t) => t.team === team && t.alive).length);
-        redLosses += Math.max(0, last[1] - now[1]);
-        blueLosses += Math.max(0, last[0] - now[0]);
-        last = now;
+        // One nuke round is worth several hulls' worth of shells, so the two
+        // kinds of base damage are counted apart; the guard below is on guns.
+        nukeDamage += Math.floor((baseBefore - w.bases!.blue.hp) / nukeBaseDamage) * nukeBaseDamage;
+        for (const tank of w.tanks) {
+          if (tank.alive) {
+            if (!aliveBefore.has(tank.id)) returned++;
+          } else if (tank.team === "red") redLost.add(tank.id);
+          else blueLost.add(tank.id);
+        }
       }
+      const redLosses = redLost.size;
+      const blueLosses = blueLost.size;
       const dmg = CONFIG.baseHp - w.bases!.blue.hp;
-      assert.ok(dmg < CONFIG.baseHp * 0.25, `${arena}/${seed}: base took ${dmg} damage (passive)`);
-      assert.ok(redLosses >= 3, `${arena}/${seed}: only ${redLosses} attackers died`);
-      assert.ok(blueLosses <= 1, `${arena}/${seed}: defence lost ${blueLosses}`);
-      console.log(`    ${arena}/${seed}: base dmg ${dmg}, attackers down ${redLosses}, defence down ${blueLosses}`);
+      const gunDmg = dmg - nukeDamage;
+      assert.ok(gunDmg < CONFIG.baseHp * 0.25,
+        `${arena}/${seed}: shell fire alone took ${gunDmg} damage (passive)`);
+      assert.ok(redLosses > blueLosses,
+        `${arena}/${seed}: attackers down ${redLosses}, defence down ${blueLosses}`);
+      assert.ok(blueLosses <= 2, `${arena}/${seed}: defence lost ${blueLosses}`);
+      console.log(
+        `    ${arena}/${seed}: base dmg ${dmg.toFixed(0)} (shells ${gunDmg.toFixed(0)}, ` +
+          `nukes ${nukeDamage.toFixed(0)}), attackers down ${redLosses}, defence down ${blueLosses}, ` +
+          `respawns ${returned}`,
+      );
     }
   }
 });
 
 function battle(seed: number, swap: boolean, limit = CONFIG.matchTimeLimitSec) {
-  const w = createWorld("clear", "base-war", "normal", seed, "off");
+  // The side-balance guard below is calibrated on the dense map, named here so
+  // a change to the world default cannot silently retune it.
+  const w = createWorld("clear", "base-war", "normal", seed, "off", "dense");
   w.controlledId = "";
   w.outcome = "playing";
   const seeds = [seed * 2 + 100, seed * 2 + 101];

@@ -31,6 +31,7 @@ export interface MatchSpec {
   maxLengthSec: number;
   middleBandFraction: number;
   baseSampleSec: number;
+  underStrengthAlive: number;
 }
 
 /** Defaults for a batch, overridable per run. */
@@ -39,7 +40,7 @@ export function matchSpec(overrides: Partial<MatchSpec> = {}): MatchSpec {
     seed: 1,
     index: 0,
     mode: "base-war",
-    arena: "dense",
+    arena: CONFIG.arenaDefault,
     share: "clear",
     difficulty: "normal",
     profiles: DEFAULT_PROFILES,
@@ -47,6 +48,7 @@ export function matchSpec(overrides: Partial<MatchSpec> = {}): MatchSpec {
     maxLengthSec: CONFIG.sim.maxLengthSec,
     middleBandFraction: CONFIG.sim.middleBandFraction,
     baseSampleSec: CONFIG.sim.baseSampleSec,
+    underStrengthAlive: CONFIG.sim.underStrengthAlive,
     ...overrides,
   };
 }
@@ -58,6 +60,8 @@ export interface TankDeath {
   role: Role;
   /** Friendly fire is off, so this is always the opposing team. */
   byTeam: TeamId;
+  /** Hull type that fired the killing shot; missing only if no round was attributed. */
+  byRole?: Role;
 }
 
 export interface BaseHpSample {
@@ -77,9 +81,17 @@ export interface MatchRecord {
   overLength: boolean;
   lengthSec: number;
   kills: Record<TeamId, number>;
-  /** Deaths per team keyed by hull role; hull types are still all gunners in MP rules. */
+  /** Kills dealt per team keyed by the killer's hull type. */
+  killsByRole: Record<TeamId, Partial<Record<Role, number>>>;
+  /** Hulls the team fielded at kick-off, per type — the denominator for a death rate. */
+  fielded: Record<TeamId, Partial<Record<Role, number>>>;
+  /** Deaths per team keyed by hull type. */
   deaths: Record<TeamId, Partial<Record<Role, number>>>;
   deathsLog: TankDeath[];
+  /** Times a destroyed hull came back at its own base (alive false → true). */
+  respawns: Record<TeamId, number>;
+  /** Seconds the team spent with fewer living hulls than `MatchSpec.underStrengthAlive`. */
+  underStrengthSec: Record<TeamId, number>;
   /** Sum of (living tanks in the middle band x seconds), per team. */
   middleTankSeconds: Record<TeamId, number>;
   /** Seconds during which the team had at least one tank in the middle band. */
@@ -112,6 +124,10 @@ function emptyTeamRecord(): Record<TeamId, number> {
   return { blue: 0, red: 0 };
 }
 
+function emptyRoleRecord(): Record<TeamId, Partial<Record<Role, number>>> {
+  return { blue: {}, red: {} };
+}
+
 /**
  * Play one full scripted-vs-scripted match. The runner never mutates the
  * world outside what a normal match does; it only reads it between steps.
@@ -133,8 +149,12 @@ export function runMatch(spec: MatchSpec): MatchRecord {
     overLength: false,
     lengthSec: 0,
     kills: emptyTeamRecord(),
-    deaths: { blue: {}, red: {} },
+    killsByRole: emptyRoleRecord(),
+    fielded: emptyRoleRecord(),
+    deaths: emptyRoleRecord(),
     deathsLog: [],
+    respawns: emptyTeamRecord(),
+    underStrengthSec: emptyTeamRecord(),
     middleTankSeconds: emptyTeamRecord(),
     middleOccupiedSeconds: emptyTeamRecord(),
     baseHp: [],
@@ -146,25 +166,43 @@ export function runMatch(spec: MatchSpec): MatchRecord {
   }
 
   const alive = new Map(world.tanks.map((tank) => [tank.id, tank.alive]));
+  for (const tank of world.tanks) {
+    if (!tank.alive) continue;
+    record.fielded[tank.team][tank.role] = (record.fielded[tank.team][tank.role] ?? 0) + 1;
+  }
   let nextSampleAt = spec.baseSampleSec;
   for (let tick = 0; tick < spec.maxLengthSec / dt; tick++) {
     stepWorld(world, dt, INPUT);
     for (const tank of world.tanks) {
       if (alive.get(tank.id) && !tank.alive) {
         const byTeam: TeamId = tank.team === "blue" ? "red" : "blue";
+        const killer = world.tanks.find((t) => t.id === tank.killedBy);
         record.deaths[tank.team][tank.role] = (record.deaths[tank.team][tank.role] ?? 0) + 1;
         record.kills[byTeam] += 1;
-        record.deathsLog.push({ t: world.time, tankId: tank.id, team: tank.team, role: tank.role, byTeam });
+        if (killer) {
+          record.killsByRole[killer.team][killer.role] =
+            (record.killsByRole[killer.team][killer.role] ?? 0) + 1;
+        }
+        record.deathsLog.push({
+          t: world.time, tankId: tank.id, team: tank.team, role: tank.role,
+          byTeam, byRole: killer?.role,
+        });
+      } else if (!alive.get(tank.id) && tank.alive) {
+        record.respawns[tank.team] += 1;
       }
       alive.set(tank.id, tank.alive);
     }
     const inMiddle = emptyTeamRecord();
+    const living = emptyTeamRecord();
     for (const tank of world.tanks) {
-      if (tank.alive && tank.y >= band.y0 && tank.y <= band.y1) inMiddle[tank.team] += 1;
+      if (!tank.alive) continue;
+      living[tank.team] += 1;
+      if (tank.y >= band.y0 && tank.y <= band.y1) inMiddle[tank.team] += 1;
     }
     for (const team of TEAMS) {
       record.middleTankSeconds[team] += inMiddle[team] * dt;
       if (inMiddle[team]) record.middleOccupiedSeconds[team] += dt;
+      if (living[team] < spec.underStrengthAlive) record.underStrengthSec[team] += dt;
     }
     if (world.bases && world.time + EPS >= nextSampleAt) {
       record.baseHp.push({ t: world.time, blue: world.bases.blue.hp, red: world.bases.red.hp });

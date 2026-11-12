@@ -17,6 +17,7 @@ export interface BatchParams {
   maxLengthSec: number;
   middleBandFraction: number;
   baseSampleSec: number;
+  underStrengthAlive: number;
 }
 
 export interface LengthStats {
@@ -49,8 +50,18 @@ export interface Summary {
   draws: { total: number; overLength: number; decided: number };
   length: LengthStats;
   kills: Record<TeamId, { total: number; mean: number }>;
+  /** Kills dealt per role, keyed by the killer's hull type, per team. */
+  killsByRole: Record<TeamId, Partial<Record<Role, number>>>;
   /** Deaths per role, summed over the batch, per team. */
   deaths: Record<TeamId, Partial<Record<Role, number>>>;
+  /** Deaths per team, batch total and per match. With respawns a death is a delay, not a lost hull. */
+  deathsByTeam: Record<TeamId, { total: number; mean: number }>;
+  /** Times a destroyed hull came back at its own base, batch total and per match. */
+  respawns: Record<TeamId, { total: number; mean: number }>;
+  /** Time spent with fewer living hulls than `params.underStrengthAlive`, per team. */
+  underStrength: Record<TeamId, { secondsMean: number; shareMean: number }>;
+  /** Hulls fielded per role, summed over the batch, per team — the death-rate denominator. */
+  fielded: Record<TeamId, Partial<Record<Role, number>>>;
   middle: Record<TeamId, {
     tankSecondsMean: number;
     occupiedShareMean: number;
@@ -73,10 +84,14 @@ function median(values: number[]): number {
   return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-function roleTotals(rows: MatchRecord[], team: TeamId): Partial<Record<Role, number>> {
+function roleTotals(
+  rows: MatchRecord[],
+  team: TeamId,
+  by: "deaths" | "killsByRole" | "fielded",
+): Partial<Record<Role, number>> {
   const out: Partial<Record<Role, number>> = {};
   for (const row of rows) {
-    for (const [role, count] of Object.entries(row.deaths[team])) {
+    for (const [role, count] of Object.entries(row[by][team])) {
       out[role as Role] = (out[role as Role] ?? 0) + (count ?? 0);
     }
   }
@@ -143,7 +158,22 @@ export function summarize(rows: MatchRecord[], params: BatchParams): Summary {
       total: rows.reduce((sum, row) => sum + row.kills[team], 0),
       mean: mean(rows.map((row) => row.kills[team])),
     },
-    deaths: roleTotals(rows, team),
+    deaths: roleTotals(rows, team, "deaths"),
+    deathsByTeam: {
+      total: rows.reduce((sum, row) => sum + row.deathsLog.filter((d) => d.team === team).length, 0),
+      mean: mean(rows.map((row) => row.deathsLog.filter((d) => d.team === team).length)),
+    },
+    respawns: {
+      total: rows.reduce((sum, row) => sum + row.respawns[team], 0),
+      mean: mean(rows.map((row) => row.respawns[team])),
+    },
+    underStrength: {
+      secondsMean: mean(rows.map((row) => row.underStrengthSec[team])),
+      shareMean: mean(rows.map((row) =>
+        row.lengthSec > 0 ? row.underStrengthSec[team] / row.lengthSec : 0)),
+    },
+    killsByRole: roleTotals(rows, team, "killsByRole"),
+    fielded: roleTotals(rows, team, "fielded"),
     middle: {
       tankSecondsMean: mean(rows.map((row) => row.middleTankSeconds[team])),
       occupiedShareMean: mean(rows.map((row) =>
@@ -158,7 +188,12 @@ export function summarize(rows: MatchRecord[], params: BatchParams): Summary {
     decisiveWinRate: decided ? wins[team] / decided : 0,
   }])) as Record<TeamId, {
     kills: { total: number; mean: number };
+    killsByRole: Partial<Record<Role, number>>;
     deaths: Partial<Record<Role, number>>;
+    deathsByTeam: { total: number; mean: number };
+    respawns: { total: number; mean: number };
+    underStrength: { secondsMean: number; shareMean: number };
+    fielded: Partial<Record<Role, number>>;
     middle: Summary["middle"][TeamId];
     orders: { total: number; mean: number };
     decisiveWinRate: number;
@@ -184,7 +219,15 @@ export function summarize(rows: MatchRecord[], params: BatchParams): Summary {
       max: lengths.length ? Math.max(...lengths) : 0,
     },
     kills: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].kills])) as Summary["kills"],
+    killsByRole: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].killsByRole])) as Summary["killsByRole"],
     deaths: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].deaths])) as Summary["deaths"],
+    deathsByTeam: Object.fromEntries(TEAMS.map((team) => [team,
+      perTeam[team].deathsByTeam])) as Summary["deathsByTeam"],
+    respawns: Object.fromEntries(TEAMS.map((team) => [team,
+      perTeam[team].respawns])) as Summary["respawns"],
+    underStrength: Object.fromEntries(TEAMS.map((team) => [team,
+      perTeam[team].underStrength])) as Summary["underStrength"],
+    fielded: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].fielded])) as Summary["fielded"],
     middle: Object.fromEntries(TEAMS.map((team) => [team, perTeam[team].middle])) as Summary["middle"],
     baseHp: traced.length ? {
       buckets: baseHpCurve(traced, 10, params.maxLengthSec),
@@ -212,5 +255,6 @@ export function batchParams(spec: MatchSpec, matches: number): BatchParams {
     maxLengthSec: spec.maxLengthSec,
     middleBandFraction: spec.middleBandFraction,
     baseSampleSec: spec.baseSampleSec,
+    underStrengthAlive: spec.underStrengthAlive,
   };
 }

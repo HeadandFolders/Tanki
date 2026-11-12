@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { beliefViewers, updateTeamBelief } from "../src/belief.ts";
+import { fireCooldownOf } from "../src/config/balance.ts";
 import { CONFIG } from "../src/config.ts";
 import { createWorld } from "../src/game.ts";
 import { GOAL_KINDS, isGoalKind } from "../src/goals.ts";
@@ -522,9 +523,9 @@ console.log("Fog spawn defaults");
       assert.ok(side.filter((t) => t.number <= 3).every((t) => t.role === "heavy"));
       assert.ok(side.filter((t) => t.number >= 4).every((t) => t.role === "shooter"));
     }
-    assert.ok(CONFIG.roles.heavy.maxHp > CONFIG.roles.shooter.maxHp);
+    assert.ok(CONFIG.roles.heavy.maxHealth > CONFIG.roles.shooter.maxHealth);
     assert.ok(CONFIG.roles.heavy.damage > CONFIG.roles.shooter.damage);
-    assert.ok(CONFIG.roles.heavy.fireCooldown > CONFIG.roles.shooter.fireCooldown * 2);
+    assert.ok(fireCooldownOf("heavy") > fireCooldownOf("shooter") * 2);
     const r = interpretOffline("heavies attack", w.tanks, w);
     assert.equal(r.length, 3);
     for (const o of r) {

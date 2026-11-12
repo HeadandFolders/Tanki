@@ -10,6 +10,7 @@ import {
 } from "./config";
 import { findClearPoint } from "./arena";
 import { goalState } from "./interrupt-stack";
+import { loadoutFor, TANK_TYPES } from "./config/balance";
 import { LARGE_SPAWN_TILES } from "./arena-large";
 import { baseWarSpawnPoints } from "./arena-bases";
 import type { Goal, Tank, TeamId, Vec2, Wall } from "./types";
@@ -129,13 +130,11 @@ function spawnTeam(
   fixedSpawns?: Vec2[],
 ): Tank[] {
   const mpRules = isMpRules(gameMode);
-  // Heavy/Light: hulls 1–3 are heavies, 4–6 are gunners. No scouts.
-  const roles: Role[] = mpRules
-    ? ["shooter", "shooter", "shooter", "shooter", "shooter", "shooter"]
-    : gameMode === "heavy-light"
-      ? ["heavy", "heavy", "heavy", "shooter", "shooter", "shooter"]
-      : ["scout", "scout", "shooter", "shooter", "shooter", "shooter"];
-  if (!mpRules && gameMode !== "heavy-light") {
+  // One type per numbered hull, from the mode's loadout in config/balance.ts.
+  // The multiplayer company is fixed by number so both teams mirror exactly;
+  // the legacy TDM / CTF rosters still deal their hulls out at random.
+  const roles: Role[] = [...loadoutFor(gameMode)];
+  if (gameMode === "tdm" || gameMode === "ctf") {
     for (let i = roles.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
       [roles[i], roles[j]] = [roles[j], roles[i]];
@@ -143,9 +142,9 @@ function spawnTeam(
   }
 
   const out: Tank[] = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < roles.length; i++) {
     const role = roles[i]!;
-    const stats = CONFIG.roles[role];
+    const stats = TANK_TYPES[role];
     const col = i % 3;
     const row = Math.floor(i / 3);
     const preferX = x0 + ((x1 - x0) * (col + 0.5)) / 3;
@@ -181,16 +180,18 @@ function spawnTeam(
       x: pos.x,
       y: pos.y,
       angle,
-      hp: stats.maxHp,
-      maxHp: stats.maxHp,
+      hp: stats.maxHealth,
+      maxHp: stats.maxHealth,
       alive: true,
       cooldown: 0,
+      nukeCooldown: stats.nuke?.warmupSec ?? 0,
       ...goalState(goal),
       standStillTimer: 0,
       reportProgress: 0,
       debugProgress: 0,
       debugTargetId: null,
       lastKnownPos: { x: pos.x, y: pos.y },
+      spawnPos: { x: pos.x, y: pos.y },
       isCodeCarrier: false,
       lastShotAt: -999,
     });

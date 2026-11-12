@@ -1,8 +1,12 @@
 # Tanki handoff
 
-Written 2026-11-10 for the next agent. **Updated 2026-11-12 after the batch measurement tooling (see "Batch measurement tooling").** This file is the brief. The code is the source of truth if they disagree.
+Written 2026-11-10 for the next agent. **Updated 2026-11-12 after the large map became the default (see "Large map is the default (2026-11-12)").** This file is the brief. The code is the source of truth if they disagree.
 
-**Stop boundary: measurement tooling is added (headless batch runner, per-match metrics JSON, `rusher` and `turtle` scripted commander profiles, over-length draw cap). No gameplay number, doctrine or route rule was touched or tuned, and no balance claim is made from these runs. No commits were made. Wait for the user's go-ahead on what to do with the numbers.** See "Batch measurement tooling (2026-11-12)" below for the three 50-match tables and what is still brittle.
+**Stop boundary: the generated 144×90 map is now the default wherever a map is not chosen (`CONFIG.arenaDefault`, one config key), dense 80×50 stays selectable by name in the Arena pick, `--map`/`--arena` and every per-arena test, and the batch runner prints and filenames its map. Both Base War bases are declared for large and point-symmetric; no bot behavior, doctrine or balance number changed.** Verification: `eval:replay` 44/44, `eval:orders` 41/41, `eval:radio` 29/29, `eval-commands` 20/20, `eval:stuck` 18/18, `eval-commander --quick` 17/0, `eval-motion`, `eval-wall-clearance`, `tsc` clean. `eval-basewar --quick` is red at its "passive defence on both MP arenas" guard (dense/23 defence lost 5 against ≤2) — reproduced identically with the default forced back to dense, so it predates this change.
+
+Earlier boundary, still true except where the paragraph above supersedes it: five tank types plus a sixth repeat slot are fielded under MP rules, with directional armour, engineer repairs, a nuke round, type-aware bot behavior, type names in the radio and HUD, and a per-type table in the batch runner. Two balance signals are recorded and left alone: the nuke carrier and the Heavy dominate the kill ledger, and Base War now tilts blue 27/40 in `eval-basewar`'s side-balance guard (18/22 before). See "Tank types (2026-11-12)" below for the numbers and what is brittle.
+
+Earlier boundary, still true: measurement tooling is added (headless batch runner, per-match metrics JSON, `rusher` and `turtle` scripted commander profiles, over-length draw cap); no balance claim is made from those runs. See "Batch measurement tooling (2026-11-12)".
 
 Earlier boundary, still true: Slice B and Slice C are implemented and green headless; human playtest of Slice B is still the open item.
 
@@ -28,7 +32,7 @@ The prototype is playable. A match can be started, a human can drive one tank, a
 Shipped and in the tree:
 
 - **Modes.** Team Deathmatch with fog, TDM with no fog (menu default), Capture the Code, Heavy/Light (3 heavy + 3 gunner, no scouts), Multiplayer · Offline, Multiplayer · Online, and Base War against a seeded scripted commander. MP Offline also has a configurable scripted opponent; Off leaves spawn holds.
-- **MP rules (`isMpRules`: offline, online, Base War).** No fog, six gunners a side, dense or large maze, teammates hold until ordered. They shoot a clear line while holding or driving, with explicit HP/panic interrupts. Eliminations blink twice and vanish (no wreck, no Capture-the-Code). Base War additionally has destructible team bases and `attackBase`. Host is blue (south). Guest is red (north) and the view is rotated so each human's home is at the bottom.
+- **MP rules (`isMpRules`: offline, online, Base War).** No fog, the five-type company loadout (`LOADOUTS.company`: Scout, Heavy, Artillery, Engineer, Nuke carrier, Scout), the large generated maze by default (`CONFIG.arenaDefault`; dense 80×50 still selectable), teammates hold until ordered. They shoot a clear line while holding or driving, with explicit HP/panic interrupts. Eliminations blink twice and vanish (no wreck, no Capture-the-Code), and now come back: `RESPAWN.delaySec` (25s) later the same hull — same type, same number — returns whole at its own spawn under `RESPAWN.protectionSec` (2s) of hull-damage immunity, its clock scaled by `getRespawnRate(team)`, which is 1.0 for both sides until the middle zone exists. TDM / CTF / Heavy-Light keep the one-life wreck rules. Base War additionally has destructible team bases and `attackBase`; only a destroyed base wins — wiping out the enemy hulls stops them shooting back but does not end the match (see "Base War: the base is the win, and it leans on a wall"). Each base sits flush against a map border, off the corner, so it has one walled side and three open faces, and its tile is map data. Host is blue (south). Guest is red (north) and the view is rotated so each human's home is at the bottom.
 - **Radio.** Browser speech recognition (Chrome/Edge) → text, or the text box, or phrase buttons. Same pipeline.
 - **Command pipeline (`src/command-pipeline.ts`).** Partial intent gets immediate standby; side chatter stays silent. Phrase reader first. Optional local Cactus Needle sidecar only if enabled (default off), then the cloud LLM when configured. The live wrapper rejects unsettled keyword guesses and failed parses instead of inventing attacks; failure says again and clears dedupe. The LLM runs once per admitted sentence, never per frame.
 - **Goals / stack.** `src/goals.ts`: moveTo, holdPosition, attackNearest, attackBase, escort, retreat, reportIn, debug, patrol, spreadOut, scout, idle. `src/interrupt-stack.ts` owns base orders, one active interrupt, lifecycle events and captions. The base keeps player provenance and command id while the effective goal temporarily becomes system retreat. `noRetreat` is an explicit Goal/OrderResult ROE flag, not an automatic movement exemption or a new voice phrase. Unsupported MP goals receive a negative acknowledgement and expire into hold.
@@ -38,7 +42,7 @@ Shipped and in the tree:
 - **Map mark.** Hold F and click. "3 move to the mark" is an exact moveTo.
 - **Online.** `npm run dev:mp` runs Vite on 0.0.0.0:4847 and a WebSocket relay on 4855 (`scripts/mp-server.ts`). Host simulates. Guest sends input, orders, and marks. Snapshots at 18 Hz. Same Wi-Fi or Tailscale. A cloud-VM address is not a LAN address. Mic on a remote device needs a secure context; plain `http://100.x` leaves the mic control disabled in Edge.
 - **Scoring / radio.** A thin Team radio strip is visible outside Dev. Sidebar Janna explicitly scores the parse only: blank → incorrect → correct. Lifecycle reason codes appear next to the mark; tooltips contain the captions. Later events update the same row and preserve its human score. Stored in localStorage key `tanki-command-postmortem-v1` (cap 1000) and shown at `/postmortem.html`. The dev server appends command revisions, including lifecycle updates, to `logs/command-postmortem.log`; interpret repeated ids as revisions, not extra utterances. A checkbox click itself updates localStorage only. No Slice C counters were added.
-- **Map export.** `map.json` is a one-shot occupancy dump of the reference arena (80×50 tiles, 16px, 0 = floor, 1 = wall). Runtime does not load it. MP uses `buildArena("dense")`. TDM / CTF / Heavy-Light use `buildArena("reference")`. `ensureTwoRoutes` tries to keep every stance reachable two ways. A saved wall edit lives in localStorage `tanki-wall-layout-v1`.
+- **Map export.** `map.json` is a one-shot occupancy dump of the reference arena (80×50 tiles, 16px, 0 = floor, 1 = wall). Runtime does not load it. MP and Base War use `CONFIG.arenaDefault` (`buildArena("large")` unless a map is picked); TDM / CTF / Heavy-Light use `buildArena("reference")`. `ensureTwoRoutes` tries to keep every stance reachable two ways. A saved wall edit lives in localStorage `tanki-wall-layout-v1`, keyed per arena.
 
 ## How one order runs
 
@@ -262,10 +266,145 @@ Numbers from seed 1, base-war / dense / share=clear / difficulty=normal / 30 Hz 
 Brittle / open:
 
 - Base HP buckets print `samples 0` and `—` for every bucket past the longest match (all rusher-vs-turtle buckets are empty because that batch ended by 22.6s). The bucket is the mean over matches still running at that time; finished matches only show in `final` and `destroyed`.
-- Hull types are still all `shooter` under MP rules, so "deaths per tank type" is one row per team until types exist.
+- Hull types exist now (see "Tank types"), so the batch runner prints a pooled per-type row; the 2026-11-12 tables above were recorded before that, when every MP hull was a `shooter`.
 - Profiles lean on bases. In a base-less mode (`--mode mp-offline|tdm`) turtle has nothing to garrison and issues no orders at all — its passivity then comes from the hold-at-spawn default — and rusher falls back to `move_to` the enemy spawn centre. Base War is the batch default for that reason.
 - `--max-length` at or above the mode's own clock (base-war 600s, TDM 300s) makes the engine timeout decide first; the runner prints a note when that happens.
-- AGENTS.md names `src/config/balance.ts` as the single gameplay config file; that path does not exist. The real one is `src/config.ts`, which is where the `sim` block went.
+- AGENTS.md names `src/config/balance.ts` as the single gameplay config file; it now exists and holds the tank-type table, armour, repair, nuke and loadout numbers. `src/config.ts` re-exports it as `CONFIG.roles`, so a hull still reads `CONFIG.roles[tank.role]`. The `sim` block stayed in `src/config.ts` because it is tooling config, not gameplay.
+
+## Tank types (2026-11-12)
+
+Five hull types plus one repeat slot replace the six identical gunners under MP rules. No command phrase, no map, no win condition and no balance value was changed as a reaction to the numbers below — they are recorded, not tuned.
+
+**The table.** `src/config/balance.ts` is the single source: `TANK_TYPES[role]` carries `maxHealth, speed, turnRate, fireRate, damage, range, visionRange, armor{front,side,rear}, doctrine, standoff, chaseRange, projectileSpeed, canShoot, debugRate`, plus `repairRate`/`repairRange` for the Engineer and a `nuke` block for the carrier, and `label`/`shortCode` for display. Scout 60 hp / 165 px·s / 9 dmg / 175 px gun / 240 px sight; Heavy 260 / 78 / 42 / 170 / 150 with `.5 / 1.1 / 1.45` armour; Artillery 70 / 72 / 70 / 380 / 200 at 0.16 shots·s⁻¹; Engineer 130 / 118 / 12 / 165 / 165 repairing 5 hp·s⁻¹ in an 85 px bubble; Nuke carrier 170 / 82 / 16 / 185 / 160. `src/config.ts` re-exports it as `CONFIG.roles`, so a hull still reads `CONFIG.roles[tank.role]` and `Role` is `TankTypeId`; the field on `Tank` stays `role` because radio, roster, net snapshot and the LLM payload all name it.
+
+**The loadout.** `LOADOUTS.company = [scout, heavy, artillery, engineer, nuke, scout]` indexed by hull number, chosen by `loadoutFor(mode)`. TDM and CTF keep `LOADOUTS.tdm`, Heavy/Light keeps `heavyLight`, so `shooter` ("Gunner", the old line gun) survives for those modes and for the sixth slot. Six numbered hulls, six radio numbers.
+
+**Directional damage.** `armorBand(target, bearing)` classifies a hit from the round's bearing against the hull's nose, `armoredDamage` applies the multiplier, `rawDamageFor` inverts it for test fixtures. A round with no velocity is a side hit. `applyDamage(world, tank, damage, sourceId, band)` records `tank.killedBy = sourceId`, which is what makes the per-type kill ledger possible.
+
+**The nuke.** Only the carrier can throw one. The human's existing fire key launches it when it is off cooldown and a base is inside `nuke.range` (420 px); bots launch on the same reach while ordered `attackBase`. `damageVsBase` 400 bypasses `CONFIG.baseDamageMultiplier`, `damageVsTank` 45 still pays armour, cooldown 45 s with a 20 s spawn warmup so a match cannot open with one.
+
+**Behavior that respects the type.** `combatManeuver` holds each hull's own band (`standoff × range`) and only `push` doctrine closes to the old kite line, so Artillery snipes from 380 and Heavy does not run anyone down. `shotTarget`, `tryShoot` and `notePathShot` gate on the hull's own `range`; `baseReachOf(role)` decides base reach; formation rings size themselves by the shortest gun in the group (`gunRange`). `chaseRange` bounds the AI's *initiative* — peeling for a team-belief contact in `maybeEngageFromBelief`, and breaking a soft order to fight a passer-by in `friendlyBrain`. A player order is still followed by any hull, however slow: the replay harness forbids vetoing orders, so "Heavy does not chase" is implemented as stand-off bands, per-hull gun reach and initiative leash, not as refusal. Invariant worth keeping: `standoff × range ≤ visionRange`, or a hull loses sight of the thing it is holding distance against and oscillates (documented on the field, not clamped in code).
+
+**Type in the text.** Every radio-visible hull line names the type: deviation and order copies (`#3 Artillery copy, covering`), company acknowledgements (`Company: #2 Heavy ack, moving to the mark`), destruction notices (`Enemy #4 Nuke carrier destroyed.`), the recon hull-voice lines (`#1 Scout: report in — 6 cells logged.`, `contact near`) and the control-switch pair (`Control → #4 Engineer`, `#2 Heavy: continuing last order.`). The standby copy reads "Five hull types a side". CTF/TDM wreck-debug lines are left unstamped — those modes do not field the company. The HUD line reads `… · #1 Scout · clear` and each hull carries a two-letter type mark tinted per type.
+
+Verification, all after the last edit: `npx tsc --noEmit -p tsconfig.json` clean; `eval:replay` 41/41 (with `check-goal-writes`), `eval:orders` 41/41, `eval:radio` 29/29 with 0 silent deviations and 0 retargets, `eval-commands` 20/20 — all four re-run after the final caption stamps, counts unchanged — plus, before them, `eval:stuck` 18/18, `eval-commander` full run (with the 40 paired balance matches) 18/18, `eval-motion`, `eval-battle-plan` 4/4, `eval-routes`, `eval-wall-clearance`, `check-routes` and `eval-arena` pass, `eval-basewar --quick` 13/13. The only red in the tree is `eval-basewar`'s 40-battle side guard, below.
+
+Batch, 50 matches, seed 1, Base War, dense, tactical vs tactical — with the same batch on the pre-type HEAD tree next to it:
+
+| | blue / red / draws | length mean | kills B/R |
+| --- | --- | --- | --- |
+| six gunners (HEAD) | 25 / 25 / 0 | 42.9 s | 146 / 129 |
+| five-type company | 30 / 16 / 4 (all over the 300 s cap) | 187.1 s | 223 / 189 |
+
+Per-type ledger (both teams pooled; 412 kills, all attributed):
+
+| type | hulls | share of fielded | kills | share of kills | deaths | K/D | deaths per hull |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Scout | 200 | 33.3% | 59 | 14.3% | 161 | 0.37 | 0.81 |
+| Heavy | 100 | 16.7% | 133 | 32.3% | 69 | 1.93 | 0.69 |
+| Artillery | 100 | 16.7% | 106 | 25.7% | 64 | 1.66 | 0.64 |
+| Engineer | 100 | 16.7% | 22 | 5.3% | 92 | 0.24 | 0.92 |
+| Nuke carrier | 100 | 16.7% | 92 | 22.3% | 26 | 3.54 | 0.26 |
+
+Flagged, deliberately not rebalanced:
+
+- **Nuke carrier dominates.** Best hull on every column: 22.3% of kills from 16.7% of the field, K/D 3.54, and it is killed 0.26 times per hull — the others die 0.64–0.92. In Base War its launches are also most of the damage a base takes: 1200 of 1295 on dense/seed 23 over 120 s (three launches, exactly on cooldown).
+- **Heavy is the strongest line gun** (32.3% of kills, K/D 1.93) even though it has the shortest initiative leash. Slow and short-ranged, and it still out-trades.
+- **Scout is weak**: 0.30 kills per hull (two of six slots, so 200 hulls) and the most deaths. It is also the hull the human drives by default.
+- **Engineer is invisible rather than proven useless** — the batch runner measures no repair value at all, so its 5.3% share of kills is the only thing it can see.
+- **Base War shape changed**: matches 4.4× longer, kills up from 275 to 412, four over-length draws where there were none, and blue 60% where the mirror was 25/25.
+- `eval-commander`'s 40 paired MP-offline matches still pass their ceiling but read very differently: blue=3 red=5 **draw=32**, resolved 8/40, against the recorded pre-type blue=13 red=5 draw=22. A mixed company kills too slowly to empty a side inside the clock.
+- **`eval-basewar`'s side guard is red**: 27/40 blue against a 26 ceiling (HEAD same seeds 18/22). Left failing as a recorded signal, not tuned away.
+
+Brittle / open:
+
+- The human drives blue #1, which is now a 60 hp Scout with a 175 px gun; an MP human used to drive a 110 hp Gunner with 220 px. `game.ts` still resolves the player hull as "first blue whose role is `shooter`, else first blue", which in the company resolves to #1. Changing who the player drives is a `LOADOUTS.company` edit.
+- Three eval fixtures pin the legacy Gunner because they assert pre-type tuning: `eval-replay`'s low-HP retreat cycle (a Heavy cannot re-close and fire inside the 0.25 s window the test gives), `eval-basewar`'s continuous-firing pace and its gun-range-vs-vision-line check. `eval-motion`'s windows are derived from the hull's own speed, `eval-commands`' surround band is measured against the group's shortest and longest gun, and `eval-commander`'s large-arena push guard went 60 s → 75 s (measured 71.8 s; the company's slowest hulls drive at 72–82 px/s where every MP hull did 130).
+- Directional armour is only as sharp as the aim. Bots face what they shoot, so live hits are mostly front or side; nobody deliberately maneuvers for a rear arc yet, so the 1.45 Heavy rear multiplier is barely reached in play.
+- No metric exists for repairs, for the Engineer's value, or for intercepting a nuke round in flight.
+- The batch JSON in `logs/` is overwritten by whichever `npm run sim` ran last; the two 50-match tables above are from `logs/sim-company-50b.log` and `logs/sim-head-50.log`.
+
+## Base War: the base is the win, and it leans on a wall (2026-11-12)
+
+Four changes, no rebalance attached to the numbers below.
+
+**1. Only a destroyed base ends the match.** `checkBaseWarOutcome` in `src/game.ts` reads the two structures and nothing else: both gone → draw "Simultaneous destruction", one gone → win/lose "Base destroyed". Killing every enemy hull no longer finishes anything; a side with no hulls on the field is a side whose hulls are counting down at base, and the match runs on. `resolveBaseWarTimeout` is untouched and is now the only place elimination counts, as the second tie-break after base HP percentage. Non-Base-War modes keep elimination victories in `checkOutcome`. The briefing line and the gate's mode description say the same thing ("destroy the enemy base — killing their hulls only sends them back to base").
+
+**2. Base position is map data.** `src/types.ts` gained `BaseTile` (moved out of `arena-bases.ts`), `WallSide` and `BasePlacement { tile, wall }`. Each map declares its own: `AUTHORED_BASES` in `src/arena-layouts.ts` for the hand-authored arenas (dense: tile 29,45 backing the south border) and `LARGE_BASE` in `src/arena-large.ts` for the generated one (tile 6,85, computed from `rows - BORDER_TILES - BASE_FOOTPRINT` so it stays flush if the map grows). `BASE_WAR_ARENAS` is gone; `baseWarMap(arena)` reads that declaration and derives red by the 180° mirror (`cols - BASE_FOOTPRINT - tile`), the mirrored `wall` side, the spawn ranks and the garrison posts from it. A future map generator sets the same `{ tile, wall }` field and gets all of that for free. Both bases now back onto a border, sit at least two tiles from a corner, and show one walled face and three open faces. `BASE_FOOTPRINT` lives in `src/config.ts` to keep `arena-large` ↔ `arena-bases` free of a runtime cycle.
+
+**3. Base HP is in balance.ts.** `BASE_HP = 2000` in `src/config/balance.ts`, re-exported as `CONFIG.baseHp`; `createBaseStates` still reads `CONFIG.baseHp`, so nothing else moved. `baseDamageMultiplier` (0.25 on shells, bypassed by the nuke's `damageVsBase`) stayed where it was.
+
+**4. The top bar shows both structures.** `#base-hp` in `index.html` (two spans, `hidden` until the world has bases), `renderBaseHp` on the per-frame path in `src/main.ts` beside the match timer, `.base-hp-blue` / `.base-hp-red` in the team colours already used on canvas. It reads e.g. `blue base 2000/2000   red base 1480/2000`, and appends `· lost`. The canvas `drawBaseHud` bars are unchanged, so the numbers appear twice on purpose: once in the strip, once over the map.
+
+Verification, all after the last edit: `npx tsc --noEmit -p tsconfig.json` clean; `eval:replay` 41/41 with `check-goal-writes`; `eval-basewar` **14/14** full run (its 40-battle side guard, the one red item recorded under "Tank types", now reads blue 14 / red 26 against the 26 ceiling — it passes because elimination no longer decides anything, not because anything was tuned); `eval:orders` 41/41; `eval:radio` 29/29; `eval-commander` 18/18 (blue=3 red=5 draw=32, unchanged from the recorded run). `eval-basewar`'s placement check was rewritten: it asserted a wall-free ring on all four sides and now asserts exactly one border touched, three open faces and one walled face probed at 0.6 tile out, a base at least two tiles from a corner, enemy spawns still blind to the base centre, garrison posts clear of walls, and — new — that the two teams' posts are exact point mirrors. That last assertion caught a half-tile bias in my first `anchorPosts`: red's arc was landing 5 tiles out, inside a brick wall, while blue's sat 3 tiles out.
+
+Batch, seed 1, Base War, share=clear, difficulty=normal, 30 Hz, `--max-length 600` so the engine's own 600s clock decides rather than the runner's 300s cap, 20 matches per row:
+
+| Matchup | wins | length mean / median / min / max s | ended by a clock | final base HP B/R |
+| --- | --- | --- | --- | --- |
+| rusher vs turtle, dense | rusher 20/20 | 165.2 / 165.9 / 156.6 / 167.4 | 0/20 | 100.0% / 0.0% |
+| turtle vs rusher, dense (sides swapped) | rusher 20/20 | 156.7 / 156.8 / 155.8 / 157.9 | 0/20 | 100.0% / 0.0% |
+| rusher vs turtle, large | rusher 20/20 | 181.2 / 182.1 / 170.6 / 188.5 | 0/20 | 100.0% / 0.0% |
+| tactical vs tactical, dense | blue 9 / red 11 / 0 draws | 248.3 / 211.4 / 130.6 / 600.0 | 2/20 | 30.3% / 43.1% |
+
+**Is the turtle beatable? Yes, easily — and it is the turtle that never wins.** 40 rusher-vs-turtle matches, every one of them "Base destroyed", spread over ~2m37s on dense and ~3m01s on large, and the rusher's own base finished on 100% HP in all 40: the wall-backed apron plus `defend_base` garrison posts never let a rusher hull get a shot in, and the turtle gives up nothing because it issues only `defend_base` (1.1 orders a match against the rusher's 23.8–26.2 `attack_base`). Under the new rules a doctrine that never orders an attack cannot win, since destroying the enemy base is the only way to. Recorded, not fixed, as instructed. The mirror tactical batch is the sanity check that the mode is not one-sided: 18 of 20 matches ended "Base destroyed", both bases took steady shellfire (78.8%/87.5% by t=60s, 44.6%/49.7% by t=180s) and 10 blue / 8 red bases fell.
+
+Brittle / open:
+
+- **The HUD was never eyeballed.** The in-app browser still cannot be handed a visible surface (`NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`, `visibilityState=hidden`), and the entire HUD — including `#base-hp` — is painted from the `requestAnimationFrame` loop, so no frame ever ran and the element kept its initial `hidden`. Checked structurally instead: mode select → Base War → Play offline reaches a running world on the dense arena, the elements exist, the refs resolve, `renderBaseHp(world)` sits on the per-frame path, and `world.bases` is populated for dense and large (the placement check proves it). Whether the strip fits the top bar at a narrow window needs a human eye.
+- ~~A dead side now just sits there.~~ Recorded before respawns: an eliminator advantage converted to a free kill on the structure rather than a win, and 2/20 tactical matches ran the whole 600s to be decided on base HP percentage. Respawns are in now ("Slow respawning"), which is what that gap was pointing at.
+- `logs/sim-<blue>-vs-<red>-<mode>-<n>mx<seed>.json` did not include `--arena`, so the large-arena rusher-vs-turtle run overwrote the dense one. Fixed in "Large map is the default": the map is now in the filename. The dense numbers in the tables above are the printed output and this file.
+- Garrison posts are derived (`anchorPosts`: 4 tiles out either side of the open face, 3 straight out) instead of a hand-listed table. They are only guaranteed free because `prepareBaseWarWalls` cuts a 3-tile apron; a map generator that shrinks that apron has to move the posts with it.
+- The wall side is trusted, not measured: `wall` says which border the base backs onto and `openFace` derives the other three. A `BasePlacement` that is not actually flush with that border would leave the base floating with four open faces and the eval check would catch it for the two arenas that declare one.
+- `scripts/sim-matches.ts` now validates `--mode base-war` against `baseWarMap(arena)` instead of the old table, so `--arena reference|standard` still fails with the same message.
+
+## Large map is the default (2026-11-12)
+
+The generated 144×90 map is what you get when nothing names a map. Dense 80×50 is still a name you can type. No bot behavior, doctrine, route rule or balance value changed, and no commit was made.
+
+**One key holds the choice.** `CONFIG.arenaDefault` in `src/config.ts` is the only default-map setting. It replaced `CONFIG.mpOffline.denseArena` (a boolean that could only ever mean "the maze") and `CONFIG.net.arenaDefault` (which said dense for the LAN host); both are gone. `createWorld` in `src/game.ts` reads it for the MP ruleset only — TDM / CTF / Heavy-Light still take the reference screenshot layout, because there the map is a mode choice, not a pick. `src/main.ts` uses it when a LAN host starts with no arena. The Arena select in `index.html` now ships `large` selected, and `src/sim/match.ts` `matchSpec()` takes `CONFIG.arenaDefault` too, so a batch with no `--map` runs the same map the game boots into.
+
+**Bases.** Nothing to add: `LARGE_BASE` in `src/arena-large.ts` already seats blue at tile 6,85 flush with the south border (wall "south", three open faces) and `baseWarMap` mirrors red to tile 135,2 against the north border. `eval-basewar`'s placement check runs both maps and asserts, per team: exactly one border touched, all four faces probed (three open, one walled), at least two tiles from a corner, enemy spawns blind to the base centre, garrison posts out of walls, and blue's posts the exact point mirror of red's. Equal distance to centre and equal wall exposure follow from the 180° mirror and are checked by it.
+
+**Batch runner.** `--map` is now an accepted alias of the existing `--arena` (same value set, same validation), the header already printed the map (`mode=… arena=… share=…`) and still does, and the default JSON name now carries it — `logs/sim-<blue>-vs-<red>-<mode>-<map>-<matches>mx<seed>.json` — which closes the recorded brittleness where a large run overwrote the dense one.
+
+**Verification** — `npx tsc --noEmit -p tsconfig.json` clean; `eval:replay` 44/44 (with `check-goal-writes`), `eval:orders` 41/41, `eval:radio` 29/29 with 0 silent deviations and 0 retargets, `eval-commands` 20/20, `eval:stuck` 18/18, `eval-commander --quick` 17/0 (both MP arenas: dense 26.6s, large 71.8s to first base contact), `eval-motion`, `eval-wall-clearance`, `eval-basewar` placement check.
+
+Four harnesses no longer inherit the map, because each one measures something calibrated to the dense maze and would silently change meaning: `duel()` in `eval-commander.ts` (the paired balance run asserts its walls equal `buildArena("dense")`), `fixture()` and `battle()` in `eval-basewar.ts` (the 30s attackBase window and the 26% side guard), and the mp-offline long-steer case in `eval-wall-clearance.ts`. They now pass `"dense"` explicitly.
+
+`eval-basewar --quick`'s "passive defence on both MP arenas" failed here at `dense/23: defence lost 5` (guard ≤2), scripts/eval-basewar.ts:405, and was left as a recorded signal. Respawns explain it: that check counted losses as drops in the living-hull count, so a hull that died, returned and died again was charged twice. It now counts hulls destroyed at least once — the cost a wreck mode used to charge — and reports respawns beside it, so the guard says what it always meant. Same seeds: dense/23 attackers 5 / defence 2 / 11 respawns, dense/411 4 / 2 / 13, large/23 3 / 0 / 2, large/411 4 / 2 / 4. Note the defence sits exactly on its ≤2 limit in three of the four cases; the margin is thin and the guard will need re-reading if the respawn delay moves.
+
+Batch, seed 1, Base War, share=clear, difficulty=normal, 30 Hz, 300s cap (not reached), rusher (blue) vs turtle (red), 40 matches each:
+
+| Map | rusher wins | length mean / median / min / max s | winner's own base HP | final base HP blue/red |
+| --- | --- | --- | --- | --- |
+| large (the new default) | 40/40 (100%) | 170.9 / 170.9 / 169.7 / 172.3 | 100.0% in all 40 | 100.0% / 0.0% |
+| dense | 40/40 (100%) | 165.4 / 168.8 / 156.3 / 178.8 | 100.0% in all 40 | 100.0% / 0.0% |
+
+Same shape on both maps that the previous step recorded: the turtle only issues `defend_base` (1.2 orders/match large, 2.2 dense) against the rusher's 34.7/34.1 `attack_base`, and the wall-backed apron means the winner never loses HP — so under rules where only a destroyed base wins, the passive doctrine cannot win at all. Recorded, not tuned, as instructed. Orders and kill counts differ from the older 20-match rows because respawns are live in this tree (7.0 blue respawns/match on large).
+
+## Slow respawning (2026-11-12)
+
+Dead hulls come back. No middle zone, no rate that moves yet — the point of this step is the clock, the return, and the one function the next step will bend.
+
+**Two numbers, one hook.** `RESPAWN = { delaySec: 25, protectionSec: 2 }` and `getRespawnRate(team)` live in `src/config/balance.ts` with every other gameplay number. `getRespawnRate` returns 1.0 for both sides and is called from exactly one place — `updateRespawns` multiplies `dt` by it — so zone control arrives by changing that function and nothing else. The rate is the only scale; the delay stays `RESPAWN.delaySec`.
+
+**Where it applies.** `isMpRules` only: Base War, Multiplayer · Offline, Multiplayer · Online. TDM / CTF / Heavy-Light still leave a wreck for good, so their wipe-and-wreck victories and their fixtures are untouched. The timer is armed in `applyDamage` — the single hull-damage choke point — and nowhere else, which is what keeps every harness that sets `alive = false` by hand honest: a hull killed without going through damage has no countdown and stays dead.
+
+**The return.** `respawnTank` in `src/game.ts` revives the same `Tank` object — same id, role and number — at `tank.spawnPos` with full HP, its team's spawn heading, `cooldown` 0, the nuke round warming up again from `nuke.warmupSec`, all order bookkeeping (route, drive track, stuck flag, report/debug progress, `killedBy`) cleared, and the order it was following dropped: it holds position at base until someone names a new one. `spawnPos` is written once by `spawnTeam` (`src/types.ts` gained three optional fields — `spawnPos`, `respawnLeft`, `spawnProtectionUntil` — optional so the hand-built Tank literals in `render.ts` and `ai-commander.ts` still compile).
+
+**Protection is a plain timer.** For `RESPAWN.protectionSec` after the hull appears, `applyDamage` returns before armour is read, so shells and the nuke blast do it no damage. Nothing cancels it early — not firing, not moving, not entering a base's gun line. Structures are unaffected: bases take damage through `applyBaseDamage`, which never sees the flag.
+
+**Victory rules survive, honestly.** `checkOutcome` still ends an MP match on a wipe, but a wipe now means the whole enemy company dead in the same instant; killing them one at a time no longer finishes anything. Base War was already base-only, and its comment that "respawns are the next step" is now true.
+
+**HUD.** `#respawn-hud` in the top bar (beside `#base-hp`) lists each of the local team's waiting hulls as `#3 NV 17s`, counting down, and hides when nobody is in the ground. It reads the exported selector `respawnQueue(world, team)` from `src/game.ts`; the per-frame path in `src/main.ts` never touches sim internals, and `sim/` stays DOM-free.
+
+**Netcode.** `respawnLeft` is carried in `NetTankSnap` (`src/net/protocol.ts`, encoded/decoded in `src/net/snapshot.ts`) so a guest can draw its own countdown; the host is authoritative and `spawnProtectionUntil` is not sent. The replay snapshot needs nothing: `captureReplaySnapshot` structured-clones the world, so all three fields ride along.
+
+**Batch metrics.** `src/sim/match.ts` counts respawns (dead → alive transitions, symmetric with the existing kill detection) and, every tick, the seconds each team has fewer than `spec.underStrengthAlive` living hulls. The threshold is 5 — one short of the six-hull company — and lives in `CONFIG.sim` in `src/config.ts` because it is a measurement definition, not a gameplay number. `summarize` exposes `deathsByTeam`, `respawns` and `underStrength` (seconds mean and share-of-match mean), `scripts/sim-matches.ts` prints them as a RESPAWN table with a `--under-strength N` knob, and the header states the rules the batch is running under.
+
+Verification — `npx tsc --noEmit -p tsconfig.json` clean. `eval:replay` **44/44** with `check-goal-writes` (three new checks: the countdown returns the hull whole to its own base with its type and number and survives a checkpoint/restore fork; protection blocks a lethal shell and expires, and the second death re-arms; the clock ticks at `dt × getRespawnRate(team)` for both teams). The new checks were falsified on purpose: with `getRespawnRate` stubbed to 2.0 while `updateRespawns` ignored it, two of the three failed and named the tick count; both edits reverted. `eval:radio` 29/29, `eval:orders` 41/41, `eval-commander --quick` 17/0, `eval-basewar --quick` 13 checks (its "passive defence" guard needed the death-counting fix described above), plus a headless player-path check that died the controlled hull: control switched to `blue-4`, the queue read `blue-1#1 25.0s`, the scout returned at tick 750 (25.00s) at its recorded spawn coordinates with 60/60 HP, `#1 scout`, 2.00s of protection left, and `switchToTank` took it back.
+
 
 ## How to run
 
@@ -287,10 +426,10 @@ Phrase buttons and the text box use the same order path as the mic. Use them whe
 Checks that exist (scripts are outside tsc; run with tsx):
 
 - `npm run eval:orders` — goal schema and offline gold sentences. This is `npm test`.
-- `npm run eval:replay` — `scripts/check-goal-writes.ts` plus 41 fixed-step lifecycle/determinism checks.
+- `npm run eval:replay` — `scripts/check-goal-writes.ts` plus 44 fixed-step lifecycle/determinism checks, including the three respawn ones.
 - `npm run eval:radio` — 29 checks: 20 scripted utterances with zero silent deviations or retargets, dedupe, failure reset, silent chatter, synchronous standby under a delayed fake parser, coalesced and rate-limited copies, order replacements that always speak, and world-local command records.
 - `npm run eval:commander` — scripted-commander invariants; without `--quick` it also runs the 40 paired balance matches.
-- `npm run sim -- --matches 50 --seed 1` — headless batch measurement of full scripted-vs-scripted Base War matches. No rendering, fixed step, no pacing. Prints win rate by side, match length, kills and deaths by hull type, middle-area time, base HP over time, orders applied and orders by intent; writes `{params, summary, matches}` to `logs/sim-<blue>-vs-<red>-<mode>-<matches>mx<seed>.json`. `--blue`/`--red` take `tactical|default|rusher|turtle`; `--max-length` is the over-length draw cap; `--help` lists the rest. It measures, it does not tune — every knob only changes what is being measured.
+- `npm run sim -- --matches 50 --seed 1` — headless batch measurement of full scripted-vs-scripted Base War matches. No rendering, fixed step, no pacing. Prints win rate by side, match length, kills and deaths by hull type, a pooled per-type ledger (hulls, kills, deaths, K/D, deaths per hull) with a note for any kill that has no hull type, the RESPAWN row (deaths, respawns and time below `--under-strength` living hulls per team, with a share of match), middle-area time, base HP over time, orders applied and orders by intent; writes `{params, summary, matches}` to `logs/sim-<blue>-vs-<red>-<mode>-<map>-<matches>mx<seed>.json`. `--blue`/`--red` take `tactical|default|rusher|turtle` (`default` is the alias of `tactical`); `--map` (alias `--arena`) picks the map, default `CONFIG.arenaDefault` = `large`, and the header prints it; `--max-length` is the over-length draw cap; `--under-strength N` sets the living-hull threshold (default `CONFIG.sim.underStrengthAlive` = 5, one short of the six-hull company); `--help` lists the rest. It measures, it does not tune — every knob only changes what is being measured.
 - `npx tsx scripts/eval-commands.ts`
 - `npx tsx scripts/eval-routes.ts` — covered corridor beats the gap an enemy is watching.
 - `npx tsx scripts/eval-motion.ts` — open-lane move does not reverse; a move past an enemy fires without leaving the path. Its shoot-past case pins the committed polyline so it measures the motor, not `eval-routes`' danger-aware route choice.
@@ -302,7 +441,7 @@ Checks that exist (scripts are outside tsc; run with tsx):
 
 `tsconfig` includes `src` only, `noUnusedLocals` on. Do not reference `process` from `src`. PowerShell has no `&&`. On this machine the sandbox often cannot see the workspace; shell commands need full permissions. npm may warn `Unknown env config devdir`; ignore it.
 
-A normal/TDM match that kills every red tank sets outcome to win and `stepWorld` stops. Base War also ends when either base is destroyed, with simultaneous victories ruled a draw and a 600s timeout resolved by base HP percent then surviving tanks. Headless Base War tests must account for both destruction and elimination; other headless matches must leave one red alive.
+A normal/TDM match that kills every red tank sets outcome to win and `stepWorld` stops. Base War ends only when a base is destroyed — simultaneous victories rule a draw, a 600s timeout resolves by base HP percent then surviving tanks — and emptying the enemy side changes nothing but who can still shoot. Headless Base War tests must expect a match to keep running after an elimination; other headless matches must leave one red alive. Respawns change what "every red tank" means: under MP rules a dead hull is only in the ground for `RESPAWN.delaySec`, so the wipe victory now needs the whole enemy company down in the same instant, and a hull killed one at a time never finishes anything. Tests that want a wipe still set `alive = false` directly — only `applyDamage` arms the countdown, so a hand-killed hull stays dead.
 
 ## Code map
 
@@ -310,7 +449,8 @@ A normal/TDM match that kills every red tank sets outcome to win and `stepWorld`
 | --- | --- |
 | `src/main.ts` | UI, input, mode menu, LLM probe, voice, online client wiring |
 | `src/game.ts` | World, shooting, damage, win check, `sendOrder` |
-| `src/config.ts` | Every tunable. Change feel here before rewriting brains |
+| `src/config.ts` | Arenas, modes, AI and match rules. Tank numbers are not here |
+| `src/config/balance.ts` | The tank-type table: stats, armour bands, repair, nuke, per-mode loadouts. AGENTS.md's one gameplay-number file |
 | `src/goals.ts` | The goal enum. Parsers and brains must stay inside it |
 | `src/orders.ts` | Phrase reader, keyword reader, LLM prompt, sanitize |
 | `src/command-schema.ts` | Shared intent tools: attack, cover, move_to, flank, surround |
@@ -326,7 +466,8 @@ A normal/TDM match that kills every red tank sets outcome to win and `stepWorld`
 | `src/ai-commander.ts` | Scripted opponent commander and its belief view. `profile` selects `tactical` (the shipped doctrine), `rusher` (all bots at the enemy base) or `turtle` (garrison the own base, never attacks) |
 | `src/sim/match.ts`, `src/sim/summary.ts` | Headless batch measurement: one full match → `MatchRecord`, batch → `Summary`. Reads world state only, never renders |
 | `src/motion.ts` | Polyline follower |
-| `src/arena.ts`, `src/arena-layouts.ts`, `src/arena-routes.ts` | Walls, collision, two-route repair. The route repair is not the bot planner |
+| `src/arena.ts`, `src/arena-layouts.ts`, `src/arena-routes.ts` | Walls, collision, two-route repair. The route repair is not the bot planner. `arena-layouts.ts` also carries `AUTHORED_BASES`, the Base War `{ tile, wall }` each hand-authored map declares |
+| `src/arena-bases.ts` | Base War off one declared placement: `baseWarMap(arena)` mirrors red, derives spawns, garrison posts, the apron clear and the base walls |
 | `src/spawn.ts` | Teams, roles, hold-at-spawn for MP |
 | `src/belief.ts`, `src/fog.ts` | Shared contacts and vision. MP is no-fog, so belief matters for TDM |
 | `src/render.ts` | Canvas. Online red view is rotated 180° |

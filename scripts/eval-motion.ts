@@ -86,7 +86,7 @@ function runMove(opts: {
   let firstStep = 0;
   let sawShootOnPath = false;
   let replaced = false;
-  const frames = Math.ceil(8 / DT);
+  const frames = Math.ceil((800 / speed + 2) / DT);
   for (let i = 0; i < frames; i++) {
     const prevX = bot.x;
     const prevY = bot.y;
@@ -279,6 +279,11 @@ assert.equal(past.source, "player");
     source: "player",
     params: { x: 760, y: 220 },
   });
+  const speed = CONFIG.roles[bot.role].speed;
+  // The old thresholds were 72% and 41% of what the 130 px/s hull could cover
+  // in this window; the same sliding efficiency is what is being asserted,
+  // whatever hull the loadout put in the slot.
+  const budget = 90 * DT * speed;
   let path = 0;
   let flips = 0;
   let prevDx = 0;
@@ -304,8 +309,8 @@ assert.equal(past.source, "player");
     }
   }
   const net = Math.hypot(bot.x - x0, bot.y - y0);
-  assert.ok(net > 80, `wall graze barely moved, net ${net.toFixed(0)}`);
-  assert.ok(path > 140, `wall graze crawled, path ${path.toFixed(0)}`);
+  assert.ok(net > budget * 0.41, `wall graze barely moved, net ${net.toFixed(0)} of ${budget.toFixed(0)}`);
+  assert.ok(path > budget * 0.72, `wall graze crawled, path ${path.toFixed(0)} of ${budget.toFixed(0)}`);
   assert.ok(flips < 4, `wall graze vibrated on ${flips} frames`);
 }
 

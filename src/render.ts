@@ -1,4 +1,4 @@
-import { CONFIG, homeTerritoryBounds, isMpOnline } from "./config";
+import { CONFIG, homeTerritoryBounds, isMpOnline, type Role } from "./config";
 import { cardinalAngle, dist, eaglePosition } from "./arena";
 import { beliefFor } from "./belief";
 import {
@@ -614,6 +614,16 @@ function drawCommandShine(
   ctx.restore();
 }
 
+/** The two-letter type mark painted at the hull's corner, tinted per type. */
+const TYPE_MARK_COLOR: Record<Role, string> = {
+  scout: "#d8f080",
+  heavy: "#ffb060",
+  artillery: "#c090ff",
+  engineer: "#80e0d0",
+  nuke: "#ff7070",
+  shooter: "#ffe060",
+};
+
 function drawTank(
   ctx: CanvasRenderingContext2D,
   world: WorldState,
@@ -621,7 +631,6 @@ function drawTank(
   friendly: boolean,
   commanded: boolean,
 ): void {
-  const isScout = t.role === "scout";
   const isHeavy = t.role === "heavy";
   const body = commanded ? "#f0c020" : tankBodyColor(t, friendly);
   const tread = commanded ? "#8a5a10" : friendly ? "#4a3810" : "#505058";
@@ -679,8 +688,8 @@ function drawTank(
   ctx.fillStyle = "#fffef0";
   ctx.fillText(label, 0, 1);
 
-  const mark = isScout ? "S" : isHeavy ? "H" : "G";
-  ctx.fillStyle = isScout ? "#d8f080" : isHeavy ? "#ffb060" : "#ffe060";
+  const mark = CONFIG.roles[t.role].shortCode;
+  ctx.fillStyle = TYPE_MARK_COLOR[t.role];
   ctx.font = "bold 10px monospace";
   ctx.textBaseline = "alphabetic";
   ctx.strokeStyle = "#0a0804";
@@ -744,6 +753,7 @@ function drawDeathHusk(ctx: CanvasRenderingContext2D, fx: DeathFx): void {
     maxHp: 1,
     alive: false,
     cooldown: 0,
+    nukeCooldown: 0,
     ...goalState({ kind: "idle" }),
     standStillTimer: 0,
     reportProgress: 0,
@@ -837,7 +847,7 @@ function drawFog(ctx: CanvasRenderingContext2D, world: WorldState): void {
   const viewers = liveVisionViewers(world);
 
   for (const v of viewers) {
-    const rad = CONFIG.roles[v.role].visionRadius;
+    const rad = CONFIG.roles[v.role].visionRange;
     const minC = Math.max(0, Math.floor((v.x - rad) / cell));
     const maxC = Math.min(world.fogCols - 1, Math.floor((v.x + rad) / cell));
     const minR = Math.max(0, Math.floor((v.y - rad) / cell));
@@ -938,7 +948,7 @@ function shouldShowHostile(world: WorldState, x: number, y: number): boolean {
 
 function isUnderLiveVision(world: WorldState, x: number, y: number): boolean {
   for (const v of liveVisionViewers(world)) {
-    if (dist(v.x, v.y, x, y) <= CONFIG.roles[v.role].visionRadius) return true;
+    if (dist(v.x, v.y, x, y) <= CONFIG.roles[v.role].visionRange) return true;
   }
   return false;
 }

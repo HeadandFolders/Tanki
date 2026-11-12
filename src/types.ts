@@ -84,6 +84,8 @@ export interface Tank {
   maxHp: number;
   alive: boolean;
   cooldown: number;
+  /** Seconds until this hull may launch another nuke; 0 for types that have none. */
+  nukeCooldown: number;
   readonly goal: Readonly<Goal> & { readonly params?: Readonly<NonNullable<Goal["params"]>> };
   orderStack?: InterruptStack;
   routeCommit?: RouteCommit;
@@ -99,6 +101,14 @@ export interface Tank {
   lastKnownPos: Vec2;
   isCodeCarrier: boolean;
   lastShotAt: number;
+  /** Hull that landed the killing blow, once this tank is dead. Kill attribution for the batch report. */
+  killedBy?: string;
+  /** The point this hull was fielded at, which is where it respawns. */
+  spawnPos?: Vec2;
+  /** Seconds left before a destroyed hull returns to `spawnPos`; absent once it is back or if the mode has no respawns. */
+  respawnLeft?: number;
+  /** Until this world time, incoming hull damage is ignored. Set when a respawned hull appears. */
+  spawnProtectionUntil?: number;
 }
 
 export interface Projectile {
@@ -112,6 +122,11 @@ export interface Projectile {
   damage: number;
   life: number;
   fromShooter: boolean;
+  /**
+   * Nuke carrier round. It detonates wherever it dies — on a hull, on a base,
+   * against a wall or at the end of its flight — and the blast is what hurts.
+   */
+  nuke?: { blastRadius: number; damageVsTank: number; damageVsBase: number };
 }
 
 export interface Wreck {
@@ -164,6 +179,21 @@ export interface Wall {
   h: number;
   kind: WallKind;
   baseTeam?: TeamId;
+}
+
+/** Tile of the 3x3 base footprint's top-left corner. */
+export interface BaseTile {
+  tileX: number;
+  tileY: number;
+}
+
+/** Side of the map the base backs onto; the other three sides are open. */
+export type WallSide = "north" | "south" | "east" | "west";
+
+/** What a map declares about its base: where it sits and what wall backs it. */
+export interface BasePlacement {
+  tile: BaseTile;
+  wall: WallSide;
 }
 
 export interface BaseState {

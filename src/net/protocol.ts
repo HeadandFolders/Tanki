@@ -24,6 +24,8 @@ export interface NetTankSnap {
   hp: number;
   maxHp: number;
   alive: boolean;
+  /** Seconds until a destroyed hull returns to base; null when it is alive or has no timer. */
+  respawnLeft?: number | null;
   goal: string;
   goalSource?: string;
 }

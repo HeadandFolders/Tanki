@@ -15,6 +15,7 @@ import {
 import { intentsToOrders } from "../src/command-resolver.ts";
 import { describeIntent, parseIntent, type CommandIntent } from "../src/command-schema.ts";
 import { CONFIG, type ShareMode } from "../src/config.ts";
+import { baseReachOf, LOADOUTS } from "../src/config/balance.ts";
 import { createWorld, startMatch, stepWorld, type InputState } from "../src/game.ts";
 import { restoreGoal } from "../src/interrupt-stack.ts";
 import { createRandom, nextRandom } from "../src/random.ts";
@@ -220,7 +221,7 @@ function lockedFixture(team: TeamId): WorldState {
 
 function invariants(): void {
   console.log("Commander invariants (fixed 1/30 second steps)");
-  check("default six mirrored gunners, normal commander, off leaves spawn holds", () => {
+  check("default six mirrored company hulls, normal commander, off leaves spawn holds", () => {
     const world = createWorld("clear", "mp-offline", "normal", 17);
     assert.equal(commander(world, "red").difficulty, "normal");
     assert.equal(world.commanders?.blue, undefined);
@@ -232,7 +233,8 @@ function invariants(): void {
     assert.equal(friends(world, "blue").length, 6);
     assert.equal(friends(world, "red").length, 6);
     assert.deepEqual(stats("blue"), stats("red"));
-    assert.ok(world.tanks.every((tank) => tank.role === "shooter" && tank.hp === CONFIG.roles.shooter.maxHp));
+    assert.deepEqual(friends(world, "blue").map((tank) => tank.role), LOADOUTS.company);
+    assert.ok(world.tanks.every((tank) => tank.hp === CONFIG.roles[tank.role].maxHealth));
     for (const difficulty of DIFFICULTIES) {
       const variant = createWorld("clear", "mp-offline", "normal", 17, difficulty);
       assert.equal(commander(variant, "red").difficulty, difficulty);
@@ -506,7 +508,10 @@ function invariants(): void {
   });
 
   check("red push reaches gun range of the blue base on both MP arenas", () => {
-    const limits: Record<string, number> = { dense: 30, large: 60 };
+    // A stall guard, not a pace target: three of the six company hulls drive at
+    // 72-82 px/s where every MP hull used to do 130, so first base contact on
+    // the large arena lands noticeably later without anything being stuck.
+    const limits: Record<string, number> = { dense: 30, large: 75 };
     for (const arena of ["dense", "large"] as const) {
       let slowest = 0;
       for (const seed of [23, 411]) {
@@ -518,7 +523,9 @@ function invariants(): void {
         for (let tick = 0; tick < 90 / DT && arrived < 0; tick++) {
           stepWorld(world, DT, INPUT);
           if (world.tanks.some((tank) => tank.team === "red" && tank.alive &&
-            dist(tank.x, tank.y, base.x, base.y) <= CONFIG.mpOffline.shootRange)) {
+            // "gun range of the base" is now the hull's own reach, the same
+            // number game.ts uses to let it damage a base.
+            dist(tank.x, tank.y, base.x, base.y) <= baseReachOf(tank.role))) {
             arrived = world.time;
           }
         }
@@ -574,7 +581,7 @@ function fogInvariant(share: ShareMode, team: TeamId): void {
     for (const [i, foe] of foes.entries()) {
       foe.x = 1050 + i * 20;
       foe.y = 100;
-      foe.hp = foe.maxHp = CONFIG.roles.shooter.maxHp;
+      foe.hp = foe.maxHp = CONFIG.roles.shooter.maxHealth;
     }
     // First target vanishes, then returns. Second target arrives 0.2s later.
     if (tick < 33 || tick >= 45) { foes[0]!.x = 330; foes[0]!.y = 300; }
@@ -670,8 +677,9 @@ function assertSnapshot(tank: Tank, contact: TeamContact): void {
   { x: contact.x, y: contact.y, ...contact.observed });
 }
 
+/** The paired balance harness runs the dense map by name, not by the world default. */
 function duel(worldSeed: number, blueSeed: number, redSeed: number): WorldState {
-  const world = createWorld("clear", "mp-offline", "normal", worldSeed, "normal");
+  const world = createWorld("clear", "mp-offline", "normal", worldSeed, "normal", "dense");
   setCommander(world, "blue", "normal", blueSeed);
   setCommander(world, "red", "normal", redSeed);
   startMatch(world);
@@ -816,7 +824,7 @@ function balance(): void {
   console.log("Adjudication: first team reduced to one survivor loses, immediately within that physics tick.");
   const rows: MatchResult[] = [];
   const dense = buildArena("dense");
-  assert.ok(CONFIG.mpOffline.denseArena && dense.length > 0);
+  assert.ok(dense.length > 0);
   assert.equal(CONFIG.matchDurationSec, SECONDS, "balance requires the unmodified five-minute match cap");
   for (let seed = 0; seed < 20; seed++) {
     // Swap only commander seeds, preserving the map and physical spawn positions.

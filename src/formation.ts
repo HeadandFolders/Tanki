@@ -4,7 +4,7 @@
  * slot is a free tile, never inside a wall.
  */
 import { circleHitsWall, dist } from "./arena";
-import { CONFIG, isMpRules } from "./config";
+import { CONFIG } from "./config";
 import type { FlankSide } from "./command-schema";
 import type { Tank, Vec2, Wall, WorldState } from "./types";
 
@@ -15,11 +15,8 @@ export interface Slot {
 }
 
 /** The distance a tank can shoot from: the same range the AI fires at. */
-export function gunRange(tank: Tank, world: WorldState): number {
-  return Math.max(
-    CONFIG.roles[tank.role].fightRange,
-    isMpRules(world.gameMode) ? CONFIG.mpOffline.shootRange : 0,
-  );
+export function gunRange(tank: Tank): number {
+  return CONFIG.roles[tank.role].range;
 }
 
 /** Stand slightly inside gun range so the shot is in reach on arrival. */
@@ -42,7 +39,7 @@ export function surroundSlots(
     n === 1
       ? [approach]
       : Array.from({ length: n }, (_, i) => approach + Math.PI / 2 + (i * 2 * Math.PI) / n);
-  const radius = Math.min(...tanks.map((t) => gunRange(t, world))) * RANGE_FRACTION;
+  const radius = Math.min(...tanks.map((t) => gunRange(t))) * RANGE_FRACTION;
   const points = angles.map((a) => ({
     x: target.x + Math.cos(a) * radius,
     y: target.y + Math.sin(a) * radius,
@@ -73,7 +70,7 @@ export function flankSlots(
   const sign = side === "right" ? 1 : -1;
   const nx = -Math.sin(heading) * sign;
   const ny = Math.cos(heading) * sign;
-  const radius = Math.min(...tanks.map((t) => gunRange(t, world))) * RANGE_FRACTION;
+  const radius = Math.min(...tanks.map((t) => gunRange(t))) * RANGE_FRACTION;
   const spacing = CONFIG.ai.formationSpacing;
   const n = tanks.length;
   const points = Array.from({ length: n }, (_, i) => {

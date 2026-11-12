@@ -1,7 +1,7 @@
 import { ensureTwoRoutes, wallGrid } from "./arena-routes";
-import { CONFIG, setWorldSize } from "./config";
+import { BASE_FOOTPRINT, CONFIG, setWorldSize } from "./config";
 import { createRandom, nextRandom } from "./random";
-import type { TeamId, Wall } from "./types";
+import type { BasePlacement, TeamId, Wall } from "./types";
 
 /**
  * Generated 144x90 arena. A hand-authored skeleton (corner bases, three
@@ -44,6 +44,19 @@ export const LARGE_BASE_TILES: Record<
 > = {
   blue: { x0: 2, y0: 72, x1: 31, y1: 87 },
   red: { x0: 112, y0: 2, x1: 141, y1: 17 },
+};
+
+/**
+ * The generator seats each base on its home border, inside the pocket it walls
+ * in, so the structure has three open faces. Only blue is declared; red is the
+ * point mirror (arena-bases.ts does the mirroring).
+ */
+export const LARGE_BASE: BasePlacement = {
+  tile: {
+    tileX: LARGE_BASE_TILES.blue.x0 + 4,
+    tileY: CONFIG.largeArena.rows - BORDER_TILES - BASE_FOOTPRINT,
+  },
+  wall: "south",
 };
 
 interface Grid {

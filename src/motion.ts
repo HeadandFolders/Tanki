@@ -1,5 +1,7 @@
 import { CONFIG } from "./config";
+import { turnRateOf } from "./config/balance";
 import { angleTo, circleHitsWall, dist, normalizeAngle, segmentHitsWall } from "./arena";
+import type { Role } from "./config";
 import type { Wall } from "./types";
 
 /**
@@ -70,7 +72,7 @@ export interface DriveOrder {
  * oscillation: bias the steer instead of reversing.
  */
 export function driveOrder(opts: {
-  tank: { driveTrack?: DriveTrack };
+  tank: { driveTrack?: DriveTrack; role: Role };
   orderKey: string;
   points: { x: number; y: number }[];
   x: number;
@@ -144,7 +146,7 @@ export function driveOrder(opts: {
     const side = cross === 0 ? 1 : Math.sign(cross);
     const turn = Math.min(
       OSCILLATION_STEER,
-      CONFIG.tankTurnRate * 2.4 * Math.max(opts.dt, 0),
+      turnRateOf(opts.tank.role) * 2.4 * Math.max(opts.dt, 0),
     );
     const biased = normalizeAngle(track.travel + side * Math.max(turn, 0));
     const probe = opts.speed * Math.max(0, opts.dt);

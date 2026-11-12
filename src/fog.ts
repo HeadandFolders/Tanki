@@ -80,7 +80,7 @@ export function canSeeTank(
   walls: Wall[],
 ): boolean {
   if (!viewer.alive || !target.alive) return false;
-  const radius = CONFIG.roles[viewer.role].visionRadius;
+  const radius = CONFIG.roles[viewer.role].visionRange;
   const d = Math.hypot(viewer.x - target.x, viewer.y - target.y);
   if (d > radius) return false;
   return !segmentHitsWall(viewer.x, viewer.y, target.x, target.y, walls);
@@ -102,7 +102,7 @@ export function captureVisibleCells(
   tank: Tank,
 ): { c: number; r: number }[] {
   const cell = CONFIG.fog.cellSize;
-  const radius = CONFIG.roles[tank.role].visionRadius;
+  const radius = CONFIG.roles[tank.role].visionRange;
   const minC = Math.max(0, Math.floor((tank.x - radius) / cell));
   const maxC = Math.min(world.fogCols - 1, Math.floor((tank.x + radius) / cell));
   const minR = Math.max(0, Math.floor((tank.y - radius) / cell));

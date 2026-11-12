@@ -102,7 +102,7 @@ assert.ok(checked >= 3, "checked dense routes");
 
 // Multiplayer Offline drives the same cleared routes. A long steer chord
 // must not spend the body margin against the dense-arena walls.
-const world = createWorld("clear", "mp-offline", "normal", 3, "off");
+const world = createWorld("clear", "mp-offline", "normal", 3, "off", "dense");
 assert.equal(world.gameMode, "mp-offline");
 world.outcome = "playing";
 const bot = world.tanks.find((t) => t.team === "blue" && t.id !== world.controlledId)!;

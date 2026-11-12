@@ -1,4 +1,5 @@
 import type { WorldState } from "../types";
+import type { Role } from "../config";
 import { restoreGoal } from "../interrupt-stack";
 import type { NetStateSnap } from "./protocol";
 
@@ -30,6 +31,7 @@ export function worldToSnap(world: WorldState): NetStateSnap {
       hp: Math.round(t.hp),
       maxHp: t.maxHp,
       alive: t.alive,
+      respawnLeft: t.respawnLeft ?? null,
       goal: t.goal.kind,
       goalSource: t.goal.source,
     })),
@@ -90,6 +92,7 @@ export function applySnap(
     t.hp = s.hp;
     t.maxHp = s.maxHp;
     t.alive = s.alive;
+    t.respawnLeft = s.respawnLeft ?? undefined;
     restoreGoal(t, {
       kind: s.goal as typeof t.goal.kind,
       source: (s.goalSource as "player" | "system" | undefined) ?? t.goal.source,
@@ -115,7 +118,7 @@ export function applySnap(
     id: d.id,
     team: d.team,
     tankNumber: d.tankNumber,
-    role: d.role as "scout" | "shooter" | "heavy",
+    role: d.role as Role,
     x: d.x,
     y: d.y,
     angle: d.angle,

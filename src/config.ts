@@ -1,3 +1,6 @@
+/** Tank stats, armour, repairs, nukes and per-mode loadouts live in config/balance. */
+import { BASE_HP, TANK_TYPES } from "./config/balance";
+
 /** Arena ids. "large" is the generated 144x90 map; the others are 80x50. */
 export type ArenaId = "reference" | "standard" | "dense" | "large";
 
@@ -8,6 +11,9 @@ export const ARENA_SPECS: Record<ArenaId, { cols: number; rows: number }> = {
   large: { cols: 144, rows: 90 },
 };
 
+/** A base occupies a 3x3 block of tiles. */
+export const BASE_FOOTPRINT = 3;
+
 /** Current world extent in px. Set by buildArena(); read through CONFIG getters. */
 const WORLD = { width: 1280, height: 800 };
 
@@ -16,7 +22,7 @@ export function setWorldSize(cols: number, rows: number): void {
   WORLD.height = rows * CONFIG.tileSize;
 }
 
-/** All tunable gameplay values live here. */
+/** Every gameplay number that is not a tank stat lives here; tank stats and base HP live in config/balance.ts. */
 export const CONFIG = {
   /** World width in px (arena extent, not the screen). */
   get canvasWidth(): number {
@@ -33,7 +39,8 @@ export const CONFIG = {
   tileSize: 16,
   matchDurationSec: 5 * 60,
   matchTimeLimitSec: 600,
-  baseHp: 2000,
+  /** Base War structure HP; the number itself is in config/balance.ts. */
+  baseHp: BASE_HP,
   baseDamageMultiplier: 0.25,
   baseHitFlashSec: 0.12,
   baseDestructionSec: 0.9,
@@ -45,53 +52,12 @@ export const CONFIG = {
   wallThickness: 16,
 
   tankRadius: 11,
-  tankTurnRate: 4.2, // rad/s
   separationForce: 90,
   /** Drawn tank sprite scale (pixels per pattern cell) */
   spriteScale: 2,
 
-  roles: {
-    scout: {
-      count: 2,
-      speed: 95,
-      maxHp: 70,
-      visionRadius: 165,
-      debugRate: 0.55,
-      canShoot: true,
-      damage: 16,
-      fireCooldown: 0.22,
-      projectileSpeed: 420,
-      projectileLife: 0.85,
-      fightRange: 130,
-    },
-    shooter: {
-      count: 4,
-      speed: 130,
-      maxHp: 110,
-      visionRadius: 95,
-      debugRate: 0.18,
-      canShoot: true,
-      damage: 22,
-      fireCooldown: 0.16,
-      projectileSpeed: 480,
-      projectileLife: 0.9,
-      fightRange: 95,
-    },
-    /** Heavy/Light mode. Same vision as a gunner; slower shot, thicker hull, harder hit. */
-    heavy: {
-      count: 3,
-      speed: 130,
-      maxHp: 220,
-      visionRadius: 95,
-      debugRate: 0.12,
-      canShoot: true,
-      damage: 46,
-      fireCooldown: 0.72,
-      projectileSpeed: 420,
-      projectileLife: 1.05,
-      fightRange: 95,
-    },
-  },
+  /** Every hull's stats by type. See src/config/balance.ts for the table itself. */
+  roles: TANK_TYPES,
 
   debugRange: 42,
   debugStandStillSpeed: 12,
@@ -103,6 +69,12 @@ export const CONFIG = {
   bulletRadius: 3,
   friendlyFire: false,
 
+  /**
+   * The map used whenever one is not chosen: MP and Base War worlds, the
+   * batch runner and a LAN host all fall back to this. Every other map id stays
+   * selectable by name.
+   */
+  arenaDefault: "large" as ArenaId,
   /** No-fog TDM is the playtest default (full map + enemies always visible). */
   shareModeDefault: "clear" as ShareMode,
   /** Team Deathmatch is the rules default; CTF = Capture the Code. */
@@ -112,7 +84,7 @@ export const CONFIG = {
 
   /**
    * Multiplayer · Offline — local/bot TDM, no fog, gunners only, hold-until-ordered.
-   * Tunables for death blink VFX, panic escape, denser arena.
+   * Tunables for death blink VFX and panic escape; the map itself is CONFIG.arenaDefault.
    */
   mpOffline: {
     /** Blink on/off cycles before the husk is removed (no wreck). */
@@ -136,11 +108,10 @@ export const CONFIG = {
     escapeDistance: 130,
     /**
      * Open fire on any enemy this close when the shot line is clear.
-     * Longer than gunner fightRange so a tank passing a corridor actually shoots.
+     * Mirrors the Gunner's own gun reach; each hull otherwise shoots to its
+     * own `range` in the balance table.
      */
-    shootRange: 220,
-    /** Use denser choke geometry for this mode's arena. */
-    denseArena: true,
+    shootRange: TANK_TYPES.shooter.range,
   },
 
   /**
@@ -165,6 +136,12 @@ export const CONFIG = {
     middleBandFraction: 0.4,
     /** Base HP is sampled every this many match seconds. */
     baseSampleSec: 5,
+    /**
+     * A team with fewer living hulls than this is "under strength", and the
+     * batch times how long it stays there. Six hulls a side, so one respawn
+     * timer running is not enough to trip it.
+     */
+    underStrengthAlive: 5,
   },
 
   /** Two-device LAN multiplayer (WebSocket relay + host-authoritative sim). */
@@ -175,8 +152,6 @@ export const CONFIG = {
     snapshotHz: 18,
     /** Default room when none typed. */
     defaultRoom: "TANK",
-    /** Arena offered for MP matches by default. */
-    arenaDefault: "dense" as ArenaId,
   },
 
   /** Follow camera (world larger than the screen). */
@@ -452,8 +427,9 @@ export function isMpOnline(mode: GameMode): boolean {
 }
 
 /**
- * Shared Multiplayer ruleset: no fog, all gunners, blink deaths, denser map,
- * hold-until-ordered teammates (offline bots or online humans+bots).
+ * Shared Multiplayer ruleset: no fog, the five-type company loadout, blink
+ * deaths, the default maze map, hold-until-ordered teammates (offline bots or online
+ * humans+bots).
  */
 export function isMpRules(mode: GameMode): boolean {
   return mode === "mp-offline" || mode === "mp-online" || mode === "base-war";

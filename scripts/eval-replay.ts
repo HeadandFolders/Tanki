@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { circleHitsWall } from "../src/arena";
 import { createBaseStates } from "../src/arena-bases";
 import { CONFIG, homeTerritoryBounds } from "../src/config";
-import { createWorld, startMatch } from "../src/game";
+import { getRespawnRate, rawDamageFor, RESPAWN, TANK_TYPES } from "../src/config/balance";
+import { createWorld, respawnQueue, startMatch } from "../src/game";
 import { canSeeTank } from "../src/fog";
 import { advanceHpInterrupt, assignOrder, createInterruptStack, restoreGoal, stackFor, updateInterruptStack } from "../src/interrupt-stack";
 import { createRandom, nextRandom } from "../src/random";
@@ -53,9 +54,20 @@ function fixture(hz: ReplayHz, lowHp = false): ReplayRecording {
     }
   }
   if (lowHp) {
+    const prey = world.tanks.find((t) => t.id === "blue-2")!;
+    // The hp-retreat cycle this fixture feeds is a couple of reloads long, so
+    // it is timed against the baseline gunner: a 260 HP heavy crawls home at
+    // 78 px/s and is still out of its own gun reach when the retreat re-latches.
+    // Which hull fills slot 2 is the batch runner's question, not this one.
+    prey.role = "shooter";
+    prey.maxHp = prey.hp = TANK_TYPES.shooter.maxHealth;
     world.projectiles.push({
       id: "injury", team: "red", ownerId: "red-2", x: 300, y: 400,
-      vx: 0, vy: 0, damage: 80, life: 1, fromShooter: true,
+      vx: 0, vy: 0, life: 1, fromShooter: true,
+      // Sized off the table: it leaves the hull in slot 2 at half the retreat
+      // threshold, whatever that hull's HP and side armour happen to be.
+      damage: rawDamageFor(prey.role, "side",
+        prey.maxHp * (1 - CONFIG.ai.retreatHpFraction * 0.5)),
     });
   }
   startMatch(world);
@@ -69,6 +81,31 @@ function fixture(hz: ReplayHz, lowHp = false): ReplayRecording {
 
 function bot(runner: ReplayRunner): Tank {
   return runner.world.tanks.find((t) => t.id === "blue-2")!;
+}
+
+/**
+ * A shell placed on the victim's own hull. Damage is deliberately four times
+ * the hull's HP: the armour band a stationary shell resolves to depends on
+ * where the tank happens to be facing, and these checks are about the respawn
+ * rules, not about which plate the round lands on.
+ */
+function shootHull(world: WorldState, victimId: string, ownerId: string, id: string): void {
+  const victim = world.tanks.find((t) => t.id === victimId)!;
+  world.projectiles.push({
+    id, team: victim.team === "blue" ? "red" : "blue", ownerId,
+    x: victim.x, y: victim.y, vx: 0, vy: 0,
+    damage: victim.maxHp * 4, life: 1, fromShooter: true,
+  });
+}
+
+/** Steps until the hull is back on the field; the loop bound is the failure case. */
+function stepsUntilBack(runner: ReplayRunner, tankId: string, hz: number): number {
+  let steps = 0;
+  while (!runner.world.tanks.find((t) => t.id === tankId)!.alive) {
+    if (steps++ > 60 * hz) throw new Error(`${tankId} never returned from the dead`);
+    runner.step();
+  }
+  return steps;
 }
 
 function assertSpoken(world: WorldState): void {
@@ -629,6 +666,105 @@ try {
         assert.equal(a.world.deathFxSeq, 2);
       }
     }
+  });
+
+  check("dead hull counts down, then returns whole to its own base with its type and number", () => {
+    const hz = 30;
+    const recording = fixture(hz);
+    recording.snapshot.stacks = {};
+    recording.commands = [];
+    shootHull(recording.snapshot.world, "red-2", "blue-1", "kill-red-2");
+    const runner = new ReplayRunner(recording);
+    runner.step();
+    const hull = runner.world.tanks.find((t) => t.id === "red-2")!;
+    assert.equal(hull.alive, false);
+    assert.equal(hull.respawnLeft, RESPAWN.delaySec, "countdown did not start at the configured delay");
+    assert.deepEqual(respawnQueue(runner.world, "red").map((q) => q.tank.id), ["red-2"]);
+    assert.equal(respawnQueue(runner.world, "blue").length, 0, "a hull never fielded should not queue");
+    const role = hull.role;
+    const number = hull.number;
+    const home = { ...hull.spawnPos! };
+
+    runner.run(150);
+    const midway = jsonCopy(runner.checkpoint());
+    const stepsAfter = stepsUntilBack(runner, "red-2", hz);
+    assert.ok(
+      Math.abs((150 + stepsAfter) / hz - RESPAWN.delaySec / getRespawnRate("red")) <= 1 / hz,
+      `returned after ${150 + stepsAfter} ticks, expected ~${(RESPAWN.delaySec / getRespawnRate("red")) * hz}`,
+    );
+    const fork = new ReplayRunner(midway);
+    assert.equal(stepsUntilBack(fork, "red-2", hz), stepsAfter, "restored countdown ran differently");
+    assert.deepEqual(jsonCopy(fork.checkpoint()), jsonCopy(runner.checkpoint()));
+
+    assert.equal(hull.alive, true);
+    assert.equal(hull.respawnLeft, undefined);
+    assert.equal(hull.role, role, "respawn changed the hull type");
+    assert.equal(hull.number, number, "respawn changed the hull number");
+    assert.equal(hull.hp, hull.maxHp);
+    assert.ok(Math.abs(hull.x - home.x) <= 1 && Math.abs(hull.y - home.y) <= 1, "returned away from its own base");
+    assert.equal(respawnQueue(runner.world, "red").length, 0, "returned hull still counted down");
+    assert.equal(hull.goal.kind, "holdPosition");
+    assert.ok(
+      runner.world.events.some((e) => e.text.includes(`#${number}`) && e.text.includes("respawned at base")),
+      "no respawn broadcast for the returned hull",
+    );
+  });
+
+  check("spawn protection shields a returned hull for the configured seconds, then it dies again", () => {
+    const recording = fixture(30);
+    recording.snapshot.stacks = {};
+    recording.commands = [];
+    shootHull(recording.snapshot.world, "red-2", "blue-1", "kill-red-2");
+    const originalDelay = RESPAWN.delaySec;
+    RESPAWN.delaySec = 3;
+    try {
+      const runner = new ReplayRunner(recording);
+      runner.run(120);
+      const hull = runner.world.tanks.find((t) => t.id === "red-2")!;
+      assert.equal(hull.alive, true, "hull did not return on the configured delay");
+      assert.ok(hull.spawnProtectionUntil !== undefined);
+      assert.ok(runner.world.time < hull.spawnProtectionUntil!, "protection had already run out");
+      bot(runner).cooldown = 10000; // the checks below are about protection, not gunnery
+      shootHull(runner.world, "red-2", "blue-1", "shot-under-protection");
+      runner.step();
+      assert.equal(hull.alive, true, "protection did not block the shell");
+      assert.equal(hull.hp, hull.maxHp, "protection let damage through");
+      assert.equal(hull.respawnLeft, undefined, "a blocked shell still counted as a death");
+      runner.run(Math.ceil(RESPAWN.protectionSec * 30) + 1);
+      assert.ok(runner.world.time >= hull.spawnProtectionUntil!, "protection outlasted its timer");
+      shootHull(runner.world, "red-2", "blue-1", "shot-after-protection");
+      runner.step();
+      assert.equal(hull.alive, false, "expired protection still shielded the hull");
+      assert.equal(hull.respawnLeft, RESPAWN.delaySec, "second death did not re-arm the countdown");
+      assert.equal(respawnQueue(runner.world, "red").length, 1);
+    } finally {
+      RESPAWN.delaySec = originalDelay;
+    }
+  });
+
+  check("respawn countdown ticks once per team at getRespawnRate", () => {
+    assert.equal(getRespawnRate("blue"), 1, "the middle zone is not in yet");
+    assert.equal(getRespawnRate("red"), 1);
+    const hz = 30;
+    const recording = fixture(hz);
+    recording.snapshot.stacks = {};
+    recording.commands = [];
+    shootHull(recording.snapshot.world, "red-2", "blue-1", "kill-red-2");
+    shootHull(recording.snapshot.world, "blue-2", "red-6", "kill-blue-2");
+    const runner = new ReplayRunner(recording);
+    runner.step();
+    const red = runner.world.tanks.find((t) => t.id === "red-2")!;
+    const blue = runner.world.tanks.find((t) => t.id === "blue-2")!;
+    assert.equal(red.alive, false);
+    assert.equal(blue.alive, false);
+    for (let i = 0; i < 20; i++) {
+      const redLeft = red.respawnLeft!;
+      const blueLeft = blue.respawnLeft!;
+      runner.step();
+      assert.ok(Math.abs(redLeft - red.respawnLeft! - (1 / hz) * getRespawnRate("red")) < 1e-9);
+      assert.ok(Math.abs(blueLeft - blue.respawnLeft! - (1 / hz) * getRespawnRate("blue")) < 1e-9);
+    }
+    assert.ok(red.respawnLeft! > 0 && blue.respawnLeft! > 0);
   });
 
   check("recorded input, same-tick command order, terminal stop, and invalid snapshot rejection", () => {

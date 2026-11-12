@@ -107,15 +107,15 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 - **Team Deathmatch No Fog (default)** — wipe the enemy company; full map and enemies visible (no fog).
 - **Team Deathmatch** — same rules with fog share (`report` by default).
 - **Capture the Code** — debug the enemy code-carrier wreck to win (old CTF rules).
-- **Multiplayer · Offline** — local/bot TDM test: no fog, denser map, all standard gunners, win by wiping the enemy team. Teammates **hold until ordered** (voice/text/phrases); shoot while holding if a target is hittable; panic-escape when surrounded/under close attack. Eliminations blink twice then vanish (no wreck/debug / Capture-the-Code).
+- **Multiplayer · Offline** — local/bot TDM test: no fog, the large 144×90 map by default (dense 80×50 in the Arena pick), win by wiping the enemy team. Teammates **hold until ordered** (voice/text/phrases); shoot while holding if a target is hittable; panic-escape when surrounded/under close attack. Eliminations blink twice then vanish (no wreck/debug / Capture-the-Code).
 - **Multiplayer · Online** — two-device LAN via WebSocket relay (`npm run dev:mp`). Host=blue, Join=red; host-authoritative snapshots. Same combat rules as Offline. Use **Play bots offline instead** for a local bot match without a peer.
 
 ## Rules (short)
 
-- 5-minute matches, no respawns.
+- 5-minute matches. Multiplayer rules (Offline, Online, Base War) respawn a destroyed hull at its own base after `RESPAWN.delaySec` in `src/config/balance.ts`; TDM, CTF and Heavy/Light still field each hull once.
 - Most modes: 2 scouts (slower, long vision) + 4 gunners (faster, short vision); all shoot. Multiplayer modes: six gunners.
 - No Fog (`clear`): whole map visible; fogged modes keep the southern ~20% home strip pre-revealed.
-- Tunables in `src/config.ts` (`CONFIG.mpOffline`, `CONFIG.net`).
+- Tunables in `src/config.ts` (`CONFIG.arenaDefault` is the map used when none is picked, `CONFIG.mpOffline`, `CONFIG.net`).
 
 ## Committed roadmap
 

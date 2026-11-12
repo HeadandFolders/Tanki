@@ -335,7 +335,7 @@ const estSec = centerLen / speed;
 function simToCenter(): { sec: number; tank: Tank } | null {
   const world = createWorld("clear", "mp-offline", "normal", seed, "off", "large", seed);
   world.outcome = "playing";
-  const tank = world.tanks.find((t) => t.team === "blue" && t.id !== world.controlledId && t.role === "shooter")!;
+  const tank = world.tanks.find((t) => t.team === "blue" && t.id !== world.controlledId)!;
   for (const t of world.tanks) if (t.id !== tank.id && t.team === "blue") t.alive = false;
   for (const t of world.tanks) {
     if (t.team === "red") {
@@ -355,8 +355,9 @@ function simToCenter(): { sec: number; tank: Tank } | null {
 }
 const sim = simToCenter();
 console.log(
-  `spawn->center: route ${centerLen.toFixed(0)}px, ${estSec.toFixed(1)}s at ${speed}px/s (shooter); ` +
-    `simulated moveTo ${sim ? sim.sec.toFixed(1) + "s" : "did not arrive in 40s"}; target ${tMin}-${tMax}s (config.largeArena.spawnToCenterSec)`,
+  `spawn->center: route ${centerLen.toFixed(0)}px, ${estSec.toFixed(1)}s at ${speed}px/s (reference gunner); ` +
+    `simulated moveTo ${sim ? `${sim.sec.toFixed(1)}s in #${sim.tank.number} ${sim.tank.role} at ${CONFIG.roles[sim.tank.role].speed}px/s` : "did not arrive in 40s"}; ` +
+    `target ${tMin}-${tMax}s (config.largeArena.spawnToCenterSec)`,
 );
 check(estSec >= tMin && estSec <= tMax, `spawn-to-center ${estSec.toFixed(1)}s within ${tMin}-${tMax}s`);
 

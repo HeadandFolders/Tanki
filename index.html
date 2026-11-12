@@ -13,6 +13,11 @@
         <div class="status">
           <span id="timer">5:00</span>
           <span id="match-state">Hunting…</span>
+          <span id="base-hp" class="base-hp" hidden>
+            <span id="base-hp-blue" class="base-hp-blue"></span>
+            <span id="base-hp-red" class="base-hp-red"></span>
+          </span>
+          <span id="respawn-hud" class="respawn-hud" hidden></span>
           <label class="topbar-mode-label">
             Mode
             <select id="game-mode" title="Also changeable from the Game menu">
@@ -83,15 +88,15 @@
                   </button>
                   <button type="button" class="gate-mode" data-mode="base-war" aria-pressed="false">
                     <strong>Base War (vs scripted commander)</strong>
-                    <span>Offline. Destroy the enemy base or eliminate their tanks. Defend yours. No fog, no respawns. Ten-minute limit.</span>
+                    <span>Offline. Destroy the enemy base to win — killing their hulls only sends them back to base. Defend yours. No fog, slow respawns. Ten-minute limit.</span>
                   </button>
                   <button type="button" class="gate-mode" data-mode="mp-offline" aria-pressed="false">
                     <strong>Multiplayer · Offline</strong>
-                    <span>Local/bot TDM — no fog, all gunners, wipe the enemy team. Scripted commander opponent by default.</span>
+                    <span>Local/bot TDM — no fog, five hull types a side, wipe the enemy team. Hulls respawn at base. Scripted commander opponent by default.</span>
                   </button>
                   <button type="button" class="gate-mode" data-mode="mp-online" aria-pressed="false">
                     <strong>Multiplayer · Online</strong>
-                    <span>Two devices on LAN — Host / Join. Same rules as Offline (no fog, gunners, wipe).</span>
+                    <span>Two devices on LAN — Host / Join. Same rules as Offline (no fog, five hull types, wipe).</span>
                   </button>
                 </div>
               </div>
@@ -112,8 +117,8 @@
                 <label class="gate-llm-field" for="mp-arena">
                   <span>Arena</span>
                   <select id="mp-arena">
-                    <option value="dense" selected>Dense (80×50)</option>
-                    <option value="large">Large (144×90)</option>
+                    <option value="dense">Dense (80×50)</option>
+                    <option value="large" selected>Large (144×90)</option>
                   </select>
                 </label>
               </div>

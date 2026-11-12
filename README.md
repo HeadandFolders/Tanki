@@ -73,7 +73,13 @@ Or: Windows Security → Firewall → Advanced → Inbound Rules → New Rule �
 
 ## LLM API key (Radio → STT → LLM → bots)
 
-Paste your key in:
+`src/api-key.local.ts` is **not tracked** (git-ignored). After a fresh clone, copy the template into place first — `src/api-key.ts` imports it statically, so `npm run dev` and `npm run build` fail without the file:
+
+```bash
+cp src/api-key.local.example.ts src/api-key.local.ts
+```
+
+Then paste your key in:
 
 **[`src/api-key.local.ts`](src/api-key.local.ts)**
 

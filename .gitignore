@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+# The key file is api-key.local.ts, which the pattern above does not match.
+src/api-key.local.ts
 .env
 .env.*
 !.env.example

@@ -480,7 +480,7 @@ A normal/TDM match that kills every red tank sets outcome to win and `stepWorld`
 
 ## Working agreements
 
-- Do not commit unless asked. Do not commit `src/api-key.local.ts` or `.env`.
+- Do not commit unless asked. `src/api-key.local.ts` and `.env` are git-ignored now (`src/api-key.local.ts` was tracked from `8c7543a` to `fc88f21`, always with an empty placeholder; a fresh clone needs `cp src/api-key.local.example.ts src/api-key.local.ts` before `dev`/`build`, because `src/api-key.ts` imports it statically).
 - Do not put the language model in the frame loop.
 - Do not replace `planRoute` with a learned policy to fix a bad route. Draw the polyline and the danger field first.
 - Do not give Needle final authority while it is slower and less confident than the phrase reader.

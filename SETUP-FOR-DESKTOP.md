@@ -29,7 +29,13 @@ npm run dev
 
 ## API key
 
-Edit `src/api-key.local.ts` and set:
+The key file is not in git, so create it from the template first:
+
+```bash
+cp src/api-key.local.example.ts src/api-key.local.ts
+```
+
+Then edit `src/api-key.local.ts` and set:
 
 ```ts
 export const LOCAL_API_KEY = "AIza..."; // Gemini, or sk-... for OpenAI

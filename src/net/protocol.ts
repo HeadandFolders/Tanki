@@ -21,6 +21,8 @@ export interface NetTankSnap {
   x: number;
   y: number;
   angle: number;
+  /** Where that hull's gun is pointed. */
+  turret: number;
   hp: number;
   maxHp: number;
   alive: boolean;
@@ -37,7 +39,6 @@ export interface NetProjSnap {
   y: number;
   vx: number;
   vy: number;
-  life: number;
 }
 
 export interface NetDeathSnap {

@@ -202,6 +202,7 @@ function spawnTeam(
       x: pos.x,
       y: pos.y,
       angle,
+      turretAngle: angle,
       hp: stats.maxHealth,
       maxHp: stats.maxHealth,
       alive: true,

@@ -7,7 +7,7 @@
  * the roster and the network snapshot already use.
  */
 import type { GameMode } from "../config";
-import type { BaseTile, MiddleZoneState, TeamId } from "../types";
+import type { BaseTile, MiddleZoneState, Projectile, TeamId } from "../types";
 
 export type TankTypeId =
   | "scout"
@@ -100,12 +100,6 @@ export interface TankType {
   /** Nuke carrier only. */
   nuke?: NukeSpec;
 }
-
-/**
- * A shell has to be alive long enough to still land at the edge of its own
- * gun's reach, and no longer than that plus a little travel room.
- */
-export const PROJECTILE_LIFE_SLACK = 1.25;
 
 /** Hit points of a Base War structure. Shells reduce it by `baseDamageMultiplier`. */
 export const BASE_HP = 2000;
@@ -329,14 +323,59 @@ export function fireCooldownOf(role: TankTypeId): number {
   return 1 / TANK_TYPES[role].fireRate;
 }
 
+/**
+ * A hull fields one round at a time. A round leaves the field by hitting
+ * something, never by wearing out, so the gun is loaded again the instant its
+ * last one collides and not before.
+ */
+export function hasRoundInAir(projectiles: readonly Projectile[], tankId: string): boolean {
+  return projectiles.some((p) => p.ownerId === tankId);
+}
+
 export function turnRateOf(role: TankTypeId): number {
   return TANK_TYPES[role].turnRate;
 }
 
-/** Shell reach in seconds: how far the round flies before it is spent. */
-export function projectileLifeOf(role: TankTypeId): number {
-  const stats = TANK_TYPES[role];
-  return (stats.range / stats.projectileSpeed) * PROJECTILE_LIFE_SLACK;
+/**
+ * Firing costs the tracks. A hull that has let a shell go inside `windowSec`
+ * drives at `factor` of its top speed, so standing off and running are a real
+ * choice: to get back up to speed a gunner has to stop shooting.
+ *
+ * The window is a fixed beat rather than a fraction of the gun's cycle because
+ * a hull fields one round at a time — the reload is the shell's flight, not the
+ * cooldown, and only the shell knows how long that will be.
+ */
+export const FIRE_SLOWDOWN = {
+  /** Drive speed multiplier while the hull counts as shooting. */
+  factor: 0.55,
+  /** Seconds after a shell leaves the gun that the hull is still "shooting". */
+  windowSec: 1.5,
+};
+
+/**
+ * Drive speed in px/s: the hull's top speed, or the braced speed of one that
+ * shot a moment ago. Every mover reads speed through here — the player's keys,
+ * the friendly and enemy brains — so a hull cannot be fast in one mode and slow
+ * in another.
+ */
+export function driveSpeedOf(
+  hull: { role: TankTypeId; lastShotAt: number },
+  time: number,
+): number {
+  const top = TANK_TYPES[hull.role].speed;
+  const shooting = time - hull.lastShotAt <= FIRE_SLOWDOWN.windowSec;
+  return shooting ? top * FIRE_SLOWDOWN.factor : top;
+}
+
+/**
+ * A turret outruns the hull it sits on: a hull can answer a threat without
+ * first swinging its whole vehicle around.
+ */
+export const TURRET_TRAVERSE_MULTIPLIER = 2.5;
+
+/** Turret slew, rad/s. */
+export function turretTurnRateOf(role: TankTypeId): number {
+  return TANK_TYPES[role].turnRate * TURRET_TRAVERSE_MULTIPLIER;
 }
 
 /**

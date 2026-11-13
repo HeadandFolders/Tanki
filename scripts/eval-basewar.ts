@@ -34,7 +34,7 @@ function fixture(seed = 1): WorldState {
 function shell(world: WorldState, base: BaseState, team: TeamId, damage = 22): void {
   world.projectiles.push({ id: `test-${world.projectiles.length}`, team,
     ownerId: `${team}-1`, x: base.x + base.w / 2, y: base.y + base.h / 2,
-    vx: 0, vy: 0, damage, life: 1, fromShooter: true });
+    vx: 0, vy: 0, damage, fromShooter: true });
 }
 function between(n: number, min: number, max: number): void {
   assert.ok(n >= min - 1e-8 && n <= max + 1e-8, `${n} outside ${min}..${max}`);
@@ -188,7 +188,13 @@ await check("attackBase follows the real dense maze, stops in LOS, fires, and ne
   }
 });
 
-await check("continuous live firing: one gunner about a minute, three about twenty seconds", async () => {
+/**
+ * The windows here are the round-trip, not just the reload: a gunner 160px out
+ * waits ~0.30s for its shell to reach the base and cannot cycle again until it
+ * does, which is longer than the 0.16s `fireRate` cooldown, so the old
+ * 56-63s / 18-22s pace became 97s / 33s when one round per hull went in.
+ */
+await check("continuous live firing: one gunner about a minute and a half, three about half a minute", async () => {
   for (const n of [1, 3]) {
     const w = fixture(); w.walls = [];
     const b = w.bases!.red;
@@ -208,9 +214,9 @@ await check("continuous live firing: one gunner about a minute, three about twen
       t.lastKnownPos = { x: t.x, y: t.y }; t.cooldown = 0;
     }
     await sendOrder(w, `${bots.map((t) => t.number).join(" and ")} attack the base`);
-    while (w.outcome === "playing" && w.time < 70) stepWorld(w, DT, INPUT);
-    assert.equal(w.outcome, "win"); between(w.time, n === 1 ? 56 : 18, n === 1 ? 63 : 22);
+    while (w.outcome === "playing" && w.time < 200) stepWorld(w, DT, INPUT);
     console.log(`    ${n} gunner(s): ${w.time.toFixed(2)}s`);
+    assert.equal(w.outcome, "win"); between(w.time, n === 1 ? 94 : 31, n === 1 ? 100 : 34);
   }
 });
 

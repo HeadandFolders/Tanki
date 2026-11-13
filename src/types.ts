@@ -80,6 +80,8 @@ export interface Tank {
   x: number;
   y: number;
   angle: number;
+  /** Where the gun is pointed. Rounds leave along it; it slews independently of the hull. */
+  turretAngle: number;
   hp: number;
   maxHp: number;
   alive: boolean;
@@ -120,11 +122,10 @@ export interface Projectile {
   vx: number;
   vy: number;
   damage: number;
-  life: number;
   fromShooter: boolean;
   /**
-   * Nuke carrier round. It detonates wherever it dies — on a hull, on a base,
-   * against a wall or at the end of its flight — and the blast is what hurts.
+   * Nuke carrier round. It detonates wherever it collides — on a hull, on a
+   * base or against a wall — and the blast is what hurts.
    */
   nuke?: { blastRadius: number; damageVsTank: number; damageVsBase: number };
 }

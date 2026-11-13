@@ -498,7 +498,7 @@ function invariants(): void {
     for (const tank of reds.slice(2)) { tank.alive = false; tank.hp = 0; }
     world.projectiles = reds.slice(0, 2).map((tank, index) => ({
       id: `threshold-${index}`, team: "blue", ownerId: "blue-1", x: tank.x, y: tank.y,
-      vx: 0, vy: 0, damage: tank.hp, life: 1, fromShooter: true,
+      vx: 0, vy: 0, damage: tank.hp, fromShooter: true,
     }));
     const step = adjudicatedStepper(world);
     assert.equal(step(), "blue");

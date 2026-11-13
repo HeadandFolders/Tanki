@@ -175,7 +175,7 @@ function assertHolding(world: WorldState): void {
 function injury(world: WorldState): void {
   const tank = actor(world);
   world.projectiles.push({ id: `injury-${world.time}`, team: "red", ownerId: "red-2", x: tank.x, y: tank.y,
-    vx: 0, vy: 0, damage: tank.maxHp * 0.8, life: 1, fromShooter: true });
+    vx: 0, vy: 0, damage: tank.maxHp * 0.8, fromShooter: true });
 }
 function isolate(world: WorldState): void {
   world.shareMode = "report";
@@ -395,7 +395,7 @@ try {
     const world = fixture();
     await say(world, "2 hold position", "holdPosition");
     world.projectiles.push({ id: "lethal", team: "red", ownerId: "red-2", x: actor(world).x, y: actor(world).y,
-      vx: 0, vy: 0, damage: actor(world).maxHp, life: 1, fromShooter: true });
+      vx: 0, vy: 0, damage: actor(world).maxHp, fromShooter: true });
     step(world);
     assert.equal(actor(world).alive, false);
     event(world, "expired", "tank_destroyed");

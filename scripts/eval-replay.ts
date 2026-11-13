@@ -3,7 +3,9 @@ import { circleHitsWall } from "../src/arena";
 import { createBaseStates } from "../src/arena-bases";
 import { CONFIG, homeTerritoryBounds } from "../src/config";
 import {
+  fireCooldownOf,
   getRespawnRate,
+  hasRoundInAir,
   MIDDLE_ZONE,
   rawDamageFor,
   RESPAWN,
@@ -70,7 +72,7 @@ function fixture(hz: ReplayHz, lowHp = false): ReplayRecording {
     prey.maxHp = prey.hp = TANK_TYPES.shooter.maxHealth;
     world.projectiles.push({
       id: "injury", team: "red", ownerId: "red-2", x: 300, y: 400,
-      vx: 0, vy: 0, life: 1, fromShooter: true,
+      vx: 0, vy: 0, fromShooter: true,
       // Sized off the table: it leaves the hull in slot 2 at half the retreat
       // threshold, whatever that hull's HP and side armour happen to be.
       damage: rawDamageFor(prey.role, "side",
@@ -101,7 +103,7 @@ function shootHull(world: WorldState, victimId: string, ownerId: string, id: str
   world.projectiles.push({
     id, team: victim.team === "blue" ? "red" : "blue", ownerId,
     x: victim.x, y: victim.y, vx: 0, vy: 0,
-    damage: victim.maxHp * 4, life: 1, fromShooter: true,
+    damage: victim.maxHp * 4, fromShooter: true,
   });
 }
 
@@ -113,6 +115,26 @@ function stepsUntilBack(runner: ReplayRunner, tankId: string, hz: number): numbe
     runner.step();
   }
   return steps;
+}
+
+/**
+ * The fixture with the trigger held down, aiming blue-1 south down an empty
+ * column, so its round has more than a thousand pixels of clear field to cross
+ * before the stone border stops it.
+ */
+function heldTrigger(hz: ReplayHz): ReplayRunner {
+  const recording = fixture(hz);
+  recording.snapshot.stacks = {};
+  recording.commands = [];
+  const shooter = recording.snapshot.world.tanks.find((t) => t.id === "blue-1")!;
+  const local = {
+    keys: [],
+    mouseX: shooter.x,
+    mouseY: CONFIG.canvasHeight,
+    shooting: true,
+  };
+  for (let tick = 0; tick < hz * 6; tick++) recording.inputs.push({ tick, local });
+  return new ReplayRunner(recording);
 }
 
 function assertSpoken(world: WorldState): void {
@@ -647,7 +669,7 @@ try {
       const target = recording.snapshot.world.tanks.find((t) => t.id === "red-2")!;
       recording.snapshot.world.projectiles.push({
         id: "lethal", team: "blue", ownerId: "blue-2", x: target.x, y: target.y,
-        vx: 0, vy: 0, damage: target.maxHp, life: 1, fromShooter: true,
+        vx: 0, vy: 0, damage: target.maxHp, fromShooter: true,
       });
       const runner = new ReplayRunner(recording);
       runner.step();
@@ -656,7 +678,7 @@ try {
       const survivor = saved.snapshot.world.tanks.find((t) => t.id === "red-6")!;
       saved.snapshot.world.projectiles.push({
         id: "second-lethal", team: "blue", ownerId: "blue-2", x: survivor.x, y: survivor.y,
-        vx: 0, vy: 0, damage: survivor.maxHp, life: 1, fromShooter: true,
+        vx: 0, vy: 0, damage: survivor.maxHp, fromShooter: true,
       });
       const a = new ReplayRunner(saved);
       const b = new ReplayRunner(saved);
@@ -855,6 +877,85 @@ try {
     const reclaimed = tick(blue);
     assert.equal(zone.holder, "blue", "the bonus did not return once the enemy left");
     assert.ok(ranAt(reclaimed, MIDDLE_ZONE.holdRate), "a reclaimed zone did not speed the clock back up");
+  });
+
+  check("a round outlives its own gun reach and is spent only by what it hits", () => {
+    const hz = 30 as const;
+    const runner = heldTrigger(hz);
+    const world = runner.world;
+    const shooter = world.tanks.find((t) => t.id === "blue-1")!;
+    const reach = TANK_TYPES[shooter.role].range;
+    const flownFrom = shooter.y;
+
+    runner.step();
+    const round = world.projectiles.find((p) => p.ownerId === shooter.id);
+    assert.ok(round, "the held trigger did not field a round");
+    const flown = () => round.y - flownFrom;
+
+    let guard = 0;
+    while (world.projectiles.includes(round) && flown() < reach * 2) {
+      assert.ok(guard++ < hz * 6, "the round never reached twice its own gun reach");
+      runner.step();
+    }
+    assert.ok(
+      world.projectiles.includes(round),
+      `the round was spent at ${flown().toFixed(0)}px, barely past a ${reach}px gun`,
+    );
+
+    guard = 0;
+    while (world.projectiles.includes(round)) {
+      assert.ok(guard++ < hz * 6, "nothing ever stopped the round");
+      runner.step();
+    }
+    assert.ok(
+      round.y > CONFIG.canvasHeight - 4 * CONFIG.tileSize,
+      `the round left the field at y=${round.y.toFixed(0)} instead of hitting the border`,
+    );
+  });
+
+  check("a hull holds one round in the air and its mate fires on through", () => {
+    const hz = 30 as const;
+    const runner = heldTrigger(hz);
+    const world = runner.world;
+    const shooter = world.tanks.find((t) => t.id === "blue-1")!;
+    const mate = world.tanks.find((t) => t.id === "blue-2")!;
+    const shotsOf = (tank: Tank) =>
+      runner.events.filter((e) => e.type === "shot" && e.tankId === tank.id).length;
+
+    runner.step();
+    const round = world.projectiles.find((p) => p.ownerId === shooter.id)!;
+    assert.ok(round, "the held trigger did not field a round");
+    assert.equal(shotsOf(shooter), 1);
+    assert.ok(hasRoundInAir(world.projectiles, shooter.id));
+    assert.ok(!hasRoundInAir(world.projectiles, "blue-9"), "an idle hull counted a round it never fired");
+    assert.ok(
+      world.projectiles.some((p) => p.ownerId === mate.id),
+      "a second hull was held by a round that was not its own",
+    );
+
+    // The reload is the shorter wait here, so every step of this loop is the
+    // flight holding the gun and not the cooldown.
+    const reload = Math.ceil(fireCooldownOf(shooter.role) * hz);
+    for (let i = 0; i < reload + 1; i++) {
+      assert.ok(
+        world.projectiles.includes(round),
+        "the flight is no longer than the reload; this check needs a longer column",
+      );
+      runner.step();
+      assert.equal(
+        shotsOf(shooter),
+        1,
+        `the hull fired again ${i + 1} ticks in, on its reload and not on its round landing`,
+      );
+    }
+
+    let guard = 0;
+    while (world.projectiles.includes(round)) {
+      assert.ok(guard++ < hz * 6, "the round never landed");
+      runner.step();
+    }
+    for (let i = 0; i < 3 && shotsOf(shooter) < 2; i++) runner.step();
+    assert.equal(shotsOf(shooter), 2, "the gun stayed shut after its round hit the border");
   });
 
   check("recorded input, same-tick command order, terminal stop, and invalid snapshot rejection", () => {

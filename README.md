@@ -119,6 +119,7 @@ Pipeline: **Radio LIVE → browser STT → `interpretOrder` (LLM if key set, els
 ## Rules (short)
 
 - 5-minute matches. Multiplayer rules (Offline, Online, Base War) respawn a destroyed hull at its own base after `RESPAWN.delaySec`, keeping its type and number and immune to hull damage for `RESPAWN.protectionSec` (`src/config/balance.ts`); the countdown runs at `getRespawnRate(team, middleZone)` — ×2 for a team with a hull in the centre zone and no enemy hull in it, ×1 for everyone else, including both teams once they share it (`MIDDLE_ZONE` in `src/config/balance.ts`; the ring is drawn on the map, minimap and topbar in the holder's colour). TDM, CTF and Heavy/Light still field each hull once.
+- A round is spent by collision, not by distance: it flies until it hits a hull, a base or a wall, and its hull cannot fire again until it does. `hasRoundInAir` in `src/config/balance.ts` is the gate, called at the top of `tryShoot`, and it is per hull. The `fireRate` cooldown still applies on top, so at normal ranges the cycle is the shell's time of flight rather than the reload.
 - Most modes: 2 scouts (slower, long vision) + 4 gunners (faster, short vision); all shoot. Multiplayer modes: six gunners.
 - No Fog (`clear`): whole map visible; fogged modes keep the southern ~20% home strip pre-revealed.
 - Tunables in `src/config.ts` (`CONFIG.arenaDefault` is the map used when none is picked, `CONFIG.mpOffline`, `CONFIG.net`).

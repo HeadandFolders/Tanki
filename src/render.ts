@@ -712,12 +712,13 @@ function drawBullet(ctx: CanvasRenderingContext2D, x: number, y: number): void {
 }
 
 /**
- * 13×13 Battle City–ish tank pattern (1 = body, 2 = tread, 3 = barrel, 4 = cabin).
- * Drawn facing UP; rotated by cardinal.
+ * 13×13 Battle City–ish tank pattern (1 = body, 2 = tread, 4 = cabin).
+ * Drawn facing UP; rotated by cardinal. The gun is not part of it — see
+ * drawBarrel, which points it wherever the hull is shooting.
  */
 const TANK_PAT: number[][] = [
-  [0, 0, 0, 0, 0, 3, 3, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 3, 3, 0, 0, 0, 0, 0, 0],
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   [2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2],
   [2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2],
   [2, 2, 1, 1, 4, 4, 4, 4, 1, 1, 1, 2, 2],
@@ -757,15 +758,34 @@ function commandedCellColor(
   sweep: number,
   body: string,
   tread: string,
-  barrel: string,
   cabin: string,
 ): string {
   if (cell === 2) return tread;
-  if (cell === 3) return barrel;
   const d = col - sweep;
   if (d > -0.6 && d < 1.4) return "#fff7c2";
   if (d >= 1.4 && d < 2.8) return "#ffe27a";
   return cell === 4 ? cabin : body;
+}
+
+/**
+ * The gun, on its own pivot: same two-cell width and same tip distance as the
+ * stub the hull pattern used to carry, but it points at the target instead of
+ * at wherever the tracks last faced.
+ */
+function drawBarrel(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  angle: number,
+  scale: number,
+  color: string,
+): void {
+  ctx.save();
+  ctx.translate(Math.round(x), Math.round(y));
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  ctx.fillRect(0, -scale, (TANK_PAT.length / 2) * scale, scale * 2);
+  ctx.restore();
 }
 
 /** Pulsing halo around the locally commanded tank. */
@@ -834,14 +854,12 @@ function drawTank(
       const cell = TANK_PAT[row]![col]!;
       if (!cell) continue;
       ctx.fillStyle = commanded
-        ? commandedCellColor(cell, col, sweep, body, tread, barrel, cabin)
+        ? commandedCellColor(cell, col, sweep, body, tread, cabin)
         : cell === 1
           ? body
           : cell === 2
             ? tread
-            : cell === 3
-              ? barrel
-              : cabin;
+            : cabin;
       ctx.fillRect(
         col * scale - size / 2,
         row * scale - size / 2,
@@ -851,6 +869,8 @@ function drawTank(
     }
   }
   ctx.restore();
+
+  drawBarrel(ctx, t.x, t.y, t.turretAngle, scale, barrel);
 
   if (commanded) drawCommandShine(ctx, t.x, t.y, size, world.time);
 
@@ -930,6 +950,7 @@ function drawDeathHusk(ctx: CanvasRenderingContext2D, fx: DeathFx): void {
     x: fx.x,
     y: fx.y,
     angle: fx.angle,
+    turretAngle: fx.angle,
     hp: 0,
     maxHp: 1,
     alive: false,

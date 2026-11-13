@@ -30,6 +30,7 @@ export function worldToSnap(world: WorldState): NetStateSnap {
       x: Math.round(t.x * 10) / 10,
       y: Math.round(t.y * 10) / 10,
       angle: Math.round(t.angle * 1000) / 1000,
+      turret: Math.round(t.turretAngle * 1000) / 1000,
       hp: Math.round(t.hp),
       maxHp: t.maxHp,
       alive: t.alive,
@@ -44,7 +45,6 @@ export function worldToSnap(world: WorldState): NetStateSnap {
       y: Math.round(p.y * 10) / 10,
       vx: Math.round(p.vx),
       vy: Math.round(p.vy),
-      life: Math.round(p.life * 100) / 100,
     })),
     deathFx: world.deathFx.map((d) => ({
       id: d.id,
@@ -94,6 +94,7 @@ export function applySnap(
     t.x = s.x;
     t.y = s.y;
     t.angle = s.angle;
+    t.turretAngle = s.turret;
     t.hp = s.hp;
     t.maxHp = s.maxHp;
     t.alive = s.alive;
@@ -115,7 +116,6 @@ export function applySnap(
     vx: p.vx,
     vy: p.vy,
     damage: 20,
-    life: p.life,
     fromShooter: true,
   }));
 

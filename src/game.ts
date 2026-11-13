@@ -22,13 +22,15 @@ import { baseShotClear, createBaseStates } from "./arena-bases";
 import {
   armoredDamage,
   armorBand,
+  driveSpeedOf,
   fireCooldownOf,
   getRespawnRate,
+  hasRoundInAir,
   middleZoneGeometry,
-  projectileLifeOf,
   RESPAWN,
   TANK_TYPES,
   turnRateOf,
+  turretTurnRateOf,
   type ArmorBand,
   type NukeSpec,
 } from "./config/balance";
@@ -457,6 +459,13 @@ export interface InputState {
   shooting: boolean;
 }
 
+/** A hull that asked to fire this step, kept so its shot can be retried once its round lands. */
+interface ShotRequest {
+  tank: Tank;
+  aimAngle: number;
+  isPlayer: boolean;
+}
+
 function asKeySet(keys: Set<string> | string[]): Set<string> {
   return keys instanceof Set ? keys : new Set(keys);
 }
@@ -515,6 +524,11 @@ export function stepWorld(
       }
     : null;
 
+  // Who asked to fire this step. A round is spent by collision and collisions
+  // resolve at the end of the step, so these hulls get a second attempt once the
+  // round they last fired is gone — see the retry after `updateProjectiles`.
+  const shotRequests: ShotRequest[] = [];
+
   for (const tank of world.tanks) {
     if (!tank.alive) continue;
     tank.cooldown = Math.max(0, tank.cooldown - dt);
@@ -529,13 +543,16 @@ export function stepWorld(
       tank.id === world.remoteControlledId && !world.commanders?.red;
 
     if (isLocalControlled) {
-      updatePlayer(world, tank, dt, localInput);
+      updatePlayer(world, tank, dt, localInput, shotRequests);
     } else if (isRemoteControlled && guestInput) {
-      updatePlayer(world, tank, dt, guestInput);
+      updatePlayer(world, tank, dt, guestInput, shotRequests);
     } else {
       const ai = updateTankAi(botViews[tank.team], tank, dt, false);
-      if (ai.wantShoot && TANK_TYPES[tank.role].canShoot) {
+      const armed = ai.wantShoot && TANK_TYPES[tank.role].canShoot;
+      slewTurret(tank, armed ? ai.aimAngle : tank.angle, dt);
+      if (armed) {
         tryShoot(world, tank, ai.aimAngle, false);
+        shotRequests.push({ tank, aimAngle: ai.aimAngle, isPlayer: false });
       }
     }
 
@@ -564,6 +581,13 @@ export function stepWorld(
   updateDeathFx(world);
   updateRepairs(world, dt);
   updateProjectiles(world, dt);
+  // A round that collided this step just freed its gun. Anything slower than
+  // its own flight — a gunner at range — has already paid its reload, so it
+  // fires now instead of a tick later; `tryShoot` re-runs every gate, so a hull
+  // that already shot, is dead, or is still reloading gets nothing.
+  for (const request of shotRequests) {
+    tryShoot(world, request.tank, request.aimAngle, request.isPlayer);
+  }
   updateVision(world);
   updateSightings(world);
   for (const tank of world.tanks.filter((t) => t.alive)) {
@@ -635,6 +659,7 @@ function respawnTank(world: WorldState, tank: Tank): void {
   tank.x = at.x;
   tank.y = at.y;
   tank.angle = tank.team === "blue" ? -Math.PI / 2 : Math.PI / 2;
+  tank.turretAngle = tank.angle;
   tank.lastKnownPos = { x: at.x, y: at.y };
   tank.cooldown = 0;
   // A respawned carrier warms its round up again rather than arriving with one live.
@@ -695,6 +720,7 @@ function updatePlayer(
   tank: Tank,
   dt: number,
   input: InputState,
+  shotRequests: ShotRequest[],
 ): void {
   const freed = unstickFromWalls(
     tank.x,
@@ -706,7 +732,7 @@ function updatePlayer(
   tank.y = freed.y;
 
   const keys = asKeySet(input.keys);
-  const speed = TANK_TYPES[tank.role].speed;
+  const speed = driveSpeedOf(tank, world.time);
   let mx = 0;
   let my = 0;
   if (keys.has("arrowup")) my -= 1;
@@ -725,10 +751,14 @@ function updatePlayer(
   const aim = angleTo(tank.x, tank.y, input.mouseX, input.mouseY);
   const wantShoot =
     input.shooting || keys.has(" ") || keys.has("spacebar");
+  // The barrel follows the cursor on its own track, so the muzzle reads as the
+  // aim even while the hull is still swinging round.
+  slewTurret(tank, aim, dt);
   // Snap aim when firing so shots track the cursor; otherwise turn smoothly.
   if (wantShoot) {
     tank.angle = aim;
     tryShoot(world, tank, aim, true);
+    shotRequests.push({ tank, aimAngle: aim, isPlayer: true });
   } else {
     tank.angle = rotateToward(tank.angle, aim, turnRateOf(tank.role) * 1.4 * dt);
   }
@@ -749,6 +779,15 @@ function updatePlayer(
   }
 }
 
+/** The gun trails what the hull is aimed at; a shot still snaps it onto the round. */
+function slewTurret(tank: Tank, targetAngle: number, dt: number): void {
+  tank.turretAngle = rotateToward(
+    tank.turretAngle,
+    targetAngle,
+    turretTurnRateOf(tank.role) * dt,
+  );
+}
+
 function tryShoot(
   world: WorldState,
   tank: Tank,
@@ -758,6 +797,9 @@ function tryShoot(
   if (tank.cooldown > 0 || !tank.alive) return;
   const stats = TANK_TYPES[tank.role];
   if (!stats.canShoot) return;
+  // One round per hull in the field: the gun does not cycle again until the
+  // last one it fired hits something.
+  if (hasRoundInAir(world.projectiles, tank.id)) return;
 
   // The nuke is the carrier's real weapon and it is aimed at a base. A human
   // spends it on the round they are pointing at; a bot only commits it when the
@@ -785,6 +827,7 @@ function tryShoot(
 
   tank.cooldown = fireCooldownOf(tank.role);
   tank.lastShotAt = world.time;
+  tank.turretAngle = aimAngle;
   const id = `p-${tank.id}-${world.time}`;
   const proj: Projectile = {
     id,
@@ -795,7 +838,6 @@ function tryShoot(
     vx: Math.cos(aimAngle) * stats.projectileSpeed,
     vy: Math.sin(aimAngle) * stats.projectileSpeed,
     damage: stats.damage,
-    life: projectileLifeOf(tank.role),
     fromShooter: tank.role === "shooter",
   };
   world.projectiles.push(proj);
@@ -817,6 +859,7 @@ function launchNuke(
   tank.cooldown = fireCooldownOf(tank.role);
   tank.nukeCooldown = nuke.cooldownSec;
   tank.lastShotAt = world.time;
+  tank.turretAngle = aimAngle;
   world.projectiles.push({
     id: `nuke-${tank.id}-${world.time}`,
     team: tank.team,
@@ -826,7 +869,6 @@ function launchNuke(
     vx: Math.cos(aimAngle) * nuke.speed,
     vy: Math.sin(aimAngle) * nuke.speed,
     damage: nuke.damageVsTank,
-    life: nuke.range / nuke.speed,
     fromShooter: false,
     nuke: {
       blastRadius: nuke.blastRadius,
@@ -885,13 +927,8 @@ function bandFromPoint(target: Tank, at: { x: number; y: number }): ArmorBand {
 function updateProjectiles(world: WorldState, dt: number): void {
   const next: Projectile[] = [];
   for (const p of world.projectiles) {
-    p.life -= dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    if (p.life <= 0) {
-      if (p.nuke) detonate(world, p);
-      continue;
-    }
 
     const base = Object.values(world.bases ?? {}).find((candidate) =>
       candidate.alive &&
@@ -935,7 +972,21 @@ function updateProjectiles(world: WorldState, dt: number): void {
         break;
       }
     }
-    if (!hit) next.push(p);
+    if (hit) continue;
+    // A round is spent by collision, never by distance, so every arena has to
+    // be able to stop one. The stone border normally does; this catches a step
+    // that jumps clean over it, which would otherwise fly forever and leave its
+    // hull disarmed for the rest of the match.
+    if (
+      p.x < 0 ||
+      p.y < 0 ||
+      p.x > CONFIG.canvasWidth ||
+      p.y > CONFIG.canvasHeight
+    ) {
+      if (p.nuke) detonate(world, p);
+      continue;
+    }
+    next.push(p);
   }
   world.projectiles = next;
 }

@@ -4,7 +4,7 @@ import {
   isMpOffline,
   isMpRules,
 } from "./config";
-import { baseReachOf, turnRateOf } from "./config/balance";
+import { baseReachOf, driveSpeedOf, hasRoundInAir, turnRateOf } from "./config/balance";
 import {
   angleTo,
   circleHitsWall,
@@ -1668,7 +1668,10 @@ function notePathShot(world: WorldState, tank: Tank, wantShoot: boolean, moving:
     dist(tank.x, tank.y, enemy.x, enemy.y) < stats.range,
   );
   const shooting = offOrder && wantShoot && canFire;
-  const active = shooting && (tank.cooldown <= 0 || stack.deviations.includes("los_shot_on_path"));
+  const active =
+    shooting &&
+    ((tank.cooldown <= 0 && !hasRoundInAir(world.projectiles, tank.id)) ||
+      stack.deviations.includes("los_shot_on_path"));
   noteDeviation(world, tank, "los_shot_on_path", active,
     moving ? "taking a clear shot on the way" : "holding; taking a defensive shot");
 }
@@ -1705,7 +1708,7 @@ function mpOfflineFriendlyBrain(
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
   updateInterruptStack(world, tank);
   const stats = CONFIG.roles[tank.role];
-  const speed = stats.speed;
+  const speed = driveSpeedOf(tank, world.time);
   const liveEnemies = liveVisibleEnemies(world, tank);
   const nearestLive = nearest(liveEnemies, tank.x, tank.y);
 
@@ -1990,7 +1993,7 @@ function friendlyBrain(
     return mpOfflineFriendlyBrain(world, tank, dt);
   }
 
-  const speed = CONFIG.roles[tank.role].speed;
+  const speed = driveSpeedOf(tank, world.time);
   const liveEnemies = liveVisibleEnemies(world, tank);
   const known = knownEnemyTanks(world, tank);
   const nearestLive = nearest(liveEnemies, tank.x, tank.y);
@@ -2415,7 +2418,7 @@ function enemyBrain(
   dt: number,
 ): { moveX: number; moveY: number; wantShoot: boolean; aimAngle: number } {
   const tier = redTier(world);
-  const speed = CONFIG.roles[tank.role].speed * tier.speedMul;
+  const speed = driveSpeedOf(tank, world.time) * tier.speedMul;
   const players = world.tanks.filter(
     (t) => t.team === "blue" && t.alive && canSeeTank(tank, t, world.walls),
   );

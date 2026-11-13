@@ -5,6 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { CONFIG } from "../src/config.ts";
+import { FIRE_SLOWDOWN } from "../src/config/balance.ts";
 import { createWorld, stepWorld, type InputState } from "../src/game.ts";
 import { restoreGoal } from "../src/interrupt-stack.ts";
 import { driveOrder } from "../src/motion.ts";
@@ -86,7 +87,9 @@ function runMove(opts: {
   let firstStep = 0;
   let sawShootOnPath = false;
   let replaced = false;
-  const frames = Math.ceil((800 / speed + 2) / DT);
+  // A hull that shoots on the way drives braced, so the lane is budgeted at the
+  // slowest speed the run can pay rather than at top speed.
+  const frames = Math.ceil((800 / (speed * FIRE_SLOWDOWN.factor) + 2) / DT);
   for (let i = 0; i < frames; i++) {
     const prevX = bot.x;
     const prevY = bot.y;
